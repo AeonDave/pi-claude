@@ -1,0 +1,15 @@
+node_modules/
+*.log
+.DS_Store
+dist/
+
+# Local wire captures and debug logs may contain prompts / tokens — never commit.
+captures/req-*.json
+captures/fp-raw/
+!captures/*.example.json
+*.jsonl
+
+# Distilled fingerprint files are safe (version + beta only) — keep them out of
+# the package but they may be committed for the record if desired.
+captures/fingerprint-*.json
+captures/fingerprint-report.md

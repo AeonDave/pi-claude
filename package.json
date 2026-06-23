@@ -1,0 +1,45 @@
+{
+  "name": "pi-claude",
+  "version": "1.0.0",
+  "private": false,
+  "type": "module",
+  "description": "Adds a 'Claude Pro/Max Native' subscription provider to Pi's /login that talks to Anthropic exactly like the genuine Claude Code CLI (OAuth, Claude Code identity, beta headers, user-agent, and billing header).",
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "anthropic",
+    "claude",
+    "claude-code",
+    "oauth",
+    "subscription",
+    "claude-pro",
+    "claude-max"
+  ],
+  "license": "MIT",
+  "files": [
+    "src",
+    "README.md",
+    "VERIFY.md"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --import tsx --test test/billing-header.test.ts test/payload.test.ts test/models.test.ts",
+    "capture:fingerprint": "node scripts/capture-fingerprint.mjs"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*",
+    "@types/node": "^22.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.6.0"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  }
+}
