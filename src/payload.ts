@@ -81,19 +81,6 @@ export function applyBillingHeader(payload: unknown, version: string, entrypoint
 	return { ...typed, system: [headerBlock, ...blocks] };
 }
 
-/**
- * Set the wire model id (e.g. `claude-opus-4-8[1m]`) on the payload. Genuine
- * Claude Code uses the `[1m]` suffix to request the 1M context window; Pi-facing
- * model ids stay clean and the suffix is applied here. Returns the original
- * reference when already set, so callers can detect "no change" by identity.
- */
-export function setWireModel(payload: unknown, wireModelId: string): unknown {
-	if (!payload || typeof payload !== "object") return payload;
-	const typed = payload as { model?: unknown };
-	if (typed.model === wireModelId) return payload;
-	return { ...typed, model: wireModelId };
-}
-
 /** A literal find/replace applied to system-prompt text. */
 export interface SystemReplacement {
 	match: string;

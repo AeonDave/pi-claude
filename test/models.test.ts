@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { ALLOWLIST_RE, buildNativeModels, deriveWireModelId, NATIVE_MODELS, parseModelId } from "../src/models.ts";
+import { ALLOWLIST_RE, buildNativeModels, NATIVE_MODELS, parseModelId } from "../src/models.ts";
 
 const OPUS_COST = { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 };
 const SONNET_COST = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 };
@@ -11,19 +11,15 @@ const SONNET = { compat: { forceAdaptiveThinking: true }, thinkingLevelMap: unde
 const HAIKU = { compat: undefined, thinkingLevelMap: undefined };
 
 /**
- * Regression lock for the curated seed. Opus is "dual": a 200K entry that works
- * on every plan plus an opt-in `-1m` 1M alias (the 1M beta/[1m] are applied only
- * to the 1M entries). Update this snapshot deliberately when changing a model.
+ * Regression lock for the curated seed. Opus 4.8/4.7/4.6 and Sonnet 4.6 are
+ * natively 1M, exposed as a single clean-id entry each; Haiku stays 200K. Update
+ * this snapshot deliberately when changing a model.
  */
 const EXPECTED_SEED = [
-	{ id: "claude-opus-4-8", name: "Claude Opus 4.8", contextWindow: 200000, maxTokens: 128000, cost: OPUS_COST, ...OPUS_HI },
-	{ id: "claude-opus-4-8-1m", name: "Claude Opus 4.8 (1M)", contextWindow: 1000000, maxTokens: 128000, cost: OPUS_COST, ...OPUS_HI },
-	{ id: "claude-opus-4-7", name: "Claude Opus 4.7", contextWindow: 200000, maxTokens: 128000, cost: OPUS_COST, ...OPUS_HI },
-	{ id: "claude-opus-4-7-1m", name: "Claude Opus 4.7 (1M)", contextWindow: 1000000, maxTokens: 128000, cost: OPUS_COST, ...OPUS_HI },
-	{ id: "claude-opus-4-6", name: "Claude Opus 4.6", contextWindow: 200000, maxTokens: 128000, cost: OPUS_COST, ...OPUS_MAX },
-	{ id: "claude-opus-4-6-1m", name: "Claude Opus 4.6 (1M)", contextWindow: 1000000, maxTokens: 128000, cost: OPUS_COST, ...OPUS_MAX },
-	{ id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6", contextWindow: 200000, maxTokens: 64000, cost: SONNET_COST, ...SONNET },
-	{ id: "claude-sonnet-4-6-1m", name: "Claude Sonnet 4.6 (1M)", contextWindow: 1000000, maxTokens: 64000, cost: SONNET_COST, ...SONNET },
+	{ id: "claude-opus-4-8", name: "Claude Opus 4.8", contextWindow: 1000000, maxTokens: 128000, cost: OPUS_COST, ...OPUS_HI },
+	{ id: "claude-opus-4-7", name: "Claude Opus 4.7", contextWindow: 1000000, maxTokens: 128000, cost: OPUS_COST, ...OPUS_HI },
+	{ id: "claude-opus-4-6", name: "Claude Opus 4.6", contextWindow: 1000000, maxTokens: 128000, cost: OPUS_COST, ...OPUS_MAX },
+	{ id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6", contextWindow: 1000000, maxTokens: 64000, cost: SONNET_COST, ...SONNET },
 	{ id: "claude-haiku-4-5", name: "Claude Haiku 4.5", contextWindow: 200000, maxTokens: 64000, cost: HAIKU_COST, ...HAIKU },
 ];
 
@@ -44,26 +40,11 @@ test("NATIVE_MODELS reproduces the curated seed exactly (id, name, window, cost,
 	}
 });
 
-test("deriveWireModelId: only our `-1m` alias ids get the [1m] suffix", () => {
-	// Our explicit 1M alias entries strip `-1m` and add `[1m]`.
-	assert.equal(deriveWireModelId("claude-opus-4-8-1m"), "claude-opus-4-8[1m]");
-	assert.equal(deriveWireModelId("claude-sonnet-4-6-1m"), "claude-sonnet-4-6[1m]");
-	// A bare id is sent unchanged — even if it is natively 1M (the curated trick
-	// is alias-only, so a discovered 1M family like fable is NOT suffixed).
-	assert.equal(deriveWireModelId("claude-opus-4-8"), undefined);
-	assert.equal(deriveWireModelId("claude-haiku-4-5"), undefined);
-	assert.equal(deriveWireModelId("claude-fable-5"), undefined);
-});
-
-test("every seed 1M entry is a `-1m` alias that derives a [1m] wire id; nothing else does", () => {
+test("seed exposes natively-1M opus/sonnet (clean ids, no -1m alias) and 200K haiku", () => {
+	assert.ok(!NATIVE_MODELS.some((m) => m.id.endsWith("-1m")), "no -1m alias ids");
 	for (const m of NATIVE_MODELS) {
-		const wire = deriveWireModelId(m.id);
-		if (m.contextWindow === 1000000) {
-			assert.ok(m.id.endsWith("-1m"), `seed 1M entry ${m.id} should be a -1m alias`);
-			assert.match(wire as string, /\[1m\]$/);
-		} else {
-			assert.equal(wire, undefined);
-		}
+		const expected = m.id.startsWith("claude-haiku-") ? 200000 : 1000000;
+		assert.equal(m.contextWindow, expected, `${m.id} window`);
 	}
 });
 
@@ -76,24 +57,23 @@ test("ALLOWLIST_RE accepts current-gen ids and rejects aliases / dated / legacy 
 	}
 });
 
-test("discovery (A): a new catalog opus id appears as a 200K entry plus a 1M alias", () => {
+test("discovery (A): a new catalog opus id appears as a single native-1M entry", () => {
 	const models = buildNativeModels({
 		extraIds: ["claude-opus-4-9"],
 		catalog: new Map([
 			["claude-opus-4-9", { cost: { input: 6, output: 30, cacheRead: 0.6, cacheWrite: 7.5 }, maxTokens: 200000 }],
 		]),
 	});
-	const base = models.find((m) => m.id === "claude-opus-4-9");
-	const oneM = models.find((m) => m.id === "claude-opus-4-9-1m");
-	assert.ok(base && oneM, "both opus entries should be present");
-	assert.equal(base?.name, "Claude Opus 4.9");
-	assert.equal(base?.contextWindow, 200000);
-	assert.equal(oneM?.contextWindow, 1000000);
-	assert.deepEqual(base?.cost, { input: 6, output: 30, cacheRead: 0.6, cacheWrite: 7.5 }); // from catalog
-	assert.equal(base?.maxTokens, 200000); // from catalog
+	const opus9 = models.filter((m) => m.id === "claude-opus-4-9");
+	assert.equal(opus9.length, 1, "exactly one opus entry, no -1m alias");
+	const base = opus9[0];
+	assert.equal(base.name, "Claude Opus 4.9");
+	assert.equal(base.contextWindow, 1000000); // opus is natively 1M
+	assert.deepEqual(base.cost, { input: 6, output: 30, cacheRead: 0.6, cacheWrite: 7.5 }); // from catalog
+	assert.equal(base.maxTokens, 200000); // from catalog
 	// Conservative effort cap until an explicit overlay says xhigh is supported.
-	assert.deepEqual(base?.thinkingLevelMap, { xhigh: "max" });
-	assert.equal(deriveWireModelId(oneM!.id), "claude-opus-4-9[1m]");
+	assert.deepEqual(base.thinkingLevelMap, { xhigh: "max" });
+	assert.ok(!models.some((m) => m.id === "claude-opus-4-9-1m"), "no -1m alias");
 });
 
 test("overrides (B): a partial override merges over an existing id", () => {
@@ -176,7 +156,7 @@ test("discovery (Q2): a brand-new family (fable) auto-appears, fully derived fro
 
 test("the curated seed always survives discovery and allowlist defaults", () => {
 	const models = buildNativeModels({ extraIds: ["claude-opus-4-9", "garbage-id"] });
-	for (const id of ["claude-opus-4-8", "claude-opus-4-8-1m", "claude-sonnet-4-6", "claude-sonnet-4-6-1m", "claude-haiku-4-5"]) {
+	for (const id of ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5"]) {
 		assert.ok(models.some((m) => m.id === id), `seed id ${id} must remain`);
 	}
 	assert.ok(!models.some((m) => m.id === "garbage-id"));

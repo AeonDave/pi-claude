@@ -17,10 +17,9 @@
  * Discovery is family-AGNOSTIC: the allowlist accepts any `claude-<family>-<ver>`
  * id, so a newly-shipped family (e.g. `claude-fable-5`, `claude-mythos-1-0`)
  * appears on its own the moment Pi's catalog lists it — no edit here. Curated
- * families (opus/sonnet/haiku) keep their pinned cost/effort/`[1m]` policy for
+ * families (opus/sonnet/haiku) keep their pinned cost/effort/context window for
  * fidelity; for any other family everything (cost, window, effort) is *derived*
- * from Pi's catalog entry, with a single conservative entry (no `[1m]` alias,
- * since the 1M wire trick is only confirmed for the curated families).
+ * from Pi's catalog entry as a single conservative entry.
  *
  * Effort: the adaptive models send `output_config.effort` derived from Pi's
  * thinking level via `thinkingLevelMap`. Wire effort values are
@@ -29,12 +28,12 @@
  * thinking only). "ultracode" is a Claude Code UI label (xhigh + multi-agent
  * permission), not a wire value, so it is intentionally absent.
  *
- * 1M context: requested exactly like genuine Claude Code — by sending a `[1m]`
- * suffix on the WIRE model id (e.g. `claude-opus-4-8[1m]`) plus the
- * `context-1m-2025-08-07` beta. Confirmed against a real capture (genuine
- * `claude` sent `claude-opus-4-8[1m]`). Pi-facing ids stay clean; the suffix is
- * derived per request from the model's own context window via
- * `deriveWireModelId`, so there is no second map to keep in sync.
+ * 1M context: Opus 4.8/4.7/4.6 and Sonnet 4.6 are natively 1M, so each is a
+ * single entry exposing its full window under its clean id — no `[1m]` wire
+ * suffix and no `…-1m` opt-in alias. (The old suffix produced an invalid wire
+ * id like `claude-opus-4-8[1m]`, which Anthropic rejects with a 404; and the
+ * `context-1m-2025-08-07` beta is deliberately not advertised, so a plan
+ * without long-context access is never tripped into a 400/429.)
  */
 
 import type { Api, Model } from "@earendil-works/pi-ai";
@@ -49,7 +48,7 @@ export interface NativeModel {
 	maxTokens: number;
 	compat?: Model<Api>["compat"];
 	thinkingLevelMap?: Model<Api>["thinkingLevelMap"];
-	/** Per-model request headers (e.g. the 1M `anthropic-beta`), set at registration. */
+	/** Per-model request headers, merged at registration (e.g. from a `PI_CLAUDE_NATIVE_MODELS` override). */
 	headers?: Record<string, string>;
 }
 
@@ -76,8 +75,8 @@ type KnownFamily = "opus" | "sonnet" | "haiku";
 
 /** How a family maps to context-window entries. */
 type ContextPolicy =
-	| "dual" // a 200K entry plus a `<id>-1m` opt-in alias at 1M
-	| "single-200k"; // a single 200K entry
+	| "single-1m" // a single entry at the model's native 1M window
+	| "single-200k"; // a single entry at 200K
 
 interface FamilyDefault {
 	cost: NativeModel["cost"];
@@ -107,13 +106,13 @@ const FAMILY_DEFAULTS: Record<KnownFamily, FamilyDefault> = {
 		maxTokens: 128000,
 		compat: { forceAdaptiveThinking: true },
 		thinkingLevelMap: { xhigh: "max" },
-		context: "dual",
+		context: "single-1m",
 	},
 	sonnet: {
 		cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
 		maxTokens: 64000,
 		compat: { forceAdaptiveThinking: true },
-		context: "dual",
+		context: "single-1m",
 	},
 	haiku: {
 		cost: { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 },
@@ -175,18 +174,18 @@ export const SEED_IDS = [
 	"claude-haiku-4-5",
 ] as const;
 
-function displayName(family: string, versionLabel: string, oneM: boolean): string {
+function displayName(family: string, versionLabel: string): string {
 	const fam = family.charAt(0).toUpperCase() + family.slice(1);
-	return `Claude ${fam} ${versionLabel}${oneM ? " (1M)" : ""}`;
+	return `Claude ${fam} ${versionLabel}`;
 }
 
 /**
- * Expand a single id into its native model entries. Known families use their
+ * Expand a single id into its native model entry. Known families use their
  * curated `FAMILY_DEFAULTS` (+ any `ID_OVERRIDES`), so the seed is byte-stable;
  * unknown families (e.g. `fable`) derive cost / window / effort straight from
- * Pi's catalog and get a single conservative entry (no `[1m]` alias, since the
- * 1M wire trick is only confirmed for the curated families). Returns `[]` for
- * ids that should not be exposed.
+ * Pi's catalog. Every family yields a single entry at its native window (opus/
+ * sonnet 1M, haiku 200K, unknown → catalog). Returns `[]` for ids that should
+ * not be exposed.
  */
 function buildFamilyModels(id: string, fromCatalog?: CatalogEntry): NativeModel[] {
 	const parsed = parseModelId(id);
@@ -206,9 +205,9 @@ function buildFamilyModels(id: string, fromCatalog?: CatalogEntry): NativeModel[
 	// from the catalog (the only honest source for a model we don't curate).
 	const thinkingLevelMap = overlay?.thinkingLevelMap ?? known?.thinkingLevelMap ?? (known ? undefined : fromCatalog?.thinkingLevelMap);
 
-	const make = (entryId: string, oneM: boolean, contextWindow: number): NativeModel => ({
-		id: entryId,
-		name: displayName(family, versionLabel, oneM),
+	const make = (contextWindow: number): NativeModel => ({
+		id,
+		name: displayName(family, versionLabel),
 		reasoning,
 		input,
 		cost,
@@ -218,12 +217,11 @@ function buildFamilyModels(id: string, fromCatalog?: CatalogEntry): NativeModel[
 		...(thinkingLevelMap ? { thinkingLevelMap } : {}),
 	});
 
-	if (known?.context === "dual") {
-		return [make(id, false, 200000), make(`${id}-1m`, true, 1000000)];
-	}
-	// Known single-200K family → 200K. Unknown family → its real catalog window.
-	const baseContext = known ? 200000 : fromCatalog?.contextWindow ?? 200000;
-	return [make(id, false, baseContext)];
+	// Curated families carry their pinned native window (opus/sonnet 1M, haiku
+	// 200K) under their clean id — no `…-1m` alias. Unknown families use their
+	// real catalog window.
+	if (known) return [make(known.context === "single-1m" ? 1000000 : 200000)];
+	return [make(fromCatalog?.contextWindow ?? 200000)];
 }
 
 function isCompleteModel(value: ModelOverride): value is NativeModel {
@@ -301,17 +299,3 @@ export function buildNativeModels(opts?: {
  * overrides are layered on at registration time in `index.ts`.
  */
 export const NATIVE_MODELS: NativeModel[] = buildNativeModels();
-
-/**
- * Derive the wire model id for a request, or `undefined` when the id is sent
- * unchanged. The genuine Claude Code `[1m]` suffix is a *curated* trick we apply
- * ONLY to our own `…-1m` alias entries (which we build for the dual-context
- * families). It keys on the explicit `-1m` marker — never on context window
- * alone — so a model that is natively 1M but does not use the suffix (e.g. a
- * discovered new family like `claude-fable-5`) is sent unchanged. The Pi-facing
- * id stays clean: `claude-opus-4-8-1m` → `claude-opus-4-8[1m]`.
- */
-export function deriveWireModelId(id: string): string | undefined {
-	if (!id.endsWith("-1m")) return undefined;
-	return `${id.slice(0, -"-1m".length)}[1m]`;
-}

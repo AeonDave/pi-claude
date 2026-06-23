@@ -46,27 +46,28 @@ installing: `pi -e .`.
 
 | Model (Pi id) | Context | Max effort |
 |---------------|---------|------------|
-| `claude-opus-4-8` / `…-1m` | 200K / 1M | `xhigh` |
-| `claude-opus-4-7` / `…-1m` | 200K / 1M | `xhigh` |
-| `claude-opus-4-6` / `…-1m` | 200K / 1M | `max` |
-| `claude-sonnet-4-6` / `…-1m` | 200K / 1M | `max` |
+| `claude-opus-4-8` | 1M | `xhigh` |
+| `claude-opus-4-7` | 1M | `xhigh` |
+| `claude-opus-4-6` | 1M | `max` |
+| `claude-sonnet-4-6` | 1M | `max` |
 | `claude-haiku-4-5` | 200K | — (fast tier) |
 
-Each adaptive family ships a 200K entry (works on every plan) plus an opt-in
-`…-1m` 1M alias. **1M is opt-in on purpose:** genuine Claude Code only advertises
-long context (`context-1m-2025-08-07` beta + `[1m]` wire id) when it actually
-needs the 1M window, and a plan *without* long-context access returns
-400/429 on any request that advertises it. So the default `anthropic-beta` omits
-`context-1m`; the 1M alias adds it back as a per-model header and the `[1m]`
-suffix is derived per request from the model's own context window (no second map
-to maintain). Effort follows Pi's thinking level via `output_config.effort`.
+Opus 4.8/4.7/4.6 and Sonnet 4.6 are **natively 1M**, exposed as a single clean-id
+entry each at their full window; Haiku stays 200K. There is **no `[1m]` wire
+suffix and no `…-1m` opt-in alias** — the old suffix produced an invalid wire id
+(e.g. `claude-opus-4-8[1m]`) that Anthropic rejects with a `404 not_found`. The
+default `anthropic-beta` also omits `context-1m-2025-08-07`: these models don't
+need it to expose their window, and a plan *without* long-context access returns
+400/429 on any request that advertises it. If your subscription needs the beta to
+unlock >200K, add it via `PI_CLAUDE_NATIVE_ANTHROPIC_BETA`. Effort follows Pi's
+thinking level via `output_config.effort`.
 
 The list is **dynamic and family-agnostic**: the curated seed above is augmented
 at session start from Pi's built-in `anthropic` catalog and from your
 `PI_CLAUDE_NATIVE_MODELS` overrides — no source edits or reinstall. Discovery
 accepts **any** `claude-<family>-<version>` id, so when Anthropic ships a new
 family (e.g. **Fable**, Mythos) it appears on its own the moment Pi's catalog
-lists it: curated families keep their pinned cost/effort/`[1m]` policy, while a
+lists it: curated families keep their pinned cost/effort/context-window policy, while a
 new family derives everything (cost, window, effort) straight from the catalog.
 The subscription serves whichever your plan grants; an ungranted one simply
 errors at request time. Discovery surfaces every current-generation model your
@@ -83,8 +84,7 @@ catalog knows (so older 4.x point releases show too) — tighten the set with
 |--------------------|--------|
 | Bearer OAuth, `anthropic-beta` core flags, `x-app: cli`, `"You are Claude Code…"` identity, PascalCase tool names | Pi built-in (triggered by the OAuth token) |
 | `user-agent: claude-cli/<v> (external, cli)` | this extension (`headers`) |
-| 2.1.186 `anthropic-beta` set (normal-turn; `context-1m` added per-request for 1M models) | this extension (`headers` + per-model header, captured verbatim) |
-| `[1m]` wire model id for 1M models | this extension (`deriveWireModelId`, 1M entries only) |
+| 2.1.186 `anthropic-beta` set (normal-turn; no `context-1m`) | this extension (`headers`, captured verbatim) |
 | `x-anthropic-billing-header` as `system[0]` | this extension (`before_provider_request`) |
 | `metadata.user_id` (device/account/session ids) | this extension (read from `~/.claude.json`) |
 | system prompt free of the third-party-agent fingerprint | this extension (`sanitizeSystemPrompt` strips the "Pi documentation" block — confirmed to clear the classifier) |
@@ -92,7 +92,7 @@ catalog knows (so older 4.x point releases show too) — tighten the set with
 The billing header's `cc_version` is kept consistent with the `user-agent`
 version, and the `anthropic-beta` value is captured from a real `claude` request
 rather than guessed (Anthropic returns 400 on unexpected beta flags). The default
-set is a genuine **normal turn** (no `context-1m`); the 1M models add it back.
+set is a genuine **normal turn** (no `context-1m`); the natively-1M models expose their window without it.
 Anthropic also fingerprints the **system prompt** to flag third-party agent
 harnesses (a 400 *disguised* as `…draw from your extra usage…`). Bisection
 (`scripts/bisect-classifier.ts`) isolated Pi's tell to its meta-development

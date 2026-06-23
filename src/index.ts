@@ -28,7 +28,6 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	getAnthropicBeta,
-	getAnthropicBetaWith1m,
 	getBaseUrl,
 	getClaudeCodeEntrypoint,
 	getClaudeCodeVersion,
@@ -41,9 +40,9 @@ import {
 	PROVIDER_NAME,
 } from "./constants.ts";
 import { logNativeRequest } from "./debug.ts";
-import { ALLOWLIST_RE, buildNativeModels, type CatalogEntry, deriveWireModelId, type NativeModel } from "./models.ts";
+import { ALLOWLIST_RE, buildNativeModels, type CatalogEntry, type NativeModel } from "./models.ts";
 import { getApiKey, login, refreshToken } from "./oauth.ts";
-import { applyBillingHeader, applyMetadata, sanitizeSystemPrompt, setWireModel } from "./payload.ts";
+import { applyBillingHeader, applyMetadata, sanitizeSystemPrompt } from "./payload.ts";
 
 const STATUS_KEY = "claude-native";
 
@@ -82,23 +81,18 @@ export default function claudeProMaxNative(pi: ExtensionAPI) {
 		const signature = models.map((m) => `${m.id}@${m.contextWindow}`).join(",");
 		if (signature === lastSignature) return;
 		lastSignature = signature;
-		// 1M models opt into long-context via a per-model `anthropic-beta` that adds
-		// `context-1m-2025-08-07`. Per-model headers win over the provider header (Pi
-		// merges them last), so only the 1M entries advertise long-context — matching
-		// genuine Claude Code and keeping 200K models working on plans without it.
-		const oneMBeta = getAnthropicBetaWith1m();
-		const withHeaders = models.map((model) =>
-			model.contextWindow === 1000000
-				? { ...model, headers: { ...model.headers, "anthropic-beta": oneMBeta } }
-				: model,
-		);
+		// No per-model long-context header: the curated families are natively 1M,
+		// so they expose their full window under their clean id without the
+		// `context-1m-2025-08-07` beta — which a plan lacking long-context rejects
+		// with a 400/429. Force it back via PI_CLAUDE_NATIVE_ANTHROPIC_BETA only if
+		// your subscription needs it to unlock >200K.
 		try {
 			pi.registerProvider(PROVIDER_ID, {
 				name: PROVIDER_NAME,
 				baseUrl: getBaseUrl(),
 				api: "anthropic-messages",
 				headers,
-				models: withHeaders,
+				models,
 				oauth,
 			});
 		} catch (err) {
@@ -163,10 +157,6 @@ export default function claudeProMaxNative(pi: ExtensionAPI) {
 		let next = sanitizeSystemPrompt(event.payload, getSanitizeRules());
 		next = applyMetadata(next, getClaudeUserId());
 		next = applyBillingHeader(next, version, entrypoint);
-		// Request 1M context via the genuine `[1m]` wire model id where applicable
-		// (derived from the model's own context window — no separate map).
-		const wireModelId = ctx.model ? deriveWireModelId(ctx.model.id) : undefined;
-		if (wireModelId) next = setWireModel(next, wireModelId);
 		logNativeRequest(next, { model: ctx.model?.id, userAgent: getUserAgent(), version, entrypoint });
 		return next === event.payload ? undefined : next;
 	});

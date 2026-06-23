@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { applyBillingHeader, applyMetadata, sanitizeSystemPrompt, setWireModel } from "../src/payload.ts";
+import { applyBillingHeader, applyMetadata, sanitizeSystemPrompt } from "../src/payload.ts";
 
 const VERSION = "2.1.87";
 const ENTRYPOINT = "cli";
@@ -74,18 +74,6 @@ test("returns the payload unchanged when there is no user message", () => {
 test("ignores non-object payloads", () => {
 	assert.equal(applyBillingHeader(undefined, VERSION, ENTRYPOINT), undefined);
 	assert.equal(applyBillingHeader("nope", VERSION, ENTRYPOINT), "nope");
-});
-
-test("setWireModel rewrites the model id to the 1M wire id", () => {
-	const result = applyBillingHeader(basePayload(), VERSION, ENTRYPOINT);
-	const withWire = setWireModel(result, "claude-opus-4-5[1m]") as { model: string };
-	assert.equal(withWire.model, "claude-opus-4-5[1m]");
-});
-
-test("setWireModel is identity when already set, and skips non-objects", () => {
-	const payload = { model: "claude-opus-4-8[1m]" };
-	assert.equal(setWireModel(payload, "claude-opus-4-8[1m]"), payload);
-	assert.equal(setWireModel(undefined, "x"), undefined);
 });
 
 const RULES = {

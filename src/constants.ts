@@ -169,12 +169,12 @@ export function getBaseUrl(): string {
  * normal turn (`claude -p "say hello"`, 2026). This REPLACES Pi's per-model beta
  * logic so the header is byte-identical to Claude Code's everyday request.
  *
- * `context-1m-2025-08-07` is intentionally NOT here: genuine Claude Code only
- * sends it when it actually requests the 1M window (paired with the `[1m]` wire
- * id), and a subscription without long-context access returns 400/429 on any
- * request that advertises it. It is added per-request for 1M models only (see
- * `getAnthropicBetaWith1m` / `ONE_M_BETA`). With it removed, this set matches a
- * genuine `claude` opus normal turn byte-for-byte (verified by capture).
+ * `context-1m-2025-08-07` is intentionally NOT here: a subscription without
+ * long-context access returns 400/429 on any request that advertises it, and
+ * the curated families are natively 1M so they don't need it to expose their
+ * full window. With it removed, this set matches a genuine `claude` opus normal
+ * turn byte-for-byte (verified by capture). If your plan needs the beta to
+ * unlock >200K, add it via `PI_CLAUDE_NATIVE_ANTHROPIC_BETA`.
  *
  * Anthropic returns a 400 on unexpected beta values, so do not edit this by
  * guessing — re-capture from your installed `claude` (see VERIFY.md) and set
@@ -193,9 +193,6 @@ export const DEFAULT_ANTHROPIC_BETA = [
 	"extended-cache-ttl-2025-04-11",
 ].join(",");
 
-/** The beta flag that opts a single request into the 1M context window. */
-export const ONE_M_BETA = "context-1m-2025-08-07";
-
 /**
  * The `anthropic-beta` header to send: `PI_CLAUDE_NATIVE_ANTHROPIC_BETA` env →
  * captured fingerprint → the hardcoded captured set. The fingerprint pairs this
@@ -205,19 +202,6 @@ export function getAnthropicBeta(): string {
 	const override = process.env.PI_CLAUDE_NATIVE_ANTHROPIC_BETA?.trim();
 	if (override && override.length > 0) return override;
 	return readFingerprint()?.anthropicBeta?.trim() || DEFAULT_ANTHROPIC_BETA;
-}
-
-/**
- * The `anthropic-beta` value for 1M-context models: the base set plus
- * `context-1m-2025-08-07` (deduplicated). Genuine Claude Code adds exactly this
- * flag when requesting the 1M window. Applied as a per-model header so only the
- * 1M model entries advertise long-context.
- */
-export function getAnthropicBetaWith1m(): string {
-	const base = getAnthropicBeta();
-	const flags = base.split(",").map((flag) => flag.trim()).filter(Boolean);
-	if (!flags.includes(ONE_M_BETA)) flags.push(ONE_M_BETA);
-	return flags.join(",");
 }
 
 // ---------------------------------------------------------------------------

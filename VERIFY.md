@@ -13,13 +13,12 @@ comes from. Verified against the installed `@earendil-works/pi-ai` /
 |--------|--------------------|-------------|--------|
 | `authorization: Bearer sk-ant-oat…` | ✅ | ✅ | Pi built-in (triggered by our OAuth token) |
 | `anthropic-beta` (2.1.186 **normal-turn** set, no `context-1m`) | ✅ | ✅ | **plugin** (`headers`, captured verbatim) |
-| `context-1m-2025-08-07` only on 1M-window requests | ✅ | ✅ | **plugin** (per-model header on `…-1m` entries) |
+| `context-1m-2025-08-07` advertised | only on true 1M-window turns | not by default | **plugin** (curated families are natively 1M; add via `PI_CLAUDE_NATIVE_ANTHROPIC_BETA` if your plan needs it) |
 | `user-agent: claude-cli/<v> (external, cli)` | ✅ | ✅ | **plugin** (`headers` override) |
 | `x-app: cli` | ✅ | ✅ | Pi built-in (plugin restates it) |
 | `system[0]` = `x-anthropic-billing-header: …` | ✅ | ✅ | **plugin** (`before_provider_request`) |
 | `system[1]` = `You are Claude Code, …` identity | ✅ | ✅ | Pi built-in |
 | Tool names PascalCase (`Read`, `Bash`, …) + round-trip | ✅ | ✅ | Pi built-in (`toClaudeCodeName`) |
-| 1M models send `[1m]` wire model id (e.g. `claude-opus-4-8[1m]`) | ✅ | ✅ | **plugin** (`deriveWireModelId`, 1M entries only) |
 | `metadata.user_id` (device/account/session ids) | ✅ | ✅ | **plugin** (read from `~/.claude.json`) |
 | `cc_version` consistent with `user-agent` version | ✅ | ✅ | **plugin** (one source of truth) |
 | System prompt clears the third-party classifier | ✅ | ✅ | **plugin** (`sanitizeSystemPrompt` strips the "Pi documentation" block) |
@@ -131,8 +130,9 @@ the only value worth re-capturing on an update is the beta set — which this do
 ## Matching the `anthropic-beta` set exactly
 
 The default is the **exact set captured from `claude` 2.1.186** (`src/constants.ts`
-`DEFAULT_ANTHROPIC_BETA`), including `context-1m-2025-08-07`, `effort-2025-11-24`,
-`context-management-2025-06-27`, `prompt-caching-scope-2026-01-05` and the rest.
+`DEFAULT_ANTHROPIC_BETA`), including `effort-2025-11-24`,
+`context-management-2025-06-27`, `prompt-caching-scope-2026-01-05` and the rest
+(but **not** `context-1m-2025-08-07` — see "The 1M / long-context trap" below).
 The set is **version-specific** and Anthropic returns a **400 on unexpected beta
 values**, so it is captured verbatim, never guessed.
 
@@ -194,13 +194,24 @@ returns real responses on opus and haiku.
 
 ## The 1M / long-context trap
 
-Genuine Claude Code only advertises long context (`context-1m-2025-08-07` beta +
-`[1m]` wire id) when it actually needs the 1M window. A plan **without**
-long-context access returns `400`/`429` ("long context beta is not available")
-on *any* request that advertises it — including 200K models, because the header
-alone triggers it. So `context-1m` is **not** in the default `anthropic-beta`;
-only the `…-1m` model entries add it. With it removed, the default set matches a
-genuine `claude` opus normal turn byte-for-byte.
+Opus 4.8/4.7/4.6 and Sonnet 4.6 are **natively 1M** — they expose their full
+window under their clean id, so this plugin sends neither the `[1m]` wire suffix
+nor the `context-1m-2025-08-07` beta. Both were the old opt-in mechanism for
+models that defaulted to 200K, and both backfire now:
+
+- The `[1m]` suffix produces an invalid wire id like `claude-opus-4-8[1m]`, which
+  Anthropic rejects with a `404 not_found_error: model: claude-opus-4-8[1m]`.
+  (`[1m]` is Claude Code's *internal* model id; it is not a valid wire model on
+  this path — pi also cannot send the `?beta=true` query param that genuine CC
+  pairs it with, since that lives in Pi's HTTP layer.)
+- The `context-1m` beta makes a plan **without** long-context access return
+  `400`/`429` ("long context beta is not available") on *any* request that
+  advertises it — the header alone triggers it.
+
+With both omitted, the default set matches a genuine `claude` opus normal turn
+byte-for-byte, and every curated model resolves on its clean id. If your
+subscription genuinely needs the beta to unlock >200K, add it verbatim via
+`PI_CLAUDE_NATIVE_ANTHROPIC_BETA`.
 
 ## Known, intentional residual differences
 
