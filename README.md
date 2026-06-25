@@ -22,18 +22,34 @@ Code. Your built-in `anthropic` provider and API-key auth are untouched.
 
 ## Install
 
-From the repo root, install the extension and verify:
+Install straight from GitHub and verify:
 
 ```bash
-pi install .
+pi install git:github.com/AeonDave/pi-claude
 pi list
 ```
 
-`pi install`/`pi remove` write to `~/.pi/agent/settings.json` (add `-l` for the
-project's `.pi/settings.json`). You do **not** need `npm install` to use the
-extension — Pi provides the `@earendil-works/*` peer dependencies; `npm install`
-is only for development (typecheck/tests). To try it for a single run without
-installing: `pi -e .`.
+Pin a release with `@<ref>` (e.g. `git:github.com/AeonDave/pi-claude@v1.0.0`).
+
+To hack on it instead, install from a local checkout — `pi install <path>`
+registers the extension the same way, but lets you edit `src/` and reinstall:
+
+```bash
+git clone https://github.com/AeonDave/pi-claude
+cd pi-claude
+pi install .          # or: pi install /path/to/pi-claude
+```
+
+Useful follow-ups (pass the **same source** you installed with):
+
+- `pi update git:github.com/AeonDave/pi-claude` — pull the latest after a release.
+- `pi remove git:github.com/AeonDave/pi-claude` — uninstall.
+- `pi -e ./src/index.ts` — load it for a single run without installing.
+
+`pi install`/`pi remove` write to `~/.pi/agent/settings.json`; add `-l` to scope
+them to the project's `.pi/settings.json` instead. You do **not** need
+`npm install` to use the extension — Pi supplies the `@earendil-works/*` peer
+dependencies; `npm install` is only for development (typecheck/tests).
 
 ## Usage
 
