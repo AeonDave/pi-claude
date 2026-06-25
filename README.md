@@ -182,6 +182,29 @@ When the fix is stable, fold the new anchor into `DEFAULT_SYSTEM_ANCHORS` in
 entrypoint) straight from the extension, so they stay consistent with what Pi
 actually sends.
 
+## "No API key found for anthropic" (stale / wrong model)
+
+This provider intentionally reuses the **same model ids** as Pi's builtin
+`anthropic` provider (`claude-opus-4-8`, …) — the wire id must stay clean (a
+suffix like `[1m]` 404s). The downside: any selection that resolves by **id
+alone** (a fuzzy `--model` pattern, a leftover session/settings selection, or the
+moment before this provider finishes registering) can bind to
+`anthropic/claude-opus-4-8`, which needs an API key — so you get `No API key found
+for anthropic` even though `/model` lists opus under `claude-pro-max-native`.
+
+Fix: select the **provider-qualified** id and confirm:
+
+```
+/model            → pick the "claude-pro-max-native/" variant (re-select it even
+                    if it already looks chosen — that clears a stale binding)
+/claude-native    → must show "active here: yes"
+```
+
+`/claude-native` now **warns explicitly** when the selected model is
+`anthropic/<id>` while the same id exists under this provider, so the silent
+fallback is visible. Avoid bare `--model claude-opus-4-8`; use
+`--model claude-pro-max-native/claude-opus-4-8`.
+
 ## Verifying
 
 `VERIFY.md` documents how to confirm equality on the wire: a zero-dependency

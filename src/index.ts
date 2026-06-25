@@ -180,6 +180,13 @@ export default function claudeProMaxNative(pi: ExtensionAPI) {
 			const active = isNativeOAuth(ctx);
 			const model = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "(none)";
 			const nativeModels = ctx.modelRegistry.getAll().filter((m) => m.provider === PROVIDER_ID);
+			const nativeIds = new Set(nativeModels.map((m) => m.id));
+			// Stale-model footgun: the native provider intentionally reuses the
+			// builtin `anthropic` ids (e.g. claude-opus-4-8), so a selection that
+			// resolves by id alone can silently bind to `anthropic/<id>` (which needs
+			// an API key) instead of this provider. Detect and call it out.
+			const collides =
+				!!ctx.model && ctx.model.provider === "anthropic" && nativeIds.has(ctx.model.id);
 			const lines = [
 				`${PROVIDER_NAME} (${PROVIDER_ID})`,
 				`  active here:    ${active ? "yes" : "no"}`,
@@ -189,10 +196,17 @@ export default function claudeProMaxNative(pi: ExtensionAPI) {
 				`  cc_entrypoint:  ${getClaudeCodeEntrypoint()}`,
 				`  user-agent:     ${getUserAgent()}`,
 			];
-			if (!active) {
+			if (collides) {
+				lines.push(
+					"",
+					`⚠ STALE MODEL: selected anthropic/${ctx.model?.id}, but ${PROVIDER_ID}/${ctx.model?.id} exists.`,
+					`  Same id under both providers — you're on the builtin (API-key) one, not the subscription.`,
+					`  Fix: /model → pick the "${PROVIDER_ID}/" variant (re-select it even if it looks chosen).`,
+				);
+			} else if (!active) {
 				lines.push("", `Run /login → "${PROVIDER_NAME}", then pick a model with /model.`);
 			}
-			ctx.ui.notify(lines.join("\n"), "info");
+			ctx.ui.notify(lines.join("\n"), collides ? "warning" : "info");
 		},
 	});
 }

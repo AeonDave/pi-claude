@@ -78,6 +78,16 @@ Prove equality against genuine Claude Code with the harness in `VERIFY.md`:
 capture both clients via `scripts/capture-proxy.mjs`, then
 `node scripts/compare-requests.mjs <claude.json> <pi.json>`.
 
+## Known footguns
+
+- **Shared model ids ↔ stale/wrong provider.** The provider reuses the builtin
+  `anthropic` ids (the wire id must stay clean — a suffix 404s), so a selection
+  resolved by id alone can bind to `anthropic/<id>` (needs an API key) instead of
+  the subscription, surfacing as `No API key found for anthropic` even when
+  `/model` shows the native variant. `/claude-native` detects this collision
+  (selected `anthropic/<id>` while `PROVIDER_ID/<id>` exists) and warns. Mitigation
+  is selection hygiene (provider-qualified id), not renaming.
+
 ## Active decisions
 
 - Profile is the interactive CLI one (`cc_entrypoint=cli`, `user-agent … (external, cli)`,
