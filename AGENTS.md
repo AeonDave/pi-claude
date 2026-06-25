@@ -29,7 +29,7 @@ The extension only adds what Pi omits.
 - `src/payload.ts` — pure: idempotent `system[0]` billing-header injection, `sanitizeSystemPrompt`, `applyMetadata`.
 - `src/debug.ts` — optional `PI_CLAUDE_NATIVE_DEBUG` body logging.
 - `src/index.ts` — factory: `registerProvider` (seed at load, refreshed from `ctx.modelRegistry.getAll()` on `session_start`, carrying the full `CatalogEntry`) + `before_provider_request` (sanitize → metadata → billing) + status + `/claude-native`.
-- `scripts/` — `capture-proxy.mjs`, mitmproxy addon, `compare-requests.mjs`, `bisect-classifier.ts` (isolate the classifier trigger), and **`capture-fingerprint.mjs`** (`npm run capture:fingerprint [--apply]`: spawns the proxy, drives `claude -p` across models, distills version + `anthropic-beta`, diffs vs current defaults, writes `captures/fingerprint-<v>.json` + report, and with `--apply` installs the fingerprint the extension auto-adopts).
+- `scripts/` — `capture-proxy.mjs`, mitmproxy addon, `compare-requests.mjs`, the classifier pair **`dump-system-prompt.mjs`** (Pi extension: dumps the full system prompt Pi sends on a given machine to `~/claude-native-prompt-dump.json`) + **`bisect-classifier.ts`** (`npm run classifier:find` = `auto` mode: reads that dump, replays with the live token removing one paragraph at a time, prints the trigger paragraph(s) and a ready `PI_CLAUDE_NATIVE_SYSTEM_ANCHORS`; version/beta/entrypoint come from `constants.ts`, no duplicated wire values), and **`capture-fingerprint.mjs`** (`npm run capture:fingerprint [--apply]`: spawns the proxy, drives `claude -p` across models, distills version + `anthropic-beta`, diffs vs current defaults, writes `captures/fingerprint-<v>.json` + report, and with `--apply` installs the fingerprint the extension auto-adopts).
 
 ## Invariants (do not break)
 
@@ -51,7 +51,7 @@ The extension only adds what Pi omits.
   error. `sanitizeSystemPrompt` strips Pi's meta-development "Pi documentation"
   paragraph (the isolated trigger) so requests succeed — do not drop this hook.
   Re-bisect with `scripts/bisect-classifier.ts` if Pi's prompt changes and the
-  error returns; add the new trigger to `DEFAULT_SYSTEM_ANCHORS`.
+  error returns. Fast path when a machine starts 400-ing: `pi -e ./scripts/dump-system-prompt.mjs -e ./src/index.ts` (one message) then `npm run classifier:find` to auto-isolate the new trigger; add it to `DEFAULT_SYSTEM_ANCHORS` (or set `PI_CLAUDE_NATIVE_SYSTEM_ANCHORS` for a no-code fix). The prompt differs per machine (Pi version, project `AGENTS.md`, installed skill catalog), so the default anchor can miss on a host that worked elsewhere.
 - **Pure modules stay pure.** `billing-header.ts` and `payload.ts` import nothing
   from Pi. Any change there needs tests.
 

@@ -24,7 +24,8 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "node --import tsx --test test/billing-header.test.ts test/payload.test.ts test/models.test.ts",
-    "capture:fingerprint": "node scripts/capture-fingerprint.mjs"
+    "capture:fingerprint": "node scripts/capture-fingerprint.mjs",
+    "classifier:find": "node --import tsx scripts/bisect-classifier.ts auto"
   },
   "peerDependencies": {
     "@earendil-works/pi-ai": "*",

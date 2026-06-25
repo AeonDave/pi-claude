@@ -171,8 +171,9 @@ true`, a **minimal** system prompt returns a normal response while the full Pi
 prompt 400s.
 
 **Isolated by bisection** (`scripts/bisect-classifier.ts`, which replays this
-extension's exact request while varying a slice of Pi's real captured system
-prompt): Pi's trigger is its meta-development **"Pi documentation"** paragraph
+extension's exact request — version/beta/entrypoint read from `src/constants.ts`
+— while varying Pi's real system prompt): Pi's trigger is its meta-development
+**"Pi documentation"** paragraph
 (custom providers / adding models / SDK / pi packages) — it reads as an agent
 building API integrations. Removing that whole paragraph from the full prompt
 returns 200; the skills/tool catalog, the project `AGENTS.md`, and the rest all
@@ -184,9 +185,14 @@ returns real responses on opus and haiku.
   uses the same paragraph-removal technique against a different phrase
   (`"Here is some useful information about the environment you are running in:"`,
   which Pi does not send).
-- If Pi's prompt changes and the error returns, re-bisect:
-  `node --import tsx scripts/bisect-classifier.ts empty full 0:<half> <half>:<end>`,
-  follow the failing half down to the paragraph, and add its anchor.
+- If Pi's prompt changes and the error returns, on the failing machine run
+  `pi -e ./scripts/dump-system-prompt.mjs -e ./src/index.ts` (send one message —
+  it writes `~/claude-native-prompt-dump.json`), then `npm run classifier:find`
+  (`bisect-classifier.ts auto`): it removes one paragraph at a time until the
+  400 flips to 200 and prints a ready `PI_CLAUDE_NATIVE_SYSTEM_ANCHORS`. For a
+  manual binary search use the spec mode:
+  `node --import tsx scripts/bisect-classifier.ts empty full 0:<half> <half>:<end>`.
+  Add the isolated anchor to `DEFAULT_SYSTEM_ANCHORS`.
 - **Token note:** with a large skills install, Pi's `<available_skills>` catalog
   can dominate the system prompt (the bulk of its tokens, repeated every turn).
   Trimming it is a provider-agnostic cost optimization, so it lives in the

@@ -98,7 +98,9 @@ harnesses (a 400 *disguised* as `…draw from your extra usage…`). Bisection
 (`scripts/bisect-classifier.ts`) isolated Pi's tell to its meta-development
 **"Pi documentation"** block, which the extension strips by default — that alone
 clears the rejection (verified end-to-end: `pi -p` then returns real responses).
-See [VERIFY.md](VERIFY.md) for the full analysis and a wire-level harness.
+See [VERIFY.md](VERIFY.md) for the full analysis and a wire-level harness, and
+**"If the classifier 400 returns"** below for the one-command diagnosis when the
+upstream prompt changes.
 
 ## Configuration
 
@@ -148,6 +150,38 @@ rest:
   changed. With `--apply`, the extension auto-adopts the captured version + beta
   (no code edit). Re-run it whenever `claude` updates or Anthropic starts 400-ing.
 
+## If the classifier 400 returns
+
+If a machine starts failing with `400 …draw from your extra usage…`, the system
+prompt changed (a Pi update, a different project `AGENTS.md`, or a new skill
+catalog) and the default anchor no longer matches the paragraph that trips
+Anthropic's third-party-agent classifier. It is **not** a billing/plan problem —
+the same token returns 200 on a minimal prompt. Diagnose it on the failing
+machine in two steps:
+
+```bash
+# 1) Dump the EXACT system prompt Pi sends here (writes ~/claude-native-prompt-dump.json).
+#    Load the dumper alongside the provider, then send one short message (it still 400s).
+pi -e ./scripts/dump-system-prompt.mjs -e ./src/index.ts
+
+# 2) Auto-find the offending paragraph and print a ready anchor list.
+npm run classifier:find        # = node --import tsx scripts/bisect-classifier.ts auto
+```
+
+`classifier:find` replays the request with your live token, removing one
+paragraph at a time until the 400 flips to 200, then prints the exact
+`PI_CLAUDE_NATIVE_SYSTEM_ANCHORS` value to set (it keeps the default anchor and
+adds the new trigger). Apply it without touching code:
+
+```bash
+export PI_CLAUDE_NATIVE_SYSTEM_ANCHORS='["Pi documentation (read only when","<new trigger>"]'
+```
+
+When the fix is stable, fold the new anchor into `DEFAULT_SYSTEM_ANCHORS` in
+`src/constants.ts`. Both scripts read the wire fingerprint (version, beta,
+entrypoint) straight from the extension, so they stay consistent with what Pi
+actually sends.
+
 ## Verifying
 
 `VERIFY.md` documents how to confirm equality on the wire: a zero-dependency
@@ -165,9 +199,12 @@ npm test
 
 `billing-header.ts`, `payload.ts`, and `models.ts` are pure (no Pi imports) and
 unit-tested, including a golden lock on the billing-header algorithm. The
-`scripts/` folder holds the wire tooling: `capture-proxy.mjs`,
-`compare-requests.mjs`, `capture-fingerprint.mjs`, and `bisect-classifier.ts`.
-See [AGENTS.md](AGENTS.md) for architecture and contributor guidance.
+`scripts/` folder holds the wire tooling: `capture-proxy.mjs` (+ `mitmproxy_dump.py`
+fallback) for capture, `compare-requests.mjs` for the fidelity checklist,
+`capture-fingerprint.mjs` to refresh version + beta after a `claude` update, and
+the classifier pair `dump-system-prompt.mjs` (full system-prompt dump) +
+`bisect-classifier.ts` (`npm run classifier:find` auto-isolates the trigger
+paragraph). See [AGENTS.md](AGENTS.md) for architecture and contributor guidance.
 
 ## License
 
