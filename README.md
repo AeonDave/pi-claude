@@ -2,7 +2,8 @@
 
 A [Pi](https://github.com/earendil-works/pi-mono) extension that adds a **Claude
 Pro/Max Native** entry to `/login` and drives your Claude subscription with
-requests that match the genuine **Claude Code CLI** byte-for-byte.
+requests that carry the genuine **Claude Code CLI** client fingerprint, so
+Anthropic's backend accepts them like the real client.
 
 > [!WARNING]
 > Using a Claude subscription from a third-party harness is your own
@@ -23,10 +24,10 @@ Code. Your built-in `anthropic` provider and API-key auth are untouched.
 
 From the repo root, install the extension and verify:
 
-   ```bash
-   pi install .
-   pi list
-   ```
+```bash
+pi install .
+pi list
+```
 
 `pi install`/`pi remove` write to `~/.pi/agent/settings.json` (add `-l` for the
 project's `.pi/settings.json`). You do **not** need `npm install` to use the
@@ -84,7 +85,7 @@ catalog knows (so older 4.x point releases show too) — tighten the set with
 |--------------------|--------|
 | Bearer OAuth, `anthropic-beta` core flags, `x-app: cli`, `"You are Claude Code…"` identity, PascalCase tool names | Pi built-in (triggered by the OAuth token) |
 | `user-agent: claude-cli/<v> (external, cli)` | this extension (`headers`) |
-| 2.1.186 `anthropic-beta` set (normal-turn; no `context-1m`) | this extension (`headers`, captured verbatim) |
+| captured `anthropic-beta` set (2.1.186 normal-turn; no `context-1m`) | this extension (`headers`, captured verbatim) |
 | `x-anthropic-billing-header` as `system[0]` | this extension (`before_provider_request`) |
 | `metadata.user_id` (device/account/session ids) | this extension (read from `~/.claude.json`) |
 | system prompt free of the third-party-agent fingerprint | this extension (`sanitizeSystemPrompt` strips the "Pi documentation" block — confirmed to clear the classifier) |
@@ -123,9 +124,9 @@ env vars below pin them when you want full control.
 | `PI_CLAUDE_NATIVE_USER_ID` / `PI_CLAUDE_NATIVE_NO_METADATA` | _(read `~/.claude.json`)_ | Override or disable the `metadata.user_id` value. |
 
 > [!TIP]
-> Want to cut input-token cost? Pi's `<available_skills>` catalog can be ~86% of
-> the system prompt. That's a general (provider-agnostic) concern, so it lives in
-> a separate extension — **pi-skill-optimizer** — rather than here.
+> Want to cut input-token cost? Pi's `<available_skills>` catalog can dominate the
+> system prompt. That's a general (provider-agnostic) concern, so it's out of
+> scope here — trim it with a dedicated skill-optimizer extension.
 
 ## Staying current with Claude Code updates
 
