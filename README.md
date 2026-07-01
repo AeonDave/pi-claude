@@ -29,7 +29,7 @@ pi install git:github.com/AeonDave/pi-claude
 pi list
 ```
 
-Pin a release with `@<ref>` (e.g. `git:github.com/AeonDave/pi-claude@v1.0.0`).
+Pin a release with `@<ref>` (e.g. `git:github.com/AeonDave/pi-claude@v1.1.0`).
 
 To hack on it instead, install from a local checkout — `pi install <path>`
 registers the extension the same way, but lets you edit `src/` and reinstall:
@@ -91,9 +91,11 @@ errors at request time. Discovery surfaces every current-generation model your
 catalog knows (so older 4.x point releases show too) — tighten the set with
 `PI_CLAUDE_NATIVE_MODELS_ALLOW` (a regex) if you only want the latest.
 
-> Caveat: a *brand-new* model only auto-appears once **Pi's** catalog lists it
-> (via a Pi update). To use one before that, add it with `PI_CLAUDE_NATIVE_MODELS`
-> (one line) — no reinstall.
+> Caveat: by default a *brand-new* model only auto-appears once **Pi's** catalog
+> lists it (via a Pi update). To get it sooner, either enable **live discovery**
+> (`PI_CLAUDE_NATIVE_LIVE_DISCOVERY=1` — queries Anthropic's `/v1/models` with your
+> subscription token at session start and caches the result as a fresh local
+> fallback), or add it with `PI_CLAUDE_NATIVE_MODELS` (one line) — no reinstall.
 
 ## How it works
 
@@ -135,6 +137,8 @@ env vars below pin them when you want full control.
 | `PI_CLAUDE_NATIVE_DEBUG` | _(off)_ | JSONL path; logs the transformed body per request. |
 | `PI_CLAUDE_NATIVE_MODELS` / `…_FILE` | _(none)_ | JSON array of model overrides (inline or file) merged over the list. |
 | `PI_CLAUDE_NATIVE_MODELS_ALLOW` | _(built-in regex)_ | Regex for which `anthropic` catalog ids are auto-exposed (tighten to hide older models). |
+| `PI_CLAUDE_NATIVE_LIVE_DISCOVERY` | _(off)_ | Opt-in: query Anthropic's live `/v1/models` at session start (once per process) so a new model appears the day it ships; result persisted as the local fallback. Best-effort, silent fallback to cache + seed. |
+| `PI_CLAUDE_NATIVE_MODELS_CACHE` | `~/.pi/claude-native-models.json` | Path to the persisted discovery cache (the auto-updated local seed/fallback). |
 | `PI_CLAUDE_NATIVE_SYSTEM_ANCHORS` | `["Pi documentation (read only when"]` | JSON `[string]`; drops whole prompt paragraphs containing an anchor (the classifier fix). |
 | `PI_CLAUDE_NATIVE_SYSTEM_REPLACEMENTS` | _(built-in rule)_ | JSON `[{match,replacement}]` literal scrub of system-prompt text. |
 | `PI_CLAUDE_NATIVE_USER_ID` / `PI_CLAUDE_NATIVE_NO_METADATA` | _(read `~/.claude.json`)_ | Override or disable the `metadata.user_id` value. |

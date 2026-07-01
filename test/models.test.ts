@@ -105,10 +105,14 @@ test("overrides (B): a complete new model is appended; an incomplete one is skip
 	assert.ok(!models.some((m) => m.id === "broken-model"));
 });
 
-test("parseModelId: known families need a minor; new families accept 1- or 2-segment versions", () => {
-	// known families: major-minor required (bare legacy ids skipped)
+test("parseModelId: known families accept major-minor + new bare-major generations, but hide legacy bare aliases", () => {
+	// known families: major-minor always accepted
 	assert.deepEqual(parseModelId("claude-opus-4-8"), { family: "opus", versionLabel: "4.8" });
-	assert.equal(parseModelId("claude-opus-4"), null); // bare legacy → skipped
+	assert.equal(parseModelId("claude-opus-4"), null); // bare legacy (duplicates curated 4.x) → skipped
+	// bare-major NEW generation surfaces (newer major than anything curated): the
+	// real Sonnet 5 id is `claude-sonnet-5`, and a future `claude-opus-5` too.
+	assert.deepEqual(parseModelId("claude-sonnet-5"), { family: "sonnet", versionLabel: "5" });
+	assert.deepEqual(parseModelId("claude-opus-5"), { family: "opus", versionLabel: "5" });
 	// new families: appear on their own (the Q2 goal)
 	assert.deepEqual(parseModelId("claude-fable-5"), { family: "fable", versionLabel: "5" });
 	assert.deepEqual(parseModelId("claude-mythos-1-0"), { family: "mythos", versionLabel: "1.0" });
@@ -152,6 +156,43 @@ test("discovery (Q2): a brand-new family (fable) auto-appears, fully derived fro
 	assert.deepEqual(fable?.compat, { forceAdaptiveThinking: true });
 	// no [1m] alias for an unknown family (the 1M wire trick is curated-only)
 	assert.ok(!models.some((m) => m.id === "claude-fable-5-1m"));
+});
+
+test("the extension hardwires NO sonnet-5/mythos-5 — they come only from Pi's catalog", () => {
+	// Guard the user's intent: nothing beyond the current curated seed is baked in,
+	// so new models are never a code edit — they arrive via ctx.modelRegistry.
+	const seedIds = NATIVE_MODELS.map((m) => m.id);
+	assert.deepEqual(seedIds, [
+		"claude-opus-4-8",
+		"claude-opus-4-7",
+		"claude-opus-4-6",
+		"claude-sonnet-4-6",
+		"claude-haiku-4-5",
+	]);
+});
+
+test("discovery reads NEW anthropic models from Pi's catalog: claude-sonnet-5 + a new family (claude-mythos-5)", () => {
+	// Exactly what refreshModels feeds in from ctx.modelRegistry.getAll(): the
+	// extension carries no hardwired sonnet-5/mythos-5 — they appear purely because
+	// Pi's anthropic catalog lists them. This is the "just read the anthropic
+	// models" path, incl. a bare-major id and a brand-new family.
+	const catalog = new Map([
+		["claude-sonnet-5", { cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, maxTokens: 64000, contextWindow: 1000000, reasoning: true, input: ["text", "image"] as ("text" | "image")[] }],
+		["claude-mythos-5", { cost: { input: 7, output: 35, cacheRead: 0.7, cacheWrite: 8.75 }, maxTokens: 32000, contextWindow: 500000, reasoning: true, input: ["text", "image"] as ("text" | "image")[], thinkingLevelMap: { xhigh: "xhigh" as const } }],
+	]);
+	const models = buildNativeModels({ extraIds: [...catalog.keys()], catalog });
+	// bare-major known family: surfaces, curated sonnet policy pins native 1M
+	const s5 = models.find((m) => m.id === "claude-sonnet-5");
+	assert.ok(s5, "sonnet-5 discovered from catalog");
+	assert.equal(s5?.name, "Claude Sonnet 5");
+	assert.equal(s5?.contextWindow, 1000000);
+	assert.deepEqual(s5?.cost, SONNET_COST); // carried from the catalog
+	// brand-new family: fully derived from the catalog, zero code edits
+	const mythos = models.find((m) => m.id === "claude-mythos-5");
+	assert.ok(mythos, "mythos-5 (unknown family) discovered from catalog");
+	assert.equal(mythos?.name, "Claude Mythos 5");
+	assert.equal(mythos?.contextWindow, 500000); // unknown family → catalog window
+	assert.deepEqual(mythos?.cost, { input: 7, output: 35, cacheRead: 0.7, cacheWrite: 8.75 });
 });
 
 test("the curated seed always survives discovery and allowlist defaults", () => {

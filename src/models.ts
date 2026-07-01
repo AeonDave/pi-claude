@@ -9,9 +9,9 @@
  * The list is built, not hand-written, from three layers (see `buildNativeModels`):
  *
  *   1. a curated SEED of known ids (always present — works offline / at load);
- *   2. extra ids discovered at runtime from Pi's built-in `anthropic` catalog
- *      (`ctx.modelRegistry.getAll()`), so a newly-shipped Claude appears on its
- *      own without editing this file; and
+ *   2. extra ids discovered at runtime (Pi's built-in `anthropic` catalog and,
+ *      opt-in, Anthropic's live `/v1/models` — see `discovery.ts` / `index.ts`),
+ *      so a newly-shipped Claude appears on its own without editing this file; and
  *   3. user overrides from `PI_CLAUDE_NATIVE_MODELS` / `…_FILE` (highest priority).
  *
  * Discovery is family-AGNOSTIC: the allowlist accepts any `claude-<family>-<ver>`
@@ -92,7 +92,9 @@ interface FamilyDefault {
  * Deliberately family-AGNOSTIC so a newly-shipped family appears on its own.
  * Rejects dated ids (`…-20250805`), dotted aliases (`claude-opus-4.8`), the
  * legacy `claude-3-*`, and our own `…-1m` alias marker. `parseModelId` then adds
- * the precise rule (known families require a minor, to skip bare legacy ids).
+ * the precise rule (known families take a minor, or a bare major newer than
+ * anything curated — so a new generation like `claude-sonnet-5` surfaces while
+ * legacy bare aliases like `claude-opus-4` do not).
  */
 export const ALLOWLIST_RE = /^claude-([a-z]+)-(\d+(?:-\d+)?)$/;
 
@@ -126,11 +128,42 @@ function isKnownFamily(family: string): family is KnownFamily {
 }
 
 /**
+ * The curated set of ids always exposed, regardless of runtime discovery, so the
+ * provider is fully usable offline and at load time (before `ctx` exists).
+ */
+export const SEED_IDS = [
+	"claude-opus-4-8",
+	"claude-opus-4-7",
+	"claude-opus-4-6",
+	"claude-sonnet-4-6",
+	"claude-haiku-4-5",
+] as const;
+
+/**
+ * Highest curated MAJOR version per known family, derived from SEED_IDS. Lets a
+ * genuinely-new bare-major release (e.g. `claude-sonnet-5`, `claude-opus-5`)
+ * surface while a legacy bare alias that only duplicates a curated minor (e.g.
+ * `claude-opus-4`) stays hidden.
+ */
+const CURATED_MAX_MAJOR: ReadonlyMap<string, number> = (() => {
+	const max = new Map<string, number>();
+	for (const id of SEED_IDS) {
+		const m = ALLOWLIST_RE.exec(id);
+		if (!m) continue;
+		const major = Number.parseInt(m[2].split("-")[0], 10);
+		if (!Number.isNaN(major)) max.set(m[1], Math.max(max.get(m[1]) ?? 0, major));
+	}
+	return max;
+})();
+
+/**
  * Parse a model id into `{ family, versionLabel }`, or `null` if it should not be
- * exposed. Known families (`opus`/`sonnet`/`haiku`) require a `major-minor`
- * version so bare legacy ids like `claude-opus-4` are skipped; other families
- * accept a 1- or 2-segment version so `claude-fable-5` and `claude-mythos-1-0`
- * both pass.
+ * exposed. Other families accept a 1- or 2-segment version so `claude-fable-5`
+ * and `claude-mythos-1-0` both pass. Known families (`opus`/`sonnet`/`haiku`)
+ * accept a `major-minor` id; a *bare-major* id (no minor) is skipped as a legacy
+ * alias that duplicates a curated minor (e.g. `claude-opus-4` vs `claude-opus-4-8`)
+ * UNLESS its major outranks anything curated — a genuinely new generation like
+ * the real Sonnet 5 id `claude-sonnet-5`, or a future `claude-opus-5`.
  */
 export function parseModelId(id: string): { family: string; versionLabel: string } | null {
 	const match = ALLOWLIST_RE.exec(id);
@@ -141,7 +174,12 @@ export function parseModelId(id: string): { family: string; versionLabel: string
 	// Reject date-like segments (e.g. `claude-opus-4-20250514`); real versions are
 	// 1–2 digits, dated aliases are 8. Anything ≥4 digits is not a version.
 	if (segments.some((s) => s.length >= 4)) return null;
-	if (isKnownFamily(family) && segments.length < 2) return null; // skip bare legacy ids
+	// A bare-major known-family id is a legacy alias unless its major outranks
+	// everything curated (a new generation, e.g. `claude-sonnet-5`).
+	if (isKnownFamily(family) && segments.length < 2) {
+		const major = Number.parseInt(segments[0], 10);
+		if (major <= (CURATED_MAX_MAJOR.get(family) ?? 0)) return null;
+	}
 	return { family, versionLabel: version.replace(/-/g, ".") };
 }
 
@@ -161,18 +199,6 @@ const ID_OVERRIDES: Record<string, Pick<NativeModel, "compat" | "thinkingLevelMa
 		thinkingLevelMap: { xhigh: "xhigh" },
 	},
 };
-
-/**
- * The curated set of ids always exposed, regardless of runtime discovery, so the
- * provider is fully usable offline and at load time (before `ctx` exists).
- */
-export const SEED_IDS = [
-	"claude-opus-4-8",
-	"claude-opus-4-7",
-	"claude-opus-4-6",
-	"claude-sonnet-4-6",
-	"claude-haiku-4-5",
-] as const;
 
 function displayName(family: string, versionLabel: string): string {
 	const fam = family.charAt(0).toUpperCase() + family.slice(1);

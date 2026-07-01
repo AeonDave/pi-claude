@@ -274,6 +274,28 @@ export function getModelOverrides(): ModelOverride[] {
 }
 
 /**
+ * Opt-in live model discovery: when enabled, the extension queries Anthropic's
+ * own `GET /v1/models` with the subscription OAuth token at session start, so a
+ * newly-shipped model appears the day it ships (instead of waiting for Pi's
+ * bundled catalog to update) and its result is persisted as the local fallback.
+ * Off by default (no network unless asked). Enable with
+ * `PI_CLAUDE_NATIVE_LIVE_DISCOVERY=1` (also accepts true/yes/on).
+ */
+export function isLiveDiscoveryEnabled(): boolean {
+	const v = process.env.PI_CLAUDE_NATIVE_LIVE_DISCOVERY?.trim().toLowerCase();
+	return v === "1" || v === "true" || v === "yes" || v === "on";
+}
+
+/**
+ * Path to the persisted discovery cache (the "updated local seed" read at load
+ * so the offline fallback stays fresh): `PI_CLAUDE_NATIVE_MODELS_CACHE` env, else
+ * `~/.pi/claude-native-models.json`.
+ */
+export function getModelCachePath(): string {
+	return process.env.PI_CLAUDE_NATIVE_MODELS_CACHE?.trim() || join(homedir(), ".pi", "claude-native-models.json");
+}
+
+/**
  * Optional override for which Anthropic catalog ids are auto-exposed, as a
  * regex source string (`PI_CLAUDE_NATIVE_MODELS_ALLOW`). Returns `undefined` to
  * fall back to the built-in `ALLOWLIST_RE`. Tighten it to hide noise, or widen

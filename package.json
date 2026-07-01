@@ -1,6 +1,6 @@
 {
   "name": "pi-claude",
-  "version": "1.0.0",
+  "version": "1.1.0",
   "private": false,
   "type": "module",
   "description": "Adds a 'Claude Pro/Max Native' subscription provider to Pi's /login that talks to Anthropic exactly like the genuine Claude Code CLI (OAuth, Claude Code identity, beta headers, user-agent, and billing header).",
@@ -23,7 +23,7 @@
   ],
   "scripts": {
     "typecheck": "tsc --noEmit",
-    "test": "node --import tsx --test test/billing-header.test.ts test/payload.test.ts test/models.test.ts",
+    "test": "node --import tsx --test test/billing-header.test.ts test/payload.test.ts test/models.test.ts test/discovery.test.ts",
     "capture:fingerprint": "node scripts/capture-fingerprint.mjs",
     "classifier:find": "node --import tsx scripts/bisect-classifier.ts auto"
   },

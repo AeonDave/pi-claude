@@ -18,11 +18,13 @@
  * Native" and stores an `sk-ant-oat...` token, which is what flips Pi's built-in
  * Anthropic path into full Claude-Code-mimicry mode.
  *
- * Model list: registered with a curated seed at load, then refreshed on
- * `session_start` from Pi's built-in `anthropic` catalog (so a newly-shipped
- * Claude appears on its own) plus any `PI_CLAUDE_NATIVE_MODELS` overrides.
- * `registerProvider` may be called again at runtime and takes effect immediately,
- * with no `/reload`.
+ * Model list: registered at load from the curated seed + a persisted discovery
+ * cache, then refreshed on `session_start` from Pi's built-in `anthropic` catalog
+ * (so a newly-shipped Claude appears on its own) plus any
+ * `PI_CLAUDE_NATIVE_MODELS` overrides. With `PI_CLAUDE_NATIVE_LIVE_DISCOVERY` set,
+ * it also queries Anthropic's live `/v1/models` once per process and persists the
+ * result as the cache. `registerProvider` may be called again at runtime and
+ * takes effect immediately, with no `/reload`.
  */
 
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
@@ -33,13 +35,16 @@ import {
 	getClaudeCodeVersion,
 	getClaudeUserId,
 	getModelAllowlist,
+	getModelCachePath,
 	getModelOverrides,
 	getSanitizeRules,
 	getUserAgent,
+	isLiveDiscoveryEnabled,
 	PROVIDER_ID,
 	PROVIDER_NAME,
 } from "./constants.ts";
 import { logNativeRequest } from "./debug.ts";
+import { type DiscoveredModel, fetchLiveModels, readModelCache, writeModelCache } from "./discovery.ts";
 import { ALLOWLIST_RE, buildNativeModels, type CatalogEntry, type NativeModel } from "./models.ts";
 import { getApiKey, login, refreshToken } from "./oauth.ts";
 import { applyBillingHeader, applyMetadata, sanitizeSystemPrompt } from "./payload.ts";
@@ -106,19 +111,39 @@ export default function claudeProMaxNative(pi: ExtensionAPI) {
 		}
 	}
 
+	// The most recent successful live `/v1/models` fetch (in-memory), and a guard
+	// so we fetch at most once per process and never concurrently.
+	let liveModels: DiscoveredModel[] = [];
+	let liveInFlight = false;
+	let liveFetched = false;
+
 	/**
-	 * Refresh the model list from Pi's built-in `anthropic` catalog plus user
-	 * overrides. Discovered ids inherit conservative family defaults; the curated
-	 * seed and overrides keep precedence (see `buildNativeModels`).
+	 * Build the merged model list from all discovery sources, lowest precedence
+	 * first so a later source overrides earlier ones per-field:
+	 *   1. the persisted cache  — a previous live fetch (fresh offline fallback);
+	 *   2. this run's live fetch — overrides the cache;
+	 *   3. Pi's built-in `anthropic` catalog — authoritative (it alone carries real
+	 *      `cost`, since `/v1/models` has none), so it wins where it knows the id.
+	 * The curated seed + user overrides are layered on by `buildNativeModels`.
+	 * `ctx` is omitted at load time (before any session), when only 1+2 apply.
 	 */
-	function refreshModels(ctx: ExtensionContext): void {
-		try {
-			const allow = getModelAllowlist() ?? ALLOWLIST_RE;
-			const catalog = new Map<string, CatalogEntry>();
+	function buildMergedModels(ctx?: ExtensionContext): NativeModel[] {
+		const allowlist = getModelAllowlist();
+		const allow = allowlist ?? ALLOWLIST_RE;
+		const catalog = new Map<string, CatalogEntry>();
+		const extraIds: string[] = [];
+		const add = (id: string, entry: CatalogEntry): void => {
+			if (!allow.test(id)) return;
+			catalog.set(id, { ...catalog.get(id), ...entry });
+			if (!extraIds.includes(id)) extraIds.push(id);
+		};
+		for (const m of readModelCache(getModelCachePath())) add(m.id, m.catalog);
+		for (const m of liveModels) add(m.id, m.catalog);
+		if (ctx) {
 			for (const model of ctx.modelRegistry.getAll()) {
-				if (model.provider !== "anthropic" || !allow.test(model.id)) continue;
+				if (model.provider !== "anthropic") continue;
 				// Carry everything Pi knows so an unknown family (e.g. fable) is fully derived.
-				catalog.set(model.id, {
+				add(model.id, {
 					cost: model.cost,
 					maxTokens: model.maxTokens,
 					contextWindow: model.contextWindow,
@@ -127,22 +152,46 @@ export default function claudeProMaxNative(pi: ExtensionAPI) {
 					thinkingLevelMap: model.thinkingLevelMap,
 				});
 			}
-			registerNative(
-				buildNativeModels({
-					extraIds: [...catalog.keys()],
-					catalog,
-					overrides: getModelOverrides(),
-					allowlist: getModelAllowlist(),
-				}),
-			);
+		}
+		return buildNativeModels({ extraIds, catalog, overrides: getModelOverrides(), allowlist });
+	}
+
+	/** Re-register from all sources; best-effort (the seed registered at load stands). */
+	function refreshModels(ctx: ExtensionContext): void {
+		try {
+			registerNative(buildMergedModels(ctx));
 		} catch {
 			// Discovery is best-effort; the seed registered at load still stands.
 		}
 	}
 
-	// Initial registration: curated seed + user overrides. Works offline and at
-	// load time, before any session context exists.
-	registerNative(buildNativeModels({ overrides: getModelOverrides(), allowlist: getModelAllowlist() }));
+	/**
+	 * Opt-in: query Anthropic's `/v1/models` with the subscription OAuth token,
+	 * persist it as the local fallback, and re-register. At most once per process,
+	 * never concurrent; any failure degrades silently to cache + seed.
+	 */
+	async function runLiveDiscovery(ctx: ExtensionContext): Promise<void> {
+		if (liveInFlight || liveFetched || !isLiveDiscoveryEnabled()) return;
+		liveInFlight = true;
+		try {
+			const token = await ctx.modelRegistry.getApiKeyForProvider(PROVIDER_ID);
+			if (!token) return;
+			const fetched = await fetchLiveModels({ token, endpoint: `${getBaseUrl()}/v1/models`, userAgent: getUserAgent() });
+			if (fetched.length === 0) return;
+			liveModels = fetched;
+			liveFetched = true;
+			writeModelCache(getModelCachePath(), fetched);
+			refreshModels(ctx); // re-register with the fresh set (takes effect immediately)
+		} catch {
+			// best-effort; the cache/seed still stand
+		} finally {
+			liveInFlight = false;
+		}
+	}
+
+	// Initial registration: curated seed + user overrides + persisted cache. Works
+	// offline and at load time, before any session context exists.
+	registerNative(buildMergedModels());
 
 	// Add the missing x-anthropic-billing-header as system[0], scoped strictly to
 	// this provider's OAuth requests so nothing else is ever touched.
@@ -163,6 +212,7 @@ export default function claudeProMaxNative(pi: ExtensionAPI) {
 
 	pi.on("session_start", (_event, ctx) => {
 		refreshModels(ctx);
+		void runLiveDiscovery(ctx); // self-gates on PI_CLAUDE_NATIVE_LIVE_DISCOVERY
 		setStatus(ctx, isNativeOAuth(ctx) ? `✓ ${PROVIDER_NAME}` : undefined);
 	});
 
@@ -195,6 +245,7 @@ export default function claudeProMaxNative(pi: ExtensionAPI) {
 				`  cc_version:     ${getClaudeCodeVersion()}`,
 				`  cc_entrypoint:  ${getClaudeCodeEntrypoint()}`,
 				`  user-agent:     ${getUserAgent()}`,
+				`  live discovery: ${isLiveDiscoveryEnabled() ? "on" : "off"} (cache: ${readModelCache(getModelCachePath()).length} models)`,
 			];
 			if (collides) {
 				lines.push(
