@@ -94,7 +94,7 @@ capture both clients via `scripts/capture-proxy.mjs`, then
 - Profile is the interactive CLI one (`cc_entrypoint=cli`, `user-agent … (external, cli)`,
   Pi's "You are Claude Code…" identity) — consistent and Pi-native. A captured
   `claude -p` request is `sdk-cli`; the beta set is identical between the two.
-- The `anthropic-beta` default is captured verbatim from `claude` 2.1.186's
+- The `anthropic-beta` default is captured verbatim from `claude` 2.1.197's
   **normal turn** (no `context-1m`). Opus 4.8/4.7/4.6 and Sonnet 4.6 are natively
   1M and expose their window under their clean id — no `context-1m` and no `[1m]`
   suffix (the suffix 404s; `context-1m` 400/429s plans without long-context).

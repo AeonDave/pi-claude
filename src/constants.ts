@@ -54,7 +54,7 @@ export const TOKEN_USER_AGENT = "axios/1.13.6";
 // Claude Code client fingerprint
 // ---------------------------------------------------------------------------
 
-const DEFAULT_CC_VERSION = "2.1.186";
+const DEFAULT_CC_VERSION = "2.1.197";
 const DEFAULT_CC_ENTRYPOINT = "cli";
 
 // ---------------------------------------------------------------------------
@@ -165,7 +165,7 @@ export function getBaseUrl(): string {
 }
 
 /**
- * The `anthropic-beta` set captured verbatim from genuine `claude` 2.1.186's
+ * The `anthropic-beta` set captured verbatim from genuine `claude` 2.1.197's
  * normal turn (`claude -p "say hello"`, 2026). This REPLACES Pi's per-model beta
  * logic so the header is byte-identical to Claude Code's everyday request.
  *

@@ -103,7 +103,7 @@ catalog knows (so older 4.x point releases show too) — tighten the set with
 |--------------------|--------|
 | Bearer OAuth, `anthropic-beta` core flags, `x-app: cli`, `"You are Claude Code…"` identity, PascalCase tool names | Pi built-in (triggered by the OAuth token) |
 | `user-agent: claude-cli/<v> (external, cli)` | this extension (`headers`) |
-| captured `anthropic-beta` set (2.1.186 normal-turn; no `context-1m`) | this extension (`headers`, captured verbatim) |
+| captured `anthropic-beta` set (2.1.197 normal-turn; no `context-1m`) | this extension (`headers`, captured verbatim) |
 | `x-anthropic-billing-header` as `system[0]` | this extension (`before_provider_request`) |
 | `metadata.user_id` (device/account/session ids) | this extension (read from `~/.claude.json`) |
 | system prompt free of the third-party-agent fingerprint | this extension (`sanitizeSystemPrompt` strips the "Pi documentation" block — confirmed to clear the classifier) |
@@ -128,7 +128,7 @@ env vars below pin them when you want full control.
 
 | Env var | Default | Purpose |
 |---------|---------|---------|
-| `PI_CLAUDE_NATIVE_CC_VERSION` | _(derived from your installed `claude`, else `2.1.186`)_ | Version in `user-agent` **and** billing header (kept consistent). |
+| `PI_CLAUDE_NATIVE_CC_VERSION` | _(derived from your installed `claude`, else `2.1.197`)_ | Version in `user-agent` **and** billing header (kept consistent). |
 | `PI_CLAUDE_NATIVE_CC_ENTRYPOINT` | `cli` | Billing header `cc_entrypoint`. |
 | `PI_CLAUDE_NATIVE_USER_AGENT` | `claude-cli/<v> (external, cli)` | Full `user-agent` override. |
 | `PI_CLAUDE_NATIVE_ANTHROPIC_BETA` | _(fingerprint, else captured normal-turn set, no `context-1m`)_ | Verbatim `anthropic-beta` override. Set to a value **captured** from your `claude` — never guess. |

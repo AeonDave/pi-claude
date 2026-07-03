@@ -68,7 +68,7 @@ function setStatus(ctx: ExtensionContext, text: string | undefined): void {
 
 export default function claudeProMaxNative(pi: ExtensionAPI) {
 	// These override Pi's defaults (merged last in Pi's Anthropic client, so they
-	// win): the genuine external-CLI user-agent, and the exact Claude Code 2.1.186
+	// win): the genuine external-CLI user-agent, and the exact Claude Code 2.1.197
 	// `anthropic-beta` set. `x-app` restates Pi's own default for robustness.
 	const headers: Record<string, string> = {
 		"user-agent": getUserAgent(),

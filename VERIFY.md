@@ -12,7 +12,7 @@ comes from. Verified against the installed `@earendil-works/pi-ai` /
 | Signal | Genuine Claude Code | This plugin | Source |
 |--------|--------------------|-------------|--------|
 | `authorization: Bearer sk-ant-oat…` | ✅ | ✅ | Pi built-in (triggered by our OAuth token) |
-| `anthropic-beta` (2.1.186 **normal-turn** set, no `context-1m`) | ✅ | ✅ | **plugin** (`headers`, captured verbatim) |
+| `anthropic-beta` (2.1.197 **normal-turn** set, no `context-1m`) | ✅ | ✅ | **plugin** (`headers`, captured verbatim) |
 | `context-1m-2025-08-07` advertised | only on true 1M-window turns | not by default | **plugin** (curated families are natively 1M; add via `PI_CLAUDE_NATIVE_ANTHROPIC_BETA` if your plan needs it) |
 | `user-agent: claude-cli/<v> (external, cli)` | ✅ | ✅ | **plugin** (`headers` override) |
 | `x-app: cli` | ✅ | ✅ | Pi built-in (plugin restates it) |
@@ -122,21 +122,21 @@ haiku, and writes:
   version and the beta set (a consistent pair) with **no code edit**.
 - `captures/fingerprint-report.md` — a per-model table plus a **diff of the
   captured `anthropic-beta` against the current `DEFAULT_ANTHROPIC_BETA`**, so a
-  changed flag is obvious. (Verified: on 2.1.186 it reports "no change".)
+  changed flag is obvious. (Verified: on 2.1.197 it reports "no change".)
 
 `cc_version` is otherwise derived from your installed `claude` automatically, so
 the only value worth re-capturing on an update is the beta set — which this does.
 
 ## Matching the `anthropic-beta` set exactly
 
-The default is the **exact set captured from `claude` 2.1.186** (`src/constants.ts`
+The default is the **exact set captured from `claude` 2.1.197** (`src/constants.ts`
 `DEFAULT_ANTHROPIC_BETA`), including `effort-2025-11-24`,
 `context-management-2025-06-27`, `prompt-caching-scope-2026-01-05` and the rest
 (but **not** `context-1m-2025-08-07` — see "The 1M / long-context trap" below).
 The set is **version-specific** and Anthropic returns a **400 on unexpected beta
 values**, so it is captured verbatim, never guessed.
 
-If your `claude --version` differs from 2.1.186, re-capture and override:
+If your `claude --version` differs from 2.1.197, re-capture and override:
 
 1. Capture genuine `claude`'s `anthropic-beta` (Method A above prints it).
 2. Set it verbatim:
@@ -231,7 +231,7 @@ a capture shows one matters for your account, it is a one-line change:
    sees the body); the others are low-signal. None flipped the classifier in
    testing — the system prompt did.
 
-1. **`anthropic-beta` set** is captured from `claude` 2.1.186. If your installed
+1. **`anthropic-beta` set** is captured from `claude` 2.1.197. If your installed
    version sends a different set, the `compare` script flags it — set
    `PI_CLAUDE_NATIVE_ANTHROPIC_BETA` to your captured value (see "Matching the
    `anthropic-beta` set exactly" above).
