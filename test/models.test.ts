@@ -158,6 +158,45 @@ test("discovery (Q2): a brand-new family (fable) auto-appears, fully derived fro
 	assert.ok(!models.some((m) => m.id === "claude-fable-5-1m"));
 });
 
+test("adaptive thinking is per-version: a discovered non-adaptive sonnet drops the family default", () => {
+	// Regression: claude-sonnet-4-5 exists in Pi's anthropic catalog WITHOUT
+	// forceAdaptiveThinking (older budget-thinking model), but the sonnet family default
+	// forces adaptive. Blanket-applying it made the subscription route 400 with
+	// "adaptive thinking is not supported on this model". The catalog's truth must win.
+	const models = buildNativeModels({
+		extraIds: ["claude-sonnet-4-5"],
+		catalog: new Map([
+			["claude-sonnet-4-5", { cost: SONNET_COST, maxTokens: 64000, reasoning: true, forceAdaptiveThinking: false }],
+		]),
+	});
+	const s45 = models.find((m) => m.id === "claude-sonnet-4-5");
+	assert.ok(s45, "sonnet-4-5 discovered from catalog");
+	assert.equal(s45?.reasoning, true, "still a reasoning model — just budget, not adaptive");
+	assert.equal(s45?.compat, undefined, "no forced adaptive thinking (catalog says budget) — compat drops entirely");
+});
+
+test("adaptive thinking is per-version: a discovered adaptive sonnet keeps it", () => {
+	const models = buildNativeModels({
+		extraIds: ["claude-sonnet-4-7"],
+		catalog: new Map([
+			["claude-sonnet-4-7", { cost: SONNET_COST, maxTokens: 64000, reasoning: true, forceAdaptiveThinking: true }],
+		]),
+	});
+	const s47 = models.find((m) => m.id === "claude-sonnet-4-7");
+	assert.deepEqual(s47?.compat, { forceAdaptiveThinking: true }, "catalog says adaptive → keep it");
+});
+
+test("a catalog with no adaptive signal keeps the conservative family default", () => {
+	// When the source can't tell adaptive from budget (e.g. /v1/models), forceAdaptiveThinking
+	// is undefined and the curated family default stands — we don't silently drop adaptive.
+	const models = buildNativeModels({
+		extraIds: ["claude-sonnet-4-9"],
+		catalog: new Map([["claude-sonnet-4-9", { cost: SONNET_COST, maxTokens: 64000, reasoning: true }]]),
+	});
+	const s49 = models.find((m) => m.id === "claude-sonnet-4-9");
+	assert.deepEqual(s49?.compat, { forceAdaptiveThinking: true }, "no catalog signal → family default (adaptive) holds");
+});
+
 test("the extension hardwires NO sonnet-5/mythos-5 — they come only from Pi's catalog", () => {
 	// Guard the user's intent: nothing beyond the current curated seed is baked in,
 	// so new models are never a code edit — they arrive via ctx.modelRegistry.

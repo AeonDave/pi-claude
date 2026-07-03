@@ -143,6 +143,10 @@ export default function claudeProMaxNative(pi: ExtensionAPI) {
 			for (const model of ctx.modelRegistry.getAll()) {
 				if (model.provider !== "anthropic") continue;
 				// Carry everything Pi knows so an unknown family (e.g. fable) is fully derived.
+				// `forceAdaptiveThinking` is authoritative here: Pi's catalog marks only the
+				// models that actually support adaptive thinking (opus/sonnet 4-6+), so an older
+				// discovered id (sonnet-4-5) inherits budget thinking instead of the blanket
+				// family default — which the subscription route rejects with a 400.
 				add(model.id, {
 					cost: model.cost,
 					maxTokens: model.maxTokens,
@@ -150,6 +154,9 @@ export default function claudeProMaxNative(pi: ExtensionAPI) {
 					reasoning: model.reasoning,
 					input: model.input,
 					thinkingLevelMap: model.thinkingLevelMap,
+					// `forceAdaptiveThinking` lives only on the Anthropic compat branch; the guard
+					// above already restricts to anthropic models, so read it through a narrow cast.
+					forceAdaptiveThinking: (model.compat as { forceAdaptiveThinking?: boolean } | undefined)?.forceAdaptiveThinking === true,
 				});
 			}
 		}

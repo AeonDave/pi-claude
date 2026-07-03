@@ -68,6 +68,15 @@ export interface CatalogEntry {
 	reasoning?: boolean;
 	input?: ("text" | "image")[];
 	thinkingLevelMap?: Model<Api>["thinkingLevelMap"];
+	/**
+	 * Whether Pi's catalog marks this id as an ADAPTIVE-thinking model. Adaptive is a
+	 * per-VERSION capability, not per-family: newer Claudes (opus/sonnet 4-6+) support it;
+	 * older ids (e.g. `claude-sonnet-4-5`) use budget thinking and the subscription route
+	 * 400s on an adaptive request. Carried from Pi's catalog so a DISCOVERED id inherits its
+	 * real capability instead of the blanket family default. `undefined` when the source
+	 * (e.g. `/v1/models`, which can't tell adaptive from budget) doesn't say.
+	 */
+	forceAdaptiveThinking?: boolean;
 }
 
 /** Curated families: their effort ceiling, cost, and context policy are pinned. */
@@ -226,7 +235,18 @@ function buildFamilyModels(id: string, fromCatalog?: CatalogEntry): NativeModel[
 	const input = fromCatalog?.input ?? ["text", "image"];
 	// Known families keep their exact curated compat (haiku intentionally has none);
 	// unknown families default to adaptive thinking when they reason.
-	const compat = overlay?.compat ?? known?.compat ?? (known || !reasoning ? undefined : { forceAdaptiveThinking: true });
+	let compat = overlay?.compat ?? known?.compat ?? (known || !reasoning ? undefined : { forceAdaptiveThinking: true });
+	// forceAdaptiveThinking is per-VERSION, not per-family: the curated family default marks
+	// the whole family adaptive, but an older DISCOVERED id (e.g. `claude-sonnet-4-5`) does not
+	// support it and the subscription route 400s on adaptive. When Pi's catalog tells us the
+	// id's real capability, honour it over the family default (a curated ID_OVERRIDES entry —
+	// the seed opus ids — still wins; seed ids carry no catalog entry, so they're untouched).
+	if (!overlay && fromCatalog && typeof fromCatalog.forceAdaptiveThinking === "boolean") {
+		const merged: Record<string, unknown> = { ...(compat ?? {}) };
+		if (fromCatalog.forceAdaptiveThinking) merged.forceAdaptiveThinking = true;
+		else delete merged.forceAdaptiveThinking;
+		compat = (Object.keys(merged).length > 0 ? merged : undefined) as NativeModel["compat"];
+	}
 	// Known families keep their curated effort ceiling; unknown families derive it
 	// from the catalog (the only honest source for a model we don't curate).
 	const thinkingLevelMap = overlay?.thinkingLevelMap ?? known?.thinkingLevelMap ?? (known ? undefined : fromCatalog?.thinkingLevelMap);
