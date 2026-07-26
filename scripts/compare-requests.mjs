@@ -35,7 +35,16 @@ const checks = [];
 const check = (name, ok, detail) => checks.push({ name, ok, detail });
 
 // --- Body: system layout ----------------------------------------------------
-const BILLING_RE = /^x-anthropic-billing-header: cc_version=\d+\.\d+\.\d+\.[0-9a-f]{3}; cc_entrypoint=\w+; cch=[0-9a-f]{5};$/;
+// What the PLUGIN must emit: the full shape, cch included.
+const BILLING_RE = /^x-anthropic-billing-header: cc_version=\d+\.\d+\.\d+\.[0-9a-f]{3}; cc_entrypoint=[\w-]+; cch=[0-9a-f]{5};$/;
+// What a GENUINE capture may look like: `cc_version` + `cc_entrypoint` are always
+// present, the tail is conditional (2.1.220 emits `cch` only when the base URL is
+// first-party — so a capture taken THROUGH the proxy legitimately has none — plus
+// `cc_workload` / `cc_is_subagent` / `cc_prev_req`). Entrypoints are hyphenated
+// (`sdk-cli`), so `\w+` alone never matched a `claude -p` capture and the two
+// cross-checks below were silently skipped.
+const GENUINE_BILLING_RE =
+	/^x-anthropic-billing-header: cc_version=\d+\.\d+\.\d+\.[0-9a-f]{3}; cc_entrypoint=[\w-]+;(?: cch=[0-9a-f]{5};| cc_workload=[^;]*;| cc_is_subagent=true;| cc_prev_req=[^;]*;)*$/;
 const IDENTITY_RE = /^You are (Claude Code, Anthropic's official CLI for Claude|a Claude agent, built on Anthropic's Claude Agent SDK)\.$/;
 
 const piBilling = systemText(pi, 0).trim();
@@ -45,7 +54,7 @@ const piIdentity = systemText(pi, 1).trim();
 check("system[1] is the Claude Code identity", IDENTITY_RE.test(piIdentity), piIdentity.slice(0, 90) || "(empty)");
 
 const claudeBilling = systemText(claude, 0).trim();
-if (BILLING_RE.test(claudeBilling)) {
+if (GENUINE_BILLING_RE.test(claudeBilling)) {
 	const piEntry = piBilling.match(/cc_entrypoint=(\w+)/)?.[1];
 	const ccEntry = claudeBilling.match(/cc_entrypoint=(\w+)/)?.[1];
 	check("billing cc_entrypoint matches genuine", piEntry === ccEntry, `claude=${ccEntry} | pi=${piEntry}`);
