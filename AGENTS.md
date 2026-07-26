@@ -94,7 +94,7 @@ capture both clients via `scripts/capture-proxy.mjs`, then
 - Profile is the interactive CLI one (`cc_entrypoint=cli`, `user-agent … (external, cli)`,
   Pi's "You are Claude Code…" identity) — consistent and Pi-native. A captured
   `claude -p` request is `sdk-cli`; the beta set is identical between the two.
-- The `anthropic-beta` default is captured verbatim from `claude` 2.1.197's
+- The `anthropic-beta` default is captured verbatim from `claude` 2.1.220's
   **normal turn** (no `context-1m`). Opus 4.8/4.7/4.6 and Sonnet 4.6 are natively
   1M and expose their window under their clean id — no `context-1m` and no `[1m]`
   suffix (the suffix 404s; `context-1m` 400/429s plans without long-context).
@@ -112,6 +112,22 @@ capture both clients via `scripts/capture-proxy.mjs`, then
   and detects drift. A fingerprint file pairs version + beta so they move together;
   deriving version alone is safe because Anthropic validates the beta set, not the
   cc_version string.
+- **Re-capture on `claude` 2.1.220 (2026-07-26).** `anthropic-beta` came back
+  byte-identical to the 2.1.197 set — only the version moved, so `DEFAULT_CC_VERSION`
+  is the only pinned value that changed. Two things learned that the next capture
+  should not re-discover:
+  - `claude --model opus` now resolves to **`claude-opus-5`** (1M, adaptive-only,
+    `output_config.effort: "xhigh"` on the wire). It stays *discovered*, not seeded —
+    but it needs an `ID_OVERRIDES` entry, because the conservative opus family default
+    caps `xhigh` at `max`. A new curated-family generation always needs that overlay.
+  - The billing header's tail is **conditional**: `cch` is emitted only when the base
+    URL is first-party (`Kd()` in the CLI checks `ANTHROPIC_BASE_URL`'s host against
+    `api.anthropic.com`), so a capture taken **through the proxy shows no `cch` at
+    all** — that is a capture artifact, not a format change. Set
+    `_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL=1` alongside `ANTHROPIC_BASE_URL` to see
+    the real header. The other optional segments are `cc_workload`, `cc_is_subagent`,
+    `cc_prev_req`. The suffix algorithm (salt + chars `[4,7,20]` + version, sha256[:3])
+    is unchanged.
 
 ## Boundaries
 

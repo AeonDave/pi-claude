@@ -61,6 +61,8 @@ dependencies; `npm install` is only for development (typecheck/tests).
 
 ## Models
 
+The **curated seed** — always present, even offline:
+
 | Model (Pi id) | Context | Max effort |
 |---------------|---------|------------|
 | `claude-opus-4-8` | 1M | `xhigh` |
@@ -68,6 +70,11 @@ dependencies; `npm install` is only for development (typecheck/tests).
 | `claude-opus-4-6` | 1M | `max` |
 | `claude-sonnet-4-6` | 1M | `max` |
 | `claude-haiku-4-5` | 200K | — (fast tier) |
+
+Newer models are **not** listed here — they arrive through discovery, so no code
+edit is needed. With a current Pi you will also see `claude-opus-5`,
+`claude-sonnet-5` and `claude-fable-5` (all 1M, `xhigh`), plus whatever else Pi's
+`anthropic` catalog carries.
 
 Opus 4.8/4.7/4.6 and Sonnet 4.6 are **natively 1M**, exposed as a single clean-id
 entry each at their full window; Haiku stays 200K. There is **no `[1m]` wire
@@ -103,7 +110,7 @@ catalog knows (so older 4.x point releases show too) — tighten the set with
 |--------------------|--------|
 | Bearer OAuth, `anthropic-beta` core flags, `x-app: cli`, `"You are Claude Code…"` identity, PascalCase tool names | Pi built-in (triggered by the OAuth token) |
 | `user-agent: claude-cli/<v> (external, cli)` | this extension (`headers`) |
-| captured `anthropic-beta` set (2.1.197 normal-turn; no `context-1m`) | this extension (`headers`, captured verbatim) |
+| captured `anthropic-beta` set (2.1.220 normal-turn; no `context-1m`) | this extension (`headers`, captured verbatim) |
 | `x-anthropic-billing-header` as `system[0]` | this extension (`before_provider_request`) |
 | `metadata.user_id` (device/account/session ids) | this extension (read from `~/.claude.json`) |
 | system prompt free of the third-party-agent fingerprint | this extension (`sanitizeSystemPrompt` strips the "Pi documentation" block — confirmed to clear the classifier) |
@@ -128,7 +135,7 @@ env vars below pin them when you want full control.
 
 | Env var | Default | Purpose |
 |---------|---------|---------|
-| `PI_CLAUDE_NATIVE_CC_VERSION` | _(derived from your installed `claude`, else `2.1.197`)_ | Version in `user-agent` **and** billing header (kept consistent). |
+| `PI_CLAUDE_NATIVE_CC_VERSION` | _(derived from your installed `claude`, else `2.1.220`)_ | Version in `user-agent` **and** billing header (kept consistent). |
 | `PI_CLAUDE_NATIVE_CC_ENTRYPOINT` | `cli` | Billing header `cc_entrypoint`. |
 | `PI_CLAUDE_NATIVE_USER_AGENT` | `claude-cli/<v> (external, cli)` | Full `user-agent` override. |
 | `PI_CLAUDE_NATIVE_ANTHROPIC_BETA` | _(fingerprint, else captured normal-turn set, no `context-1m`)_ | Verbatim `anthropic-beta` override. Set to a value **captured** from your `claude` — never guess. |

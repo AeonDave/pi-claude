@@ -54,7 +54,7 @@ export const TOKEN_USER_AGENT = "axios/1.13.6";
 // Claude Code client fingerprint
 // ---------------------------------------------------------------------------
 
-const DEFAULT_CC_VERSION = "2.1.197";
+const DEFAULT_CC_VERSION = "2.1.220";
 const DEFAULT_CC_ENTRYPOINT = "cli";
 
 // ---------------------------------------------------------------------------
@@ -165,9 +165,11 @@ export function getBaseUrl(): string {
 }
 
 /**
- * The `anthropic-beta` set captured verbatim from genuine `claude` 2.1.197's
+ * The `anthropic-beta` set captured verbatim from genuine `claude` 2.1.220's
  * normal turn (`claude -p "say hello"`, 2026). This REPLACES Pi's per-model beta
  * logic so the header is byte-identical to Claude Code's everyday request.
+ * Re-captured on 2.1.220 (`npm run capture:fingerprint`): the set is byte-for-byte
+ * the same as the one first captured on 2.1.186/2.1.197 — only the version moved.
  *
  * `context-1m-2025-08-07` is intentionally NOT here: a subscription without
  * long-context access returns 400/429 on any request that advertises it, and
