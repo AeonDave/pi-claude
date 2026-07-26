@@ -76,6 +76,25 @@ test("discovery (A): a new catalog opus id appears as a single native-1M entry",
 	assert.ok(!models.some((m) => m.id === "claude-opus-4-9-1m"), "no -1m alias");
 });
 
+test("discovery: claude-opus-5 keeps the xhigh ceiling captured from claude 2.1.220", () => {
+	// Regression: `claude --model opus` resolves to `claude-opus-5` on 2.1.220 and
+	// sends `output_config.effort: "xhigh"`. Without the ID_OVERRIDES entry the
+	// conservative opus family default (`xhigh -> max`) would silently downgrade
+	// every request, and temperature would be left enabled on an adaptive-only model.
+	const models = buildNativeModels({
+		extraIds: ["claude-opus-5"],
+		catalog: new Map([
+			["claude-opus-5", { cost: OPUS_COST, maxTokens: 128000, contextWindow: 1000000, reasoning: true, forceAdaptiveThinking: true }],
+		]),
+	});
+	const opus5 = models.find((m) => m.id === "claude-opus-5");
+	assert.ok(opus5, "opus-5 discovered from catalog");
+	assert.equal(opus5?.name, "Claude Opus 5");
+	assert.equal(opus5?.contextWindow, 1000000);
+	assert.deepEqual(opus5?.thinkingLevelMap, { xhigh: "xhigh" }, "xhigh must reach the wire, not be capped to max");
+	assert.deepEqual(opus5?.compat, { forceAdaptiveThinking: true, supportsTemperature: false });
+});
+
 test("overrides (B): a partial override merges over an existing id", () => {
 	const models = buildNativeModels({
 		overrides: [{ id: "claude-opus-4-8", cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],

@@ -199,6 +199,15 @@ export function parseModelId(id: string): { family: string; versionLabel: string
  * default. Re-capture before claiming a new id supports `xhigh`.
  */
 const ID_OVERRIDES: Record<string, Pick<NativeModel, "compat" | "thinkingLevelMap">> = {
+	// Opus 5 is DISCOVERED (not seeded), but the conservative opus family default
+	// would cap it at `max`. Re-captured on claude 2.1.220 — `claude --model opus`
+	// resolves to `claude-opus-5` and sends `output_config.effort: "xhigh"` — so the
+	// higher ceiling is confirmed on the wire, not assumed. Adaptive-only per
+	// `/v1/models` (`thinking.types.enabled.supported: false`), hence no temperature.
+	"claude-opus-5": {
+		compat: { forceAdaptiveThinking: true, supportsTemperature: false },
+		thinkingLevelMap: { xhigh: "xhigh" },
+	},
 	"claude-opus-4-8": {
 		compat: { forceAdaptiveThinking: true, supportsTemperature: false },
 		thinkingLevelMap: { xhigh: "xhigh" },
