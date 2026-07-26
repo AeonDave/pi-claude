@@ -95,6 +95,20 @@ test("discovery: claude-opus-5 keeps the xhigh ceiling captured from claude 2.1.
 	assert.deepEqual(opus5?.compat, { forceAdaptiveThinking: true, supportsTemperature: false });
 });
 
+test("discovery: an older id of a curated family keeps its real (smaller) window", () => {
+	// Regression: Pi's catalog lists `claude-opus-4-1` / `claude-opus-4-5` at 200K,
+	// but the opus family policy is "natively 1M". Applying the policy to a
+	// discovered legacy id advertised 1M for a 200K model — Pi then never compacts
+	// and the turn dies on a hard "prompt too long" 400. The catalog window wins.
+	const models = buildNativeModels({
+		extraIds: ["claude-opus-4-1"],
+		catalog: new Map([["claude-opus-4-1", { cost: OPUS_COST, maxTokens: 32000, contextWindow: 200000, reasoning: true }]]),
+	});
+	assert.equal(models.find((m) => m.id === "claude-opus-4-1")?.contextWindow, 200000);
+	// …and the seed keeps its pinned 1M (seed ids are built without a catalog entry).
+	assert.equal(models.find((m) => m.id === "claude-opus-4-8")?.contextWindow, 1000000);
+});
+
 test("overrides (B): a partial override merges over an existing id", () => {
 	const models = buildNativeModels({
 		overrides: [{ id: "claude-opus-4-8", cost: { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 } }],

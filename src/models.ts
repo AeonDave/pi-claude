@@ -275,7 +275,14 @@ function buildFamilyModels(id: string, fromCatalog?: CatalogEntry): NativeModel[
 	// Curated families carry their pinned native window (opus/sonnet 1M, haiku
 	// 200K) under their clean id — no `…-1m` alias. Unknown families use their
 	// real catalog window.
-	if (known) return [make(known.context === "single-1m" ? 1000000 : 200000)];
+	//
+	// A DISCOVERED id still prefers the catalog's own window: the family policy
+	// describes the CURRENT generation, and older ids of the same family are not 1M
+	// (`claude-opus-4-1` / `claude-opus-4-5` are 200K). Inheriting 1M for those makes
+	// Pi believe it has 5× the room it does, so it never compacts and the request
+	// dies on a hard "prompt too long" 400. Seed ids are passed no catalog entry, so
+	// their pinned windows stay byte-stable.
+	if (known) return [make(fromCatalog?.contextWindow ?? (known.context === "single-1m" ? 1000000 : 200000))];
 	return [make(fromCatalog?.contextWindow ?? 200000)];
 }
 
