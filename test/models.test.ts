@@ -5,6 +5,7 @@ import { ALLOWLIST_RE, buildNativeModels, NATIVE_MODELS, parseModelId } from "..
 const OPUS_COST = { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 };
 const SONNET_COST = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 };
 const HAIKU_COST = { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 };
+const FABLE_COST = { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 };
 const OPUS_HI = { compat: { forceAdaptiveThinking: true, supportsTemperature: false }, thinkingLevelMap: { xhigh: "xhigh" } };
 const OPUS_MAX = { compat: { forceAdaptiveThinking: true }, thinkingLevelMap: { xhigh: "max" } };
 const SONNET = { compat: { forceAdaptiveThinking: true }, thinkingLevelMap: undefined };
@@ -76,8 +77,8 @@ test("discovery (A): a new catalog opus id appears as a single native-1M entry",
 	assert.ok(!models.some((m) => m.id === "claude-opus-4-9-1m"), "no -1m alias");
 });
 
-test("discovery: claude-opus-5 keeps the xhigh ceiling captured from claude 2.1.220", () => {
-	// Regression: `claude --model opus` resolves to `claude-opus-5` on 2.1.220 and
+test("discovery: claude-opus-5 keeps the xhigh ceiling captured from claude 2.1.233", () => {
+	// Regression: `claude --model opus` resolves to `claude-opus-5` on 2.1.233 and
 	// sends `output_config.effort: "xhigh"`. Without the ID_OVERRIDES entry the
 	// conservative opus family default (`xhigh -> max`) would silently downgrade
 	// every request, and temperature would be left enabled on an adaptive-only model.
@@ -162,16 +163,16 @@ test("parseModelId: known families accept major-minor + new bare-major generatio
 	}
 });
 
-test("discovery (Q2): a brand-new family (fable) auto-appears, fully derived from the catalog", () => {
+test("discovery: Fable 5 auto-appears with the current Pi catalog values", () => {
 	const models = buildNativeModels({
 		extraIds: ["claude-fable-5"],
 		catalog: new Map([
 			[
 				"claude-fable-5",
 				{
-					cost: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
-					maxTokens: 32000,
-					contextWindow: 200000,
+					cost: FABLE_COST,
+					maxTokens: 128000,
+					contextWindow: 1000000,
 					reasoning: true,
 					input: ["text", "image"],
 					thinkingLevelMap: { xhigh: "xhigh" },
@@ -182,9 +183,9 @@ test("discovery (Q2): a brand-new family (fable) auto-appears, fully derived fro
 	const fable = models.find((m) => m.id === "claude-fable-5");
 	assert.ok(fable, "fable should appear without editing the seed");
 	assert.equal(fable?.name, "Claude Fable 5");
-	assert.equal(fable?.contextWindow, 200000); // unknown family → catalog window, single entry
-	assert.equal(fable?.maxTokens, 32000);
-	assert.deepEqual(fable?.cost, { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 });
+	assert.equal(fable?.contextWindow, 1000000); // unknown family → real catalog window, single entry
+	assert.equal(fable?.maxTokens, 128000);
+	assert.deepEqual(fable?.cost, FABLE_COST);
 	assert.deepEqual(fable?.thinkingLevelMap, { xhigh: "xhigh" }); // effort derived from catalog
 	assert.deepEqual(fable?.compat, { forceAdaptiveThinking: true });
 	// no [1m] alias for an unknown family (the 1M wire trick is curated-only)

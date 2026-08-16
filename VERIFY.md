@@ -12,14 +12,15 @@ comes from. Verified against the installed `@earendil-works/pi-ai` /
 | Signal | Genuine Claude Code | This plugin | Source |
 |--------|--------------------|-------------|--------|
 | `authorization: Bearer sk-ant-oat…` | ✅ | ✅ | Pi built-in (triggered by our OAuth token) |
-| `anthropic-beta` (2.1.220 **normal-turn** set, no `context-1m`) | ✅ | ✅ | **plugin** (`headers`, captured verbatim) |
+| `anthropic-beta` (2.1.233 **adaptive normal-turn** set, no `context-1m`) | ✅ | ✅ | **plugin** (`headers`; captured non-effort subset on Haiku) |
 | `context-1m-2025-08-07` advertised | only on true 1M-window turns | not by default | **plugin** (curated families are natively 1M; add via `PI_CLAUDE_NATIVE_ANTHROPIC_BETA` if your plan needs it) |
-| `user-agent: claude-cli/<v> (external, cli)` | ✅ | ✅ | **plugin** (`headers` override) |
+| `user-agent` version/profile | `external, cli` interactively; `external, sdk-cli` under `-p` | `external, cli` | **plugin** (`headers`; comparator accepts this documented profile pair) |
 | `x-app: cli` | ✅ | ✅ | Pi built-in (plugin restates it) |
 | `system[0]` = `x-anthropic-billing-header: …` | ✅ | ✅ | **plugin** (`before_provider_request`) |
 | `system[1]` = `You are Claude Code, …` identity | ✅ | ✅ | Pi built-in |
 | Tool names PascalCase (`Read`, `Bash`, …) + round-trip | ✅ | ✅ | Pi built-in (`toClaudeCodeName`) |
 | `metadata.user_id` (device/account/session ids) | ✅ | ✅ | **plugin** (read from `~/.claude.json`) |
+| `thinking.display: "omitted"` (adaptive and budget) | ✅ | ✅ | **plugin** (`before_provider_request`) |
 | `cc_version` consistent with `user-agent` version | ✅ | ✅ | **plugin** (one source of truth) |
 | System prompt clears the third-party classifier | ✅ | ✅ | **plugin** (`sanitizeSystemPrompt` strips the "Pi documentation" block) |
 
@@ -68,7 +69,7 @@ client — so capture each side under its own proxy run:
 # terminal 1 — genuine Claude Code pass
 $env:PI_CAPTURE_LABEL="claude"; node scripts/capture-proxy.mjs
 # terminal 2
-$env:ANTHROPIC_BASE_URL="http://127.0.0.1:8118"; claude -p "say hello"
+$env:_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL="1"; $env:ANTHROPIC_BASE_URL="http://127.0.0.1:8118"; claude -p "say hello"
 
 # terminal 1 — restart for the Pi pass (Ctrl-C first; select a claude-pro-max-native model)
 $env:PI_CAPTURE_LABEL="pi"; node scripts/capture-proxy.mjs
@@ -76,7 +77,10 @@ $env:PI_CAPTURE_LABEL="pi"; node scripts/capture-proxy.mjs
 $env:PI_CLAUDE_NATIVE_BASE_URL="http://127.0.0.1:8118"; pi -p "say hello"
 ```
 
-It prints `anthropic-beta` / `user-agent` / `x-app` / `system[0]` for each
+The first-party override is essential: without it Claude Code correctly treats
+the proxy URL as third-party and omits `cch` plus conditional beta flags, making
+the capture an artifact rather than the request sent to `api.anthropic.com`.
+The proxy prints `anthropic-beta` / `user-agent` / `x-app` / `system[0]` for each
 request and saves the full (token-redacted) dump.
 
 ### Method B — mitmproxy (fallback)
@@ -102,6 +106,9 @@ node scripts/compare-requests.mjs captures/req-claude-1.json captures/req-pi-1.j
 ```
 
 The script reports `PASS`/`DIFF` per signal and exits non-zero on any diff.
+It treats `sdk-cli` on the documented genuine `claude -p` capture and `cli` on
+Pi's interactive-profile provider as the expected entrypoint pair; malformed or
+unrelated entrypoints still fail.
 
 ## Refreshing after a `claude` update (one command)
 
@@ -113,8 +120,8 @@ npm run capture:fingerprint             # capture + report
 npm run capture:fingerprint -- --apply  # + install ~/.pi/claude-native-fingerprint.json
 ```
 
-It spins up the capture proxy, drives genuine `claude -p` across opus/sonnet/
-haiku, and writes:
+It spins up the capture proxy, marks its URL first-party, drives genuine
+`claude -p` across opus/sonnet/haiku, and writes:
 
 - `captures/fingerprint-<version>.json` — `{ version, anthropicBeta }`, the exact
   shape `src/constants.ts` reads. With `--apply` it is installed to
@@ -122,21 +129,27 @@ haiku, and writes:
   version and the beta set (a consistent pair) with **no code edit**.
 - `captures/fingerprint-report.md` — a per-model table plus a **diff of the
   captured `anthropic-beta` against the current `DEFAULT_ANTHROPIC_BETA`**, so a
-  changed flag is obvious. (Verified on 2.1.197 and again on 2.1.220: it reports "no change" — the set has not moved across either update.)
+  changed flag is obvious. The 2.1.233 first-party capture added
+  `advanced-tool-use-2025-11-20`, `afk-mode-2026-01-31`, and
+  `cache-diagnosis-2026-04-07` relative to the 2.1.220 default.
 
 `cc_version` is otherwise derived from your installed `claude` automatically, so
 the only value worth re-capturing on an update is the beta set — which this does.
 
 ## Matching the `anthropic-beta` set exactly
 
-The default is the **exact set captured from `claude` 2.1.220** (`src/constants.ts`
-`DEFAULT_ANTHROPIC_BETA`), including `effort-2025-11-24`,
-`context-management-2025-06-27`, `prompt-caching-scope-2026-01-05` and the rest
-(but **not** `context-1m-2025-08-07` — see "The 1M / long-context trap" below).
-The set is **version-specific** and Anthropic returns a **400 on unexpected beta
-values**, so it is captured verbatim, never guessed.
+The default is the **exact adaptive-turn set captured from `claude` 2.1.233**
+(`src/constants.ts` `DEFAULT_ANTHROPIC_BETA`): 13 flags on Fable 5, Opus 5, and
+Sonnet 5, including `advanced-tool-use-2025-11-20`, `afk-mode-2026-01-31`, and
+`cache-diagnosis-2026-04-07` (but **not** `context-1m-2025-08-07` — see "The 1M /
+long-context trap" below). Haiku 4.5 emitted 10 flags in the same run, omitting
+only `advisor-tool`, `effort`, and `afk-mode`; the provider applies that captured
+subset through a model header. An explicit `PI_CLAUDE_NATIVE_ANTHROPIC_BETA`
+remains byte-for-byte and is never reduced. The set is **version-specific** and
+Anthropic returns a **400 on unexpected beta values**, so values are captured,
+never guessed.
 
-If your `claude --version` differs from 2.1.220, re-capture and override:
+If your `claude --version` differs from 2.1.233, re-capture and override:
 
 1. Capture genuine `claude`'s `anthropic-beta` (Method A above prints it).
 2. Set it verbatim:
@@ -225,13 +238,14 @@ Minor, and not part of Anthropic's client classification as far as is known. If
 a capture shows one matters for your account, it is a one-line change:
 
 0. **`?beta=true` query param, `x-claude-code-session-id`, `context_management`
-   body field, and the `x-stainless-*` SDK versions** still differ from genuine
+   body field, optional billing `cc_prompt_id`, and the `x-stainless-*` SDK
+   versions** still differ from genuine
    Claude Code (a wire diff shows them). The query param and `x-stainless` come
    from Pi's HTTP layer (not reachable from `before_provider_request`, which only
    sees the body); the others are low-signal. None flipped the classifier in
    testing — the system prompt did.
 
-1. **`anthropic-beta` set** is captured from `claude` 2.1.220. If your installed
+1. **`anthropic-beta` set** is captured from `claude` 2.1.233. If your installed
    version sends a different set, the `compare` script flags it — set
    `PI_CLAUDE_NATIVE_ANTHROPIC_BETA` to your captured value (see "Matching the
    `anthropic-beta` set exactly" above).
@@ -244,5 +258,6 @@ a capture shows one matters for your account, it is a one-line change:
 5. **`metadata.user_id`** may be absent (genuine Claude Code sends a stable
    hashed id).
 
-If you bump `claude --version`, set `PI_CLAUDE_NATIVE_CC_VERSION` to match — the
-`user-agent` and the billing-header `cc_version` stay consistent automatically.
+After a Claude Code update, the installed version is normally derived
+automatically. If its state files lag, set `PI_CLAUDE_NATIVE_CC_VERSION`; the
+`user-agent` and billing-header `cc_version` still move together.

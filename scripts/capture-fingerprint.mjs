@@ -16,14 +16,15 @@
  *   node scripts/capture-fingerprint.mjs --models opus,sonnet,haiku
  *
  * Requires a logged-in `claude` on PATH (uses your subscription; tiny prompts).
+ * Override the executable with `PI_CLAUDE_NATIVE_CLAUDE_BIN` when needed.
  * Run this after `claude` updates to refresh the captured values.
  */
 
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import net from "node:net";
 import { homedir } from "node:os";
-import { dirname, join, resolve } from "node:path";
+import { delimiter, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
@@ -40,9 +41,29 @@ const modelsArg = (() => {
 	return i >= 0 && args[i + 1] ? args[i + 1] : "opus,sonnet,haiku";
 })();
 const MODELS = modelsArg.split(",").map((m) => m.trim()).filter(Boolean);
+if (MODELS.length === 0 || MODELS.some((model) => !/^[a-zA-Z0-9][a-zA-Z0-9._:-]*$/.test(model))) {
+	console.error("! --models must be a comma-separated list of Claude aliases or model ids");
+	process.exit(2);
+}
 
 const ONE_M_BETA = "context-1m-2025-08-07";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+const CLAUDE_PROMPT = "reply with the single word ok";
+
+function resolveClaudeExecutable() {
+	const override = process.env.PI_CLAUDE_NATIVE_CLAUDE_BIN?.trim();
+	if (override) return override;
+	const names = process.platform === "win32" ? ["claude.exe", "claude.com", "claude.cmd", "claude.bat"] : ["claude"];
+	for (const rawDir of (process.env.PATH || "").split(delimiter)) {
+		const dir = rawDir.replace(/^"|"$/g, "");
+		if (!dir) continue;
+		for (const name of names) {
+			const candidate = join(dir, name);
+			if (existsSync(candidate)) return candidate;
+		}
+	}
+	return process.platform === "win32" ? "claude.exe" : "claude";
+}
 
 function waitForPort(port, timeoutMs = 8000) {
 	return new Promise((resolveP, rejectP) => {
@@ -65,20 +86,35 @@ function waitForPort(port, timeoutMs = 8000) {
 
 function runClaude(model, baseUrl) {
 	return new Promise((resolveP) => {
-		const child = spawn("claude", ["-p", "reply with the single word ok", "--model", model], {
-			env: { ...process.env, ANTHROPIC_BASE_URL: baseUrl },
-			shell: true,
+		const executable = resolveClaudeExecutable();
+		const claudeArgs = ["-p", CLAUDE_PROMPT, "--model", model];
+		const isWindowsShim = process.platform === "win32" && [".cmd", ".bat"].includes(extname(executable).toLowerCase());
+		const command = isWindowsShim ? process.env.ComSpec || "cmd.exe" : executable;
+		const commandArgs = isWindowsShim ? ["/d", "/s", "/c", executable, ...claudeArgs] : claudeArgs;
+		const child = spawn(command, commandArgs, {
+			env: {
+				...process.env,
+				ANTHROPIC_BASE_URL: baseUrl,
+				// Claude Code omits cch when a custom base URL looks third-party. This
+				// override makes a proxy capture retain the real first-party header.
+				_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL: "1",
+			},
 			stdio: "ignore",
 		});
-		const timer = setTimeout(() => child.kill(), 90000);
-		child.on("exit", () => {
+		let timedOut = false;
+		let settled = false;
+		const finish = (result) => {
+			if (settled) return;
+			settled = true;
 			clearTimeout(timer);
-			resolveP();
-		});
-		child.on("error", () => {
-			clearTimeout(timer);
-			resolveP();
-		});
+			resolveP(result);
+		};
+		const timer = setTimeout(() => {
+			timedOut = true;
+			child.kill();
+		}, 90000);
+		child.on("exit", (code, signal) => finish({ code, signal, timedOut }));
+		child.on("error", (error) => finish({ code: null, signal: null, timedOut, error }));
 	});
 }
 
@@ -104,7 +140,7 @@ async function main() {
 	for (const f of readdirSync(RAW_DIR)) {
 		if (/^req-fp-\d+\.json$/.test(f)) {
 			try {
-				writeFileSync(join(RAW_DIR, f), "{}");
+				unlinkSync(join(RAW_DIR, f));
 			} catch {
 				/* ignore */
 			}
@@ -116,13 +152,19 @@ async function main() {
 		env: { ...process.env, PI_CAPTURE_PORT: String(PORT), PI_CAPTURE_DIR: RAW_DIR, PI_CAPTURE_LABEL: "fp" },
 		stdio: "ignore",
 	});
+	const captureOwner = new Map();
+	const runResults = [];
 	try {
 		await waitForPort(PORT);
 		const baseUrl = `http://127.0.0.1:${PORT}`;
 		for (const model of MODELS) {
 			console.log(`> capturing claude --model ${model} ...`);
-			await runClaude(model, baseUrl);
+			const before = new Set(readdirSync(RAW_DIR));
+			const result = await runClaude(model, baseUrl);
 			await sleep(300);
+			const files = readdirSync(RAW_DIR).filter((f) => /^req-fp-\d+\.json$/.test(f) && !before.has(f));
+			for (const file of files) captureOwner.set(file, model);
+			runResults.push({ model, ...result, captures: files.length });
 		}
 	} finally {
 		proxy.kill();
@@ -142,7 +184,11 @@ async function main() {
 		if (!rec?.body?.model) continue;
 		const size = JSON.stringify(rec.body).length;
 		const prev = byModel.get(rec.body.model);
-		if (!prev || size > prev.size) byModel.set(rec.body.model, { rec, size });
+		const triggeredBy = new Set(prev?.triggeredBy || []);
+		const owner = captureOwner.get(f);
+		if (owner) triggeredBy.add(owner);
+		if (!prev || size > prev.size) byModel.set(rec.body.model, { rec, size, triggeredBy });
+		else prev.triggeredBy = triggeredBy;
 	}
 
 	if (byModel.size === 0) {
@@ -152,30 +198,38 @@ async function main() {
 
 	const perModel = {};
 	let version;
-	let baseBeta;
-	for (const [wireModel, { rec }] of byModel) {
+	for (const [wireModel, { rec, triggeredBy }] of byModel) {
 		const h = rec.headers || {};
 		const ua = h["user-agent"] || "";
 		const ver = (ua.match(/claude-cli\/(\d+\.\d+\.\d+)/) || [])[1];
 		const sys0 = (rec.body.system && rec.body.system[0] && rec.body.system[0].text) || "";
 		const billing = (sys0.match(/cc_version=(\d+\.\d+\.\d+)\.[0-9a-f]{3}; cc_entrypoint=([\w-]+);/) || []);
 		const beta = betaList(h["anthropic-beta"]);
+		const detectedVersion = ver || billing[1];
 		perModel[wireModel] = {
 			wireModel,
 			userAgent: ua,
-			version: ver || billing[1],
+			version: detectedVersion,
 			entrypoint: billing[2] || null,
 			effort: rec.body.output_config?.effort ?? null,
+			hasCch: / cch=[0-9a-f]{5};/.test(sys0),
 			has1mBeta: beta.includes(ONE_M_BETA),
 			beta,
+			triggeredBy: [...triggeredBy],
 		};
-		if (ver && !version) version = ver;
-		// Prefer the opus normal-turn beta as the base set; else the first seen.
-		if (!baseBeta || /opus/.test(wireModel)) baseBeta = beta;
+		if (detectedVersion && !version) version = detectedVersion;
 	}
 
-	// Our default policy sends the normal-turn set (no context-1m); 1M models add it.
-	const fingerprintBeta = (baseBeta || []).filter((b) => b !== ONE_M_BETA);
+	// The provider default is the adaptive normal-turn set. Haiku omits three
+	// effort-only flags, so a Haiku-only run cannot safely produce the global
+	// fingerprint used by Opus/Fable/Sonnet.
+	const candidates = Object.values(perModel);
+	const base = candidates.find((p) => /opus/.test(p.wireModel) && p.effort) || candidates.find((p) => p.effort);
+	if (!base) {
+		console.error("! no adaptive-effort capture recorded — include opus, fable, or sonnet in --models");
+		process.exit(1);
+	}
+	const fingerprintBeta = base.beta.filter((b) => b !== ONE_M_BETA);
 	const fingerprint = {
 		capturedAt: new Date().toISOString(),
 		version: version || null,
@@ -193,7 +247,8 @@ async function main() {
 	const report = [
 		`# Claude Code fingerprint — ${version || "unknown version"}`,
 		``,
-		`Captured ${fingerprint.capturedAt} from \`claude -p\` across: ${[...byModel.keys()].join(", ")}.`,
+		`Captured ${fingerprint.capturedAt} from \`claude -p\` requested models: ${MODELS.join(", ")}.`,
+		`Observed wire requests: ${[...byModel.keys()].join(", ")}. Auxiliary requests are retained and attributed below.`,
 		``,
 		`## Values for \`src/constants.ts\``,
 		``,
@@ -213,12 +268,16 @@ async function main() {
 		``,
 		`## Per model (wire)`,
 		``,
-		"| wire model | version | entrypoint | effort | context-1m | beta flags |",
-		"|------------|---------|-----------|--------|-----------|-----------|",
+		"| wire model | triggered by | version | entrypoint | cch | effort | context-1m | beta flags |",
+		"|------------|--------------|---------|------------|-----|--------|------------|------------|",
 		...[...byModel.keys()].map((m) => {
 			const p = perModel[m];
-			return `| \`${m}\` | ${p.version || "?"} | ${p.entrypoint || "?"} | ${p.effort || "—"} | ${p.has1mBeta ? "yes" : "no"} | ${p.beta.length} |`;
+			return `| \`${m}\` | ${p.triggeredBy.map((v) => `\`${v}\``).join(", ") || "?"} | ${p.version || "?"} | ${p.entrypoint || "?"} | ${p.hasCch ? "yes" : "no"} | ${p.effort || "—"} | ${p.has1mBeta ? "yes" : "no"} | ${p.beta.length} |`;
 		}),
+		``,
+		`## Capture runs`,
+		``,
+		...runResults.map((r) => `- \`${r.model}\`: ${r.captures} request(s), ${r.timedOut ? "timed out" : r.error ? `spawn error: ${r.error.message}` : `exit ${r.code}${r.signal ? ` (${r.signal})` : ""}`}`),
 		``,
 		`Machine fingerprint written to \`${outJson}\`.`,
 		APPLY ? `Applied to \`~/.pi/claude-native-fingerprint.json\` — the extension will auto-adopt it.` : `Run again with \`--apply\` to install it for the extension to auto-adopt.`,
@@ -237,6 +296,10 @@ async function main() {
 	console.log(`✓ wrote ${outJson}`);
 	console.log(`✓ wrote ${outMd}`);
 	if (APPLY) console.log(`✓ applied to ~/.pi/claude-native-fingerprint.json`);
+	if (runResults.some((r) => r.captures === 0)) {
+		console.error("! one or more requested model runs produced no capture");
+		process.exitCode = 1;
+	}
 }
 
 main().catch((err) => {

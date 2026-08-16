@@ -1,6 +1,6 @@
 /**
- * Rewrites the serialized Anthropic request payload to add the one piece Pi's
- * built-in OAuth path is missing: Claude Code's `x-anthropic-billing-header`.
+ * Rewrites the serialized Anthropic request payload to add Claude Code body
+ * signals Pi's built-in OAuth path omits and remove the classifier trigger.
  *
  * When this runs (in `before_provider_request`), Pi has already produced, for an
  * OAuth token:
@@ -30,6 +30,7 @@ interface SystemTextBlock {
 interface AnthropicPayload {
 	system?: unknown;
 	messages?: unknown;
+	thinking?: unknown;
 	[key: string]: unknown;
 }
 
@@ -152,4 +153,22 @@ export function applyMetadata(payload: unknown, userId: string | undefined): unk
 	const typed = payload as AnthropicPayload & { metadata?: { user_id?: unknown } };
 	if (typed.metadata && typeof typed.metadata === "object" && "user_id" in typed.metadata) return payload;
 	return { ...typed, metadata: { ...(typed.metadata ?? {}), user_id: userId } };
+}
+
+/**
+ * Claude Code requests redacted thinking (`display: "omitted"`) for adaptive and
+ * budget modes. Pi's Anthropic path defaults to `summarized`; align this provider
+ * after serialization without affecting disabled thinking. Pure and idempotent.
+ */
+export function applyClaudeCodeThinkingDisplay(payload: unknown): unknown {
+	if (!payload || typeof payload !== "object") return payload;
+	const typed = payload as AnthropicPayload;
+	const thinking = typed.thinking;
+	if (!thinking || typeof thinking !== "object") return payload;
+	const type = (thinking as { type?: unknown }).type;
+	if (type !== "adaptive" && type !== "enabled") {
+		return payload;
+	}
+	if ((thinking as { display?: unknown }).display === "omitted") return payload;
+	return { ...typed, thinking: { ...thinking, display: "omitted" } };
 }

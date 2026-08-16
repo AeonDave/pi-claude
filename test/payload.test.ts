@@ -1,6 +1,11 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { applyBillingHeader, applyMetadata, sanitizeSystemPrompt } from "../src/payload.ts";
+import {
+	applyBillingHeader,
+	applyClaudeCodeThinkingDisplay,
+	applyMetadata,
+	sanitizeSystemPrompt,
+} from "../src/payload.ts";
 
 const VERSION = "2.1.87";
 const ENTRYPOINT = "cli";
@@ -130,4 +135,24 @@ test("applyMetadata sets metadata.user_id and is idempotent / skips when absent"
 	// no id → unchanged reference
 	const p = { model: "x" };
 	assert.equal(applyMetadata(p, undefined), p);
+});
+
+test("adaptive thinking uses Claude Code's omitted display without mutating the payload", () => {
+	const payload = { thinking: { type: "adaptive", display: "summarized" }, messages: [] };
+	const result = applyClaudeCodeThinkingDisplay(payload) as { thinking: { type: string; display: string } };
+	assert.deepEqual(result.thinking, { type: "adaptive", display: "omitted" });
+	assert.equal(payload.thinking.display, "summarized");
+	assert.equal(applyClaudeCodeThinkingDisplay(result), result, "idempotent");
+});
+
+test("budget thinking also uses Claude Code's omitted display", () => {
+	const budget = { thinking: { type: "enabled", display: "summarized", budget_tokens: 1024 } };
+	const result = applyClaudeCodeThinkingDisplay(budget) as { thinking: { display: string; budget_tokens: number } };
+	assert.deepEqual(result.thinking, { type: "enabled", display: "omitted", budget_tokens: 1024 });
+	assert.equal(budget.thinking.display, "summarized");
+	const disabled = { thinking: { type: "disabled" } };
+	assert.equal(applyClaudeCodeThinkingDisplay(disabled), disabled);
+	const malformed = { thinking: "adaptive" };
+	assert.equal(applyClaudeCodeThinkingDisplay(malformed), malformed);
+	assert.equal(applyClaudeCodeThinkingDisplay(undefined), undefined);
 });

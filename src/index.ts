@@ -7,12 +7,9 @@
  * `api: "anthropic-messages"` path, which already sends the Claude Code identity,
  * the OAuth/Claude-Code beta headers, Bearer auth, `x-app: cli`, and Claude-Code
  * tool-name canonicalization (with round-trip on the response). On top of that
- * this extension adds the only two things Pi's path omits:
- *
- *   1. a current, suffixed `user-agent` (`claude-cli/<v> (external, cli)`), via
- *      provider `headers`; and
- *   2. Claude Code's `x-anthropic-billing-header` system block, via
- *      `before_provider_request`.
+ * this extension supplies the freshly captured user-agent/beta headers and the
+ * body signals Pi omits: billing header, metadata user id, omitted thinking
+ * display, and system-prompt classifier sanitization.
  *
  * The provider's own OAuth makes it appear under `/login` as "Claude Pro/Max
  * Native" and stores an `sk-ant-oat...` token, which is what flips Pi's built-in
@@ -30,6 +27,7 @@
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	getAnthropicBeta,
+	getAnthropicBetaForModel,
 	getBaseUrl,
 	getClaudeCodeEntrypoint,
 	getClaudeCodeVersion,
@@ -47,7 +45,7 @@ import { logNativeRequest } from "./debug.ts";
 import { type DiscoveredModel, fetchLiveModels, readModelCache, writeModelCache } from "./discovery.ts";
 import { ALLOWLIST_RE, buildNativeModels, type CatalogEntry, type NativeModel } from "./models.ts";
 import { getApiKey, login, refreshToken } from "./oauth.ts";
-import { applyBillingHeader, applyMetadata, sanitizeSystemPrompt } from "./payload.ts";
+import { applyBillingHeader, applyClaudeCodeThinkingDisplay, applyMetadata, sanitizeSystemPrompt } from "./payload.ts";
 
 const STATUS_KEY = "claude-native";
 
@@ -68,7 +66,7 @@ function setStatus(ctx: ExtensionContext, text: string | undefined): void {
 
 export default function claudeProMaxNative(pi: ExtensionAPI) {
 	// These override Pi's defaults (merged last in Pi's Anthropic client, so they
-	// win): the genuine external-CLI user-agent, and the exact Claude Code 2.1.220
+	// win): the genuine external-CLI user-agent, and the exact Claude Code 2.1.233
 	// `anthropic-beta` set. `x-app` restates Pi's own default for robustness.
 	const headers: Record<string, string> = {
 		"user-agent": getUserAgent(),
@@ -83,9 +81,18 @@ export default function claudeProMaxNative(pi: ExtensionAPI) {
 	let lastSignature = "";
 
 	function registerNative(models: NativeModel[]): void {
-		const signature = models.map((m) => `${m.id}@${m.contextWindow}`).join(",");
+		const registeredModels = models.map((model) => {
+			const modelBeta = getAnthropicBetaForModel(model.id);
+			if (modelBeta === headers["anthropic-beta"]) return model;
+			return {
+				...model,
+				headers: { "anthropic-beta": modelBeta, ...model.headers },
+			};
+		});
+		// Every field is registry-visible. A catalog refresh may correct pricing,
+		// effort, compatibility, or headers without changing an id/window pair.
+		const signature = JSON.stringify(registeredModels);
 		if (signature === lastSignature) return;
-		lastSignature = signature;
 		// No per-model long-context header: the curated families are natively 1M,
 		// so they expose their full window under their clean id without the
 		// `context-1m-2025-08-07` beta — which a plan lacking long-context rejects
@@ -97,9 +104,12 @@ export default function claudeProMaxNative(pi: ExtensionAPI) {
 				baseUrl: getBaseUrl(),
 				api: "anthropic-messages",
 				headers,
-				models,
+				models: registeredModels,
 				oauth,
 			});
+			// Commit the signature only after the registry accepted the update. If it
+			// throws, the next refresh must retry the exact same model set.
+			lastSignature = signature;
 		} catch (err) {
 			// Keep whatever model set was last applied; a transient registry error
 			// must not take the provider down.
@@ -208,9 +218,10 @@ export default function claudeProMaxNative(pi: ExtensionAPI) {
 		const entrypoint = getClaudeCodeEntrypoint();
 		// Strip third-party-harness fingerprints from the system prompt (Anthropic
 		// 400s these as a disguised usage error), then add the genuine Claude Code
-		// metadata.user_id, then the billing header. Order is independent: the cch
-		// hashes the first user message, not the system blocks.
+		// thinking display + metadata.user_id, then the billing header. Order is
+		// independent: the cch hashes the first user message, not the system blocks.
 		let next = sanitizeSystemPrompt(event.payload, getSanitizeRules());
+		next = applyClaudeCodeThinkingDisplay(next);
 		next = applyMetadata(next, getClaudeUserId());
 		next = applyBillingHeader(next, version, entrypoint);
 		logNativeRequest(next, { model: ctx.model?.id, userAgent: getUserAgent(), version, entrypoint });

@@ -54,7 +54,7 @@ export const TOKEN_USER_AGENT = "axios/1.13.6";
 // Claude Code client fingerprint
 // ---------------------------------------------------------------------------
 
-const DEFAULT_CC_VERSION = "2.1.220";
+const DEFAULT_CC_VERSION = "2.1.233";
 const DEFAULT_CC_ENTRYPOINT = "cli";
 
 // ---------------------------------------------------------------------------
@@ -165,11 +165,13 @@ export function getBaseUrl(): string {
 }
 
 /**
- * The `anthropic-beta` set captured verbatim from genuine `claude` 2.1.220's
- * normal turn (`claude -p "say hello"`, 2026). This REPLACES Pi's per-model beta
+ * The `anthropic-beta` set captured verbatim from genuine `claude` 2.1.233's
+ * adaptive normal turn (`claude -p`, Opus 5/Fable 5/Sonnet 5, 2026-08-16).
+ * This REPLACES Pi's per-model beta
  * logic so the header is byte-identical to Claude Code's everyday request.
- * Re-captured on 2.1.220 (`npm run capture:fingerprint`): the set is byte-for-byte
- * the same as the one first captured on 2.1.186/2.1.197 — only the version moved.
+ * Re-captured with the proxy marked first-party so conditional `cch` and beta
+ * flags are preserved. Compared with 2.1.220, 2.1.233 added
+ * `advanced-tool-use`, `afk-mode`, and `cache-diagnosis`.
  *
  * `context-1m-2025-08-07` is intentionally NOT here: a subscription without
  * long-context access returns 400/429 on any request that advertises it, and
@@ -191,9 +193,23 @@ export const DEFAULT_ANTHROPIC_BETA = [
 	"prompt-caching-scope-2026-01-05",
 	"mid-conversation-system-2026-04-07",
 	"advisor-tool-2026-03-01",
+	"advanced-tool-use-2025-11-20",
 	"effort-2025-11-24",
+	"afk-mode-2026-01-31",
 	"extended-cache-ttl-2025-04-11",
+	"cache-diagnosis-2026-04-07",
 ].join(",");
+
+const ADAPTIVE_EFFORT_BETAS = new Set([
+	"advisor-tool-2026-03-01",
+	"effort-2025-11-24",
+	"afk-mode-2026-01-31",
+]);
+
+/** Genuine Haiku 4.5 normal turns omit the adaptive-effort-only flags. */
+export const DEFAULT_NON_EFFORT_ANTHROPIC_BETA = DEFAULT_ANTHROPIC_BETA.split(",")
+	.filter((flag) => !ADAPTIVE_EFFORT_BETAS.has(flag))
+	.join(",");
 
 /**
  * The `anthropic-beta` header to send: `PI_CLAUDE_NATIVE_ANTHROPIC_BETA` env →
@@ -204,6 +220,23 @@ export function getAnthropicBeta(): string {
 	const override = process.env.PI_CLAUDE_NATIVE_ANTHROPIC_BETA?.trim();
 	if (override && override.length > 0) return override;
 	return readFingerprint()?.anthropicBeta?.trim() || DEFAULT_ANTHROPIC_BETA;
+}
+
+/**
+ * Model-specific captured beta set. An explicit env override remains verbatim;
+ * otherwise Haiku removes the three flags genuine 2.1.233 only sends with an
+ * adaptive-effort request. Captured fingerprints are reduced the same way, so
+ * version/beta pairs still move together.
+ */
+export function getAnthropicBetaForModel(modelId: string): string {
+	const beta = getAnthropicBeta();
+	if (process.env.PI_CLAUDE_NATIVE_ANTHROPIC_BETA?.trim() || !modelId.startsWith("claude-haiku-")) {
+		return beta;
+	}
+	return beta
+		.split(",")
+		.filter((flag) => !ADAPTIVE_EFFORT_BETAS.has(flag.trim()))
+		.join(",");
 }
 
 // ---------------------------------------------------------------------------
