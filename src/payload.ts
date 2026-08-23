@@ -156,6 +156,34 @@ export function applyMetadata(payload: unknown, userId: string | undefined): unk
 }
 
 /**
+ * Inject the `context_management` body field that genuine Claude Code 2.1.241+
+ * sends alongside the `context-management-2025-06-27` beta flag. Tells the API to
+ * clear thinking blocks from prior turns while keeping all content. Idempotent:
+ * returns the original reference when the field is already present.
+ */
+export function applyContextManagement(payload: unknown): unknown {
+	if (!payload || typeof payload !== "object") return payload;
+	const typed = payload as AnthropicPayload;
+	if (typed.context_management !== undefined) return payload;
+	return {
+		...typed,
+		context_management: { edits: [{ type: "clear_thinking_20251015", keep: "all" }] },
+	};
+}
+
+/**
+ * Inject the `diagnostics` body field that genuine Claude Code 2.1.241+ sends.
+ * On the first turn `previous_message_id` is `null`; tracking across turns is
+ * outside our scope (the API accepts `null` gracefully). Idempotent.
+ */
+export function applyDiagnostics(payload: unknown): unknown {
+	if (!payload || typeof payload !== "object") return payload;
+	const typed = payload as AnthropicPayload;
+	if (typed.diagnostics !== undefined) return payload;
+	return { ...typed, diagnostics: { previous_message_id: null } };
+}
+
+/**
  * Claude Code requests redacted thinking (`display: "omitted"`) for adaptive and
  * budget modes. Pi's Anthropic path defaults to `summarized`; align this provider
  * after serialization without affecting disabled thinking. Pure and idempotent.

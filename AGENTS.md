@@ -93,13 +93,16 @@ capture both clients via `scripts/capture-proxy.mjs`, then
 
 ## Active decisions
 
-- Profile is the interactive CLI one (`cc_entrypoint=cli`, `user-agent … (external, cli)`,
-  Pi's "You are Claude Code…" identity) — consistent and Pi-native. A captured
-  `claude -p` request is `sdk-cli`; the beta set is identical between the two.
-- The `anthropic-beta` default is captured verbatim from `claude` 2.1.233's
-  **adaptive normal turn** (no `context-1m`): 13 flags on Fable 5, Opus 5, and
-  Sonnet 5. Haiku 4.5 uses the captured 10-flag non-effort subset. Opus
-  4.8/4.7/4.6 and Sonnet 4.6 are natively
+- Profile matches the genuine CLI (`cc_entrypoint=sdk-cli`,
+  `user-agent … (external, sdk-cli)`, Pi's "You are Claude Code…" identity).
+  The entrypoint changed from `cli` to `sdk-cli` in 2.1.241; both interactive
+  and `-p` modes now use `sdk-cli`.
+- The `anthropic-beta` default is captured verbatim from `claude` 2.1.241's
+  **adaptive normal turn** (no `context-1m`): 13 flags on Opus 5 and Sonnet 5.
+  Haiku 4.5 uses the captured 10-flag non-effort subset (drops
+  `mid-conversation-system`, `effort`, `afk-mode` — note: 2.1.241 changed the
+  Haiku subset vs 2.1.233, keeping `advisor-tool` and dropping
+  `mid-conversation-system`). Opus 4.8/4.7/4.6 and Sonnet 4.6 are natively
   1M and expose their window under their clean id — no `context-1m` and no `[1m]`
   suffix (the suffix 404s; `context-1m` 400/429s plans without long-context).
 - The "extra usage" 400 is a **system-prompt classifier**, not billing (verified:
@@ -116,18 +119,24 @@ capture both clients via `scripts/capture-proxy.mjs`, then
   and detects drift. A fingerprint file pairs version + beta so they move together;
   deriving version alone is safe because Anthropic validates the beta set, not the
   cc_version string.
-- **Re-capture on `claude` 2.1.233 (2026-08-16).** With the proxy correctly
-  marked first-party, Fable 5, Opus 5, and Sonnet 5 all emitted the same
-  13-flag adaptive set; Haiku emitted 10 flags (without `advisor-tool`, `effort`,
-  or `afk-mode`). Relative to the 2.1.220 default, the adaptive set added
-  `advanced-tool-use-2025-11-20`, `afk-mode-2026-01-31`, and
-  `cache-diagnosis-2026-04-07`. Things the next capture should not re-discover:
-  - `claude --model opus` now resolves to **`claude-opus-5`** (1M, adaptive-only,
-    `output_config.effort: "xhigh"` on the wire). It stays *discovered*, not seeded —
-    but it needs an `ID_OVERRIDES` entry, because the conservative opus family default
+- **Re-capture on `claude` 2.1.241 (2026-08-23).** With the proxy correctly
+  marked first-party, Opus 5 and Sonnet 5 emitted the same 13-flag adaptive set;
+  Haiku emitted 10 flags (without `mid-conversation-system`, `effort`, or
+  `afk-mode` — changed from 2.1.233 which omitted `advisor-tool` instead of
+  `mid-conversation-system`). The 13-flag set itself is unchanged from 2.1.233.
+  New in 2.1.241:
+  - `cc_entrypoint` changed from `cli` to `sdk-cli` (user-agent follows).
+  - Body fields `context_management` and `diagnostics` are now sent.
+  - Header `x-claude-code-session-id` is now sent (matches metadata session_id).
+  - `x-stainless-*` SDK telemetry headers are now present (SDK-level, informational).
+  - `claude --model sonnet` now resolves to **`claude-sonnet-5`** (1M, adaptive,
+    `output_config.effort: "xhigh"` on the wire) — needs `ID_OVERRIDES` for the
+    higher effort ceiling, like Opus 5.
+  - `claude --model opus` still resolves to **`claude-opus-5`** (1M, adaptive-only,
+    `output_config.effort: "xhigh"`). It stays *discovered*, not seeded —
+    but needs an `ID_OVERRIDES` entry because the conservative opus family default
     caps `xhigh` at `max`. A new curated-family generation always needs that overlay.
-  - Fable 5 and Opus 5 both send adaptive thinking with wire effort `xhigh`, no
-    temperature, and no `context-1m` beta.
+  - Both send adaptive thinking with wire effort `xhigh`, no `context-1m` beta.
   - The billing header's tail is **conditional**: `cch` is emitted only when the base
     URL is first-party (`Kd()` in the CLI checks `ANTHROPIC_BASE_URL`'s host against
     `api.anthropic.com`), so an unmarked capture taken **through the proxy shows

@@ -6,7 +6,7 @@ import {
 	getAnthropicBetaForModel,
 } from "../src/constants.ts";
 
-test("default beta set matches the Claude Code 2.1.233 Opus 5/Fable 5 capture", () => {
+test("default beta set matches the Claude Code 2.1.241 Opus 5/Sonnet 5 capture", () => {
 	assert.deepEqual(DEFAULT_ANTHROPIC_BETA.split(","), [
 		"claude-code-20250219",
 		"oauth-2025-04-20",
@@ -26,9 +26,9 @@ test("default beta set matches the Claude Code 2.1.233 Opus 5/Fable 5 capture", 
 	assert.deepEqual(
 		DEFAULT_NON_EFFORT_ANTHROPIC_BETA.split(","),
 		DEFAULT_ANTHROPIC_BETA.split(",").filter(
-			(flag) => !["advisor-tool-2026-03-01", "effort-2025-11-24", "afk-mode-2026-01-31"].includes(flag),
+			(flag) => !["mid-conversation-system-2026-04-07", "effort-2025-11-24", "afk-mode-2026-01-31"].includes(flag),
 		),
-		"Haiku's capture omits only the three adaptive-effort flags",
+		"Haiku's 2.1.241 capture omits mid-conversation-system, effort, and afk-mode",
 	);
 });
 

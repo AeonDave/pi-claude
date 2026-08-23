@@ -54,8 +54,8 @@ export const TOKEN_USER_AGENT = "axios/1.13.6";
 // Claude Code client fingerprint
 // ---------------------------------------------------------------------------
 
-const DEFAULT_CC_VERSION = "2.1.233";
-const DEFAULT_CC_ENTRYPOINT = "cli";
+const DEFAULT_CC_VERSION = "2.1.241";
+const DEFAULT_CC_ENTRYPOINT = "sdk-cli";
 
 // ---------------------------------------------------------------------------
 // Derived fingerprint (robustness): track the user's real Claude install
@@ -147,11 +147,11 @@ export function getClaudeCodeEntrypoint(): string {
 	return readFingerprint()?.entrypoint?.trim() || DEFAULT_CC_ENTRYPOINT;
 }
 
-/** `claude-cli/<version> (external, cli)` — the genuine external CLI User-Agent. */
+/** `claude-cli/<version> (external, sdk-cli)` — the genuine external CLI User-Agent. */
 export function getUserAgent(): string {
 	const override = process.env.PI_CLAUDE_NATIVE_USER_AGENT?.trim();
 	if (override && override.length > 0) return override;
-	return `claude-cli/${getClaudeCodeVersion()} (external, cli)`;
+	return `claude-cli/${getClaudeCodeVersion()} (external, sdk-cli)`;
 }
 
 /**
@@ -165,13 +165,14 @@ export function getBaseUrl(): string {
 }
 
 /**
- * The `anthropic-beta` set captured verbatim from genuine `claude` 2.1.233's
- * adaptive normal turn (`claude -p`, Opus 5/Fable 5/Sonnet 5, 2026-08-16).
+ * The `anthropic-beta` set captured verbatim from genuine `claude` 2.1.241's
+ * adaptive normal turn (`claude -p`, Opus 5/Sonnet 5, 2026-08-23).
  * This REPLACES Pi's per-model beta
  * logic so the header is byte-identical to Claude Code's everyday request.
  * Re-captured with the proxy marked first-party so conditional `cch` and beta
  * flags are preserved. Compared with 2.1.220, 2.1.233 added
- * `advanced-tool-use`, `afk-mode`, and `cache-diagnosis`.
+ * `advanced-tool-use`, `afk-mode`, and `cache-diagnosis`; 2.1.241 kept the
+ * same 13 flags but changed the Haiku non-effort subset (see below).
  *
  * `context-1m-2025-08-07` is intentionally NOT here: a subscription without
  * long-context access returns 400/429 on any request that advertises it, and
@@ -201,20 +202,22 @@ export const DEFAULT_ANTHROPIC_BETA = [
 ].join(",");
 
 const ADAPTIVE_EFFORT_BETAS = new Set([
-	"advisor-tool-2026-03-01",
+	"mid-conversation-system-2026-04-07",
 	"effort-2025-11-24",
 	"afk-mode-2026-01-31",
 ]);
 
-/** Genuine Haiku 4.5 normal turns omit the adaptive-effort-only flags. */
+/** Genuine Haiku 4.5 normal turns omit the adaptive-effort-only flags (2.1.241 capture). */
+/** Re-captured: 2.1.241 Haiku keeps `advisor-tool` but drops `mid-conversation-system`. */
 export const DEFAULT_NON_EFFORT_ANTHROPIC_BETA = DEFAULT_ANTHROPIC_BETA.split(",")
 	.filter((flag) => !ADAPTIVE_EFFORT_BETAS.has(flag))
 	.join(",");
 
 /**
  * The `anthropic-beta` header to send: `PI_CLAUDE_NATIVE_ANTHROPIC_BETA` env →
- * captured fingerprint → the hardcoded captured set. The fingerprint pairs this
- * with its version, so a freshly-captured set and its version stay consistent.
+ * captured fingerprint → the hardcoded captured set (2.1.241). The fingerprint
+ * pairs this with its version, so a freshly-captured set and its version stay
+ * consistent.
  */
 export function getAnthropicBeta(): string {
 	const override = process.env.PI_CLAUDE_NATIVE_ANTHROPIC_BETA?.trim();
@@ -224,9 +227,10 @@ export function getAnthropicBeta(): string {
 
 /**
  * Model-specific captured beta set. An explicit env override remains verbatim;
- * otherwise Haiku removes the three flags genuine 2.1.233 only sends with an
- * adaptive-effort request. Captured fingerprints are reduced the same way, so
- * version/beta pairs still move together.
+ * otherwise Haiku removes the three flags genuine 2.1.241 only sends with an
+ * adaptive-effort request (mid-conversation-system, effort, afk-mode). Captured
+ * fingerprints are reduced the same way, so version/beta pairs still move
+ * together.
  */
 export function getAnthropicBetaForModel(modelId: string): string {
 	const beta = getAnthropicBeta();
@@ -359,6 +363,11 @@ const SESSION_ID = (() => {
 		return "00000000-0000-0000-0000-000000000000";
 	}
 })();
+
+/** The session id sent as `x-claude-code-session-id` header (matches metadata). */
+export function getSessionId(): string {
+	return SESSION_ID;
+}
 
 let cachedUserId: string | null | undefined;
 

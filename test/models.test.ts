@@ -77,8 +77,8 @@ test("discovery (A): a new catalog opus id appears as a single native-1M entry",
 	assert.ok(!models.some((m) => m.id === "claude-opus-4-9-1m"), "no -1m alias");
 });
 
-test("discovery: claude-opus-5 keeps the xhigh ceiling captured from claude 2.1.233", () => {
-	// Regression: `claude --model opus` resolves to `claude-opus-5` on 2.1.233 and
+test("discovery: claude-opus-5 keeps the xhigh ceiling captured from claude 2.1.241", () => {
+	// Regression: `claude --model opus` resolves to `claude-opus-5` on 2.1.241 and
 	// sends `output_config.effort: "xhigh"`. Without the ID_OVERRIDES entry the
 	// conservative opus family default (`xhigh -> max`) would silently downgrade
 	// every request, and temperature would be left enabled on an adaptive-only model.

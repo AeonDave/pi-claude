@@ -3,6 +3,8 @@ import { test } from "node:test";
 import {
 	applyBillingHeader,
 	applyClaudeCodeThinkingDisplay,
+	applyContextManagement,
+	applyDiagnostics,
 	applyMetadata,
 	sanitizeSystemPrompt,
 } from "../src/payload.ts";
@@ -155,4 +157,25 @@ test("budget thinking also uses Claude Code's omitted display", () => {
 	const malformed = { thinking: "adaptive" };
 	assert.equal(applyClaudeCodeThinkingDisplay(malformed), malformed);
 	assert.equal(applyClaudeCodeThinkingDisplay(undefined), undefined);
+});
+
+test("applyContextManagement injects the field and is idempotent", () => {
+	const payload = { model: "x", messages: [] };
+	const result = applyContextManagement(payload) as { context_management: unknown };
+	assert.deepEqual(result.context_management, { edits: [{ type: "clear_thinking_20251015", keep: "all" }] });
+	// idempotent — returns same reference
+	assert.equal(applyContextManagement(result), result);
+	// non-object passthrough
+	assert.equal(applyContextManagement(undefined), undefined);
+	assert.equal(applyContextManagement(null), null);
+});
+
+test("applyDiagnostics injects the field and is idempotent", () => {
+	const payload = { model: "x", messages: [] };
+	const result = applyDiagnostics(payload) as { diagnostics: unknown };
+	assert.deepEqual(result.diagnostics, { previous_message_id: null });
+	// idempotent — returns same reference
+	assert.equal(applyDiagnostics(result), result);
+	// non-object passthrough
+	assert.equal(applyDiagnostics(undefined), undefined);
 });

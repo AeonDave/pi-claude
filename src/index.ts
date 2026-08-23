@@ -36,6 +36,7 @@ import {
 	getModelCachePath,
 	getModelOverrides,
 	getSanitizeRules,
+	getSessionId,
 	getUserAgent,
 	isLiveDiscoveryEnabled,
 	PROVIDER_ID,
@@ -45,7 +46,14 @@ import { logNativeRequest } from "./debug.ts";
 import { type DiscoveredModel, fetchLiveModels, readModelCache, writeModelCache } from "./discovery.ts";
 import { ALLOWLIST_RE, buildNativeModels, type CatalogEntry, type NativeModel } from "./models.ts";
 import { getApiKey, login, refreshToken } from "./oauth.ts";
-import { applyBillingHeader, applyClaudeCodeThinkingDisplay, applyMetadata, sanitizeSystemPrompt } from "./payload.ts";
+import {
+	applyBillingHeader,
+	applyClaudeCodeThinkingDisplay,
+	applyContextManagement,
+	applyDiagnostics,
+	applyMetadata,
+	sanitizeSystemPrompt,
+} from "./payload.ts";
 
 const STATUS_KEY = "claude-native";
 
@@ -66,12 +74,14 @@ function setStatus(ctx: ExtensionContext, text: string | undefined): void {
 
 export default function claudeProMaxNative(pi: ExtensionAPI) {
 	// These override Pi's defaults (merged last in Pi's Anthropic client, so they
-	// win): the genuine external-CLI user-agent, and the exact Claude Code 2.1.233
+	// win): the genuine external-CLI user-agent, and the exact Claude Code 2.1.241
 	// `anthropic-beta` set. `x-app` restates Pi's own default for robustness.
+	// `x-claude-code-session-id` is new in 2.1.241 (matches metadata session_id).
 	const headers: Record<string, string> = {
 		"user-agent": getUserAgent(),
 		"x-app": "cli",
 		"anthropic-beta": getAnthropicBeta(),
+		"x-claude-code-session-id": getSessionId(),
 	};
 
 	const oauth = { name: PROVIDER_NAME, login, refreshToken, getApiKey };
@@ -222,6 +232,8 @@ export default function claudeProMaxNative(pi: ExtensionAPI) {
 		// independent: the cch hashes the first user message, not the system blocks.
 		let next = sanitizeSystemPrompt(event.payload, getSanitizeRules());
 		next = applyClaudeCodeThinkingDisplay(next);
+		next = applyContextManagement(next);
+		next = applyDiagnostics(next);
 		next = applyMetadata(next, getClaudeUserId());
 		next = applyBillingHeader(next, version, entrypoint);
 		logNativeRequest(next, { model: ctx.model?.id, userAgent: getUserAgent(), version, entrypoint });

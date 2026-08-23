@@ -200,12 +200,20 @@ export function parseModelId(id: string): { family: string; versionLabel: string
  */
 const ID_OVERRIDES: Record<string, Pick<NativeModel, "compat" | "thinkingLevelMap">> = {
 	// Opus 5 is DISCOVERED (not seeded), but the conservative opus family default
-	// would cap it at `max`. Re-captured on claude 2.1.233 — `claude --model opus`
+	// would cap it at `max`. Re-captured on claude 2.1.241 — `claude --model opus`
 	// resolves to `claude-opus-5` and sends `output_config.effort: "xhigh"` — so the
 	// higher ceiling is confirmed on the wire, not assumed. Adaptive-only per
 	// `/v1/models` (`thinking.types.enabled.supported: false`), hence no temperature.
 	"claude-opus-5": {
 		compat: { forceAdaptiveThinking: true, supportsTemperature: false },
+		thinkingLevelMap: { xhigh: "xhigh" },
+	},
+	// Sonnet 5 is DISCOVERED (not seeded). Re-captured on claude 2.1.241 —
+	// `claude --model sonnet` resolves to `claude-sonnet-5` and sends
+	// `output_config.effort: "xhigh"`. The conservative sonnet family default has no
+	// thinkingLevelMap (caps at max); this confirms the higher ceiling on the wire.
+	"claude-sonnet-5": {
+		compat: { forceAdaptiveThinking: true },
 		thinkingLevelMap: { xhigh: "xhigh" },
 	},
 	"claude-opus-4-8": {
