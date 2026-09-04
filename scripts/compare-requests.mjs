@@ -47,8 +47,12 @@ const GENUINE_BILLING_RE =
 	/^x-anthropic-billing-header: cc_version=\d+\.\d+\.\d+\.[0-9a-f]{3}; cc_entrypoint=[\w-]+;(?: cch=[0-9a-f]{5};| cc_prompt_id=[^;]+;| cc_workload=[^;]*;| cc_is_subagent=true;| cc_prev_req=[^;]*;)*$/;
 const IDENTITY_RE = /^You are (Claude Code, Anthropic's official CLI for Claude|a Claude agent, built on Anthropic's Claude Agent SDK)\.$/;
 const USER_AGENT_RE = /^claude-cli\/(\d+\.\d+\.\d+) \(external, ([\w-]+)\)$/;
-const compatibleProfiles = (claudeProfile, piProfile) =>
-	claudeProfile === piProfile || (claudeProfile === "sdk-cli" && piProfile === "cli");
+// Profiles must match EXACTLY. This used to tolerate `claude=sdk-cli` vs
+// `pi=cli`, from when the provider still emitted the interactive `cli` profile.
+// Since 2.1.241 `getUserAgent()`/`getClaudeCodeEntrypoint()` emit `sdk-cli` on
+// both sides, so that tolerance became dead slack that would hide a real
+// regression (the provider silently falling back to `cli`).
+const compatibleProfiles = (claudeProfile, piProfile) => claudeProfile === piProfile;
 
 const piBilling = systemText(pi, 0).trim();
 check("system[0] is a well-formed billing header", BILLING_RE.test(piBilling), piBilling || "(empty)");
@@ -65,9 +69,8 @@ const ccEntry = claudeBilling.match(/cc_entrypoint=([\w-]+);/)?.[1];
 const piVer = piBilling.match(/cc_version=(\d+\.\d+\.\d+)\./)?.[1];
 const ccVer = claudeBilling.match(/cc_version=(\d+\.\d+\.\d+)\./)?.[1];
 if (genuineBillingOk) {
-	// This provider deliberately uses Pi's interactive `cli` profile. The
-	// documented genuine capture command uses `claude -p`, whose entrypoint is
-	// `sdk-cli`; that pair is expected, while arbitrary mismatches still fail.
+	// Both sides emit `sdk-cli` since 2.1.241 (the genuine CLI uses it for
+	// interactive AND `-p`), so the entrypoints must be identical.
 	const entrypointCompatible = compatibleProfiles(ccEntry, piEntry);
 	check("billing cc_entrypoint uses compatible client profiles", entrypointCompatible, `claude=${ccEntry} | pi=${piEntry}`);
 	check("billing cc_version base matches genuine", piVer === ccVer, `claude=${ccVer} | pi=${piVer}`);

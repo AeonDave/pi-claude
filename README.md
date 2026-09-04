@@ -73,10 +73,9 @@ The **curated seed** — always present, even offline:
 | `claude-haiku-4-5` | 200K | — (fast tier) |
 
 Newer models are **not** listed here — they arrive through discovery, so no code
-edit is needed. In the catalog verified here (Pi 0.79.10), `claude-fable-5`
-(1M, `xhigh`) appears automatically. Claude Code 2.1.233 also resolves and serves
-`claude-opus-5` and `claude-sonnet-5`; enable live discovery or use a model
-override until your Pi catalog carries those ids.
+edit is needed. `claude-opus-5`, `claude-sonnet-5`, `claude-fable-5` and
+`claude-fable-5-1` all appear automatically, with their real 1M window, effort
+ceiling and adaptive-only flags derived from Anthropic's own `/v1/models`.
 
 Opus 4.8/4.7/4.6 and Sonnet 4.6 are **natively 1M**, exposed as a single clean-id
 entry each at their full window; Haiku stays 200K. There is **no `[1m]` wire
@@ -100,19 +99,23 @@ errors at request time. Discovery surfaces every current-generation model your
 catalog knows (so older 4.x point releases show too) — tighten the set with
 `PI_CLAUDE_NATIVE_MODELS_ALLOW` (a regex) if you only want the latest.
 
-> Caveat: by default a *brand-new* model only auto-appears once **Pi's** catalog
-> lists it (via a Pi update). To get it sooner, either enable **live discovery**
-> (`PI_CLAUDE_NATIVE_LIVE_DISCOVERY=1` — queries Anthropic's `/v1/models` with your
-> subscription token at session start and caches the result as a fresh local
-> fallback), or add it with `PI_CLAUDE_NATIVE_MODELS` (one line) — no reinstall.
+> A *brand-new* model appears on its own: **live discovery is on by default** —
+> one `GET /v1/models` per process at session start, using your subscription
+> token, cached to `<agent dir>/claude-native/models.json` as a fresh local fallback.
+> That endpoint is the only authoritative source for the facts this extension
+> would otherwise hard-code per model (effort ceiling, adaptive-vs-budget
+> thinking, real context window), which is what keeps a new model working with no
+> code edit. It carries no pricing, so Pi's catalog still wins `cost`. Opt out
+> with `PI_CLAUDE_NATIVE_LIVE_DISCOVERY=0`; every failure degrades silently to
+> cache + Pi's catalog + the curated seed.
 
 ## How it works
 
 | Claude Code signal | Source |
 |--------------------|--------|
 | Bearer OAuth, `anthropic-beta` core flags, `x-app: cli`, `"You are Claude Code…"` identity, PascalCase tool names | Pi built-in (triggered by the OAuth token) |
-| `user-agent: claude-cli/<v> (external, cli)` | this extension (`headers`) |
-| captured `anthropic-beta` set (2.1.233 adaptive normal-turn; no `context-1m`) | this extension (`headers`; Haiku gets the captured non-effort subset) |
+| `user-agent: claude-cli/<v> (external, sdk-cli)` | this extension (`headers`) |
+| captured `anthropic-beta` set (2.1.261 adaptive normal-turn; no `context-1m`) | this extension (`headers`, per model: Haiku −3 flags, Fable 5.1 +`per-turn-control`) |
 | `x-anthropic-billing-header` as `system[0]` | this extension (`before_provider_request`) |
 | `metadata.user_id` (device/account/session ids) | this extension (read from `~/.claude.json`) |
 | `thinking.display: "omitted"` (adaptive and budget) | this extension (`before_provider_request`) |
@@ -138,17 +141,18 @@ env vars below pin them when you want full control.
 
 | Env var | Default | Purpose |
 |---------|---------|---------|
-| `PI_CLAUDE_NATIVE_CC_VERSION` | _(derived from your installed `claude`, else `2.1.233`)_ | Version in `user-agent` **and** billing header (kept consistent). |
+| `PI_CLAUDE_NATIVE_CC_VERSION` | _(derived from your installed `claude`, else `2.1.261`)_ | Version in `user-agent` **and** billing header (kept consistent). |
 | `PI_CLAUDE_NATIVE_CC_ENTRYPOINT` | `cli` | Billing header `cc_entrypoint`. |
-| `PI_CLAUDE_NATIVE_USER_AGENT` | `claude-cli/<v> (external, cli)` | Full `user-agent` override. |
+| `PI_CLAUDE_NATIVE_USER_AGENT` | `claude-cli/<v> (external, sdk-cli)` | Full `user-agent` override. |
 | `PI_CLAUDE_NATIVE_ANTHROPIC_BETA` | _(fingerprint, else captured normal-turn set, no `context-1m`)_ | Verbatim `anthropic-beta` override (including on Haiku). Set to a value **captured** from your `claude` — never guess. |
-| `PI_CLAUDE_NATIVE_FINGERPRINT` | `~/.pi/claude-native-fingerprint.json` | Path to a captured `{ version, anthropicBeta }` (written by `capture:fingerprint --apply`); overrides version + beta together. |
+| `PI_CLAUDE_NATIVE_STATE_DIR` | `<agent dir>/claude-native` | Where this extension keeps its state. `<agent dir>` is `PI_CODING_AGENT_DIR`, else `~/.pi/agent` — the same directory Pi uses for `auth.json`, `settings.json` and every other extension's state. |
+| `PI_CLAUDE_NATIVE_FINGERPRINT` | `<agent dir>/claude-native/fingerprint.json` | Path to a captured `{ version, entrypoint, userAgent, anthropicBeta, modelBeta }` (written by `capture:fingerprint --apply`); overrides version + beta together. `modelBeta` holds each model's captured set verbatim, so a new model becomes byte-exact by re-capturing. A version OLDER than your installed `claude` is ignored. |
 | `PI_CLAUDE_NATIVE_BASE_URL` | `https://api.anthropic.com` | Route through a proxy/gateway (e.g. the capture proxy). |
 | `PI_CLAUDE_NATIVE_DEBUG` | _(off)_ | JSONL path; logs the transformed body per request. |
 | `PI_CLAUDE_NATIVE_MODELS` / `…_FILE` | _(none)_ | JSON array of model overrides (inline or file) merged over the list. |
 | `PI_CLAUDE_NATIVE_MODELS_ALLOW` | _(built-in regex)_ | Regex for which `anthropic` catalog ids are auto-exposed (tighten to hide older models). |
-| `PI_CLAUDE_NATIVE_LIVE_DISCOVERY` | _(off)_ | Opt-in: query Anthropic's live `/v1/models` at session start (once per process) so a new model appears the day it ships; result persisted as the local fallback. Best-effort, silent fallback to cache + seed. |
-| `PI_CLAUDE_NATIVE_MODELS_CACHE` | `~/.pi/claude-native-models.json` | Path to the persisted discovery cache (the auto-updated local seed/fallback). |
+| `PI_CLAUDE_NATIVE_LIVE_DISCOVERY` | _(on)_ | Query Anthropic's live `/v1/models` at session start (once per process) so a new model appears the day it ships, with its real window/effort/thinking capabilities; result persisted as the local fallback. Set `0` to disable. Best-effort, silent fallback to cache + seed. |
+| `PI_CLAUDE_NATIVE_MODELS_CACHE` | `<agent dir>/claude-native/models.json` | Path to the persisted discovery cache (the auto-updated local seed/fallback). |
 | `PI_CLAUDE_NATIVE_SYSTEM_ANCHORS` | `["Pi documentation (read only when"]` | JSON `[string]`; drops whole prompt paragraphs containing an anchor (the classifier fix). |
 | `PI_CLAUDE_NATIVE_SYSTEM_REPLACEMENTS` | _(built-in rule)_ | JSON `[{match,replacement}]` literal scrub of system-prompt text. |
 | `PI_CLAUDE_NATIVE_USER_ID` / `PI_CLAUDE_NATIVE_NO_METADATA` | _(read `~/.claude.json`)_ | Override or disable the `metadata.user_id` value. |
@@ -165,22 +169,62 @@ rest:
 
 - **Version is derived.** `cc_version` / `user-agent` read your installed
   `claude`'s version from its own state files (`~/.claude/.last-update-result.json`,
-  then `~/.claude.json`), so they follow `claude` updates with no config.
-- **New models are derived.** Family-agnostic discovery surfaces new families
-  from Pi's catalog (see Models).
+  then `~/.claude.json`), so they follow `claude` updates with no config. A
+  captured fingerprint never pins a version *older* than the installed `claude` —
+  Anthropic gates model access on `cc_version`, so a stale pin would 400 with
+  "Claude Code <v> does not support this model; version <n> or newer is required".
+  `/claude-native` shows which source the version came from.
+- **New models are derived.** Family-agnostic discovery surfaces new families from
+  Pi's catalog *and* from Anthropic's live `/v1/models`, which supplies the real
+  context window, effort ceiling and thinking modes (see Models).
 - **Refresh the wire fingerprint after a `claude` update:**
 
   ```bash
   npm run capture:fingerprint             # capture + diff report (captures/fingerprint-report.md)
-  npm run capture:fingerprint -- --apply  # also install to ~/.pi/claude-native-fingerprint.json
+  npm run capture:fingerprint -- --reuse  # re-distill from the last capture, no subscription calls
+  npm run capture:fingerprint -- --apply  # also install to <agent dir>/claude-native/fingerprint.json
   ```
 
   This spins up the capture proxy, marks the proxy URL as first-party (so `cch`
   and conditional beta flags survive), drives genuine `claude -p` across opus/
-  sonnet/haiku, distills the exact `anthropic-beta` set + version, and **diffs them
-  against the current defaults** — telling you precisely what (if anything)
+  sonnet/haiku/fable, distills the exact `anthropic-beta` set + version, records
+  each model's captured set verbatim, and **diffs them against the current
+  defaults — base set and per-model deviations both** — telling you precisely what (if anything)
   changed. With `--apply`, the extension auto-adopts the captured version + beta
   (no code edit). Re-run it whenever `claude` updates or Anthropic starts 400-ing.
+
+## "does not support this model; version N or newer is required"
+
+```
+400 Claude Code 2.1.241 does not support this model;
+    version 2.1.251 or newer is required.
+```
+
+Anthropic gates access to newer models on the `cc_version` your client claims.
+This means the version on the wire is **older than the model needs** — almost
+always because a captured fingerprint pinned an old version and kept winning over
+your (updated) installed `claude`.
+
+```bash
+claude --version                    # what you actually run
+```
+
+Then in Pi, `/claude-native` prints the version *and where it came from*:
+
+```
+cc_version:     2.1.261 (from your installed claude)
+```
+
+The extension now refuses to claim a version older than your installed `claude`,
+so this resolves itself on update. If the source says `captured fingerprint` and
+the version is behind, refresh the pair:
+
+```bash
+npm run capture:fingerprint -- --apply
+```
+
+If it says `PI_CLAUDE_NATIVE_CC_VERSION`, your own env pin is the cause — it is
+honoured verbatim, in both directions.
 
 ## If the classifier 400 returns
 

@@ -98,3 +98,14 @@ test("buildBillingHeaderValue produces the exact Claude Code shape", () => {
 	const other = buildBillingHeaderValue([{ role: "user", content: "say goodbye" }], "2.1.87", "cli");
 	assert.notEqual(header, other);
 });
+
+test("golden: reproduces the suffix genuine claude 2.1.261 put on the wire", () => {
+	// Ground truth, not a self-referential expectation: these three values were
+	// read off real `claude` 2.1.261 requests, and the algorithm was confirmed
+	// against the client's own `Gdt`/`kzn` implementation.
+	// "reply with the single word ok" is the prompt in captures/fp-raw/req-fp-*.json,
+	// all four of which carry `cc_version=2.1.261.547`.
+	assert.equal(computeVersionSuffix("reply with the single word ok", "2.1.261"), "547");
+	assert.equal(computeVersionSuffix("read the hello file", "2.1.261"), "384");
+	assert.equal(computeVersionSuffix("hi", "2.1.261"), "6af");
+});

@@ -31,14 +31,17 @@ import {
 	getBaseUrl,
 	getClaudeCodeEntrypoint,
 	getClaudeCodeVersion,
+	getClaudeCodeVersionInfo,
 	getClaudeUserId,
 	getModelAllowlist,
 	getModelCachePath,
+	getModelCacheReadPaths,
 	getModelOverrides,
 	getSanitizeRules,
 	getSessionId,
 	getUserAgent,
 	isLiveDiscoveryEnabled,
+	migrateLegacyState,
 	PROVIDER_ID,
 	PROVIDER_NAME,
 } from "./constants.ts";
@@ -57,6 +60,27 @@ import {
 
 const STATUS_KEY = "claude-native";
 
+/**
+ * The persisted discovery cache, from the first path that yields anything —
+ * current location first, then the pre-1.5.0 loose file so an existing install
+ * keeps its offline fallback across the move into `<agent dir>/claude-native/`.
+ */
+function readCachedModels(): DiscoveredModel[] {
+	for (const path of getModelCacheReadPaths()) {
+		const models = readModelCache(path);
+		if (models.length > 0) return models;
+	}
+	return [];
+}
+
+/** Where `/claude-native` says the wire `cc_version` came from. */
+const VERSION_SOURCE_LABEL: Record<string, string> = {
+	env: "PI_CLAUDE_NATIVE_CC_VERSION",
+	fingerprint: "captured fingerprint",
+	installed: "your installed claude",
+	default: "built-in fallback",
+};
+
 /** True only for this provider's requests when authenticated via OAuth. */
 function isNativeOAuth(ctx: ExtensionContext): boolean {
 	const model = ctx.model;
@@ -73,10 +97,15 @@ function setStatus(ctx: ExtensionContext, text: string | undefined): void {
 }
 
 export default function claudeProMaxNative(pi: ExtensionAPI) {
+	// Move any pre-1.5.0 loose `~/.pi/claude-native-*.json` onto Pi's per-extension
+	// state convention BEFORE anything reads them (the fingerprint is memoized on
+	// first read). Best-effort and idempotent.
+	migrateLegacyState();
+
 	// These override Pi's defaults (merged last in Pi's Anthropic client, so they
-	// win): the genuine external-CLI user-agent, and the exact Claude Code 2.1.241
+	// win): the genuine external-CLI user-agent, and the exact Claude Code 2.1.261
 	// `anthropic-beta` set. `x-app` restates Pi's own default for robustness.
-	// `x-claude-code-session-id` is new in 2.1.241 (matches metadata session_id).
+	// `x-claude-code-session-id` (added in 2.1.241) matches metadata session_id.
 	const headers: Record<string, string> = {
 		"user-agent": getUserAgent(),
 		"x-app": "cli",
@@ -157,7 +186,7 @@ export default function claudeProMaxNative(pi: ExtensionAPI) {
 			catalog.set(id, { ...catalog.get(id), ...entry });
 			if (!extraIds.includes(id)) extraIds.push(id);
 		};
-		for (const m of readModelCache(getModelCachePath())) add(m.id, m.catalog);
+		for (const m of readCachedModels()) add(m.id, m.catalog);
 		for (const m of liveModels) add(m.id, m.catalog);
 		if (ctx) {
 			for (const model of ctx.modelRegistry.getAll()) {
@@ -174,9 +203,13 @@ export default function claudeProMaxNative(pi: ExtensionAPI) {
 					reasoning: model.reasoning,
 					input: model.input,
 					thinkingLevelMap: model.thinkingLevelMap,
-					// `forceAdaptiveThinking` lives only on the Anthropic compat branch; the guard
-					// above already restricts to anthropic models, so read it through a narrow cast.
+					// `forceAdaptiveThinking` / `supportsTemperature` live only on the Anthropic compat
+					// branch; the guard above already restricts to anthropic models, so read them
+					// through a narrow cast. Deliberately NOT carried: `supportsMidConvoEffort` (Pi
+					// would then hardcode effort "high" and add a `block_binding` field genuine Claude
+					// Code does not send) and `supportsStrictTools`.
 					forceAdaptiveThinking: (model.compat as { forceAdaptiveThinking?: boolean } | undefined)?.forceAdaptiveThinking === true,
+					supportsTemperature: (model.compat as { supportsTemperature?: boolean } | undefined)?.supportsTemperature,
 				});
 			}
 		}
@@ -258,6 +291,7 @@ export default function claudeProMaxNative(pi: ExtensionAPI) {
 		description: `Diagnostics for the ${PROVIDER_NAME} provider`,
 		handler: async (_args, ctx) => {
 			const active = isNativeOAuth(ctx);
+			const versionInfo = getClaudeCodeVersionInfo();
 			const model = ctx.model ? `${ctx.model.provider}/${ctx.model.id}` : "(none)";
 			const nativeModels = ctx.modelRegistry.getAll().filter((m) => m.provider === PROVIDER_ID);
 			const nativeIds = new Set(nativeModels.map((m) => m.id));
@@ -272,10 +306,10 @@ export default function claudeProMaxNative(pi: ExtensionAPI) {
 				`  active here:    ${active ? "yes" : "no"}`,
 				`  selected model: ${model}`,
 				`  models:         ${nativeModels.length} (${nativeModels.map((m) => m.id).join(", ") || "none"})`,
-				`  cc_version:     ${getClaudeCodeVersion()}`,
+				`  cc_version:     ${versionInfo.version} (from ${VERSION_SOURCE_LABEL[versionInfo.source]})`,
 				`  cc_entrypoint:  ${getClaudeCodeEntrypoint()}`,
 				`  user-agent:     ${getUserAgent()}`,
-				`  live discovery: ${isLiveDiscoveryEnabled() ? "on" : "off"} (cache: ${readModelCache(getModelCachePath()).length} models)`,
+				`  live discovery: ${isLiveDiscoveryEnabled() ? "on" : "off"} (cache: ${readCachedModels().length} models)`,
 			];
 			if (collides) {
 				lines.push(

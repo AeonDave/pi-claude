@@ -6,15 +6,15 @@ Claude Code CLI, and how to **prove it on the wire** for yourself.
 ## TL;DR fidelity table
 
 What Anthropic's subscription backend actually keys on — and where each piece
-comes from. Verified against the installed `@earendil-works/pi-ai` /
-`pi-coding-agent` **v0.79.10** (not just docs).
+comes from. Verified against genuine `claude` **2.1.261** wire captures and the
+installed `@earendil-works/pi-ai` / `pi-coding-agent` (not just docs).
 
 | Signal | Genuine Claude Code | This plugin | Source |
 |--------|--------------------|-------------|--------|
 | `authorization: Bearer sk-ant-oat…` | ✅ | ✅ | Pi built-in (triggered by our OAuth token) |
-| `anthropic-beta` (2.1.233 **adaptive normal-turn** set, no `context-1m`) | ✅ | ✅ | **plugin** (`headers`; captured non-effort subset on Haiku) |
+| `anthropic-beta` (2.1.261 **adaptive normal-turn** base, no `context-1m`) | ✅ | ✅ | **plugin** (`headers`, per model: Haiku −3 flags, Fable 5.1 +`per-turn-control-2026-07-01`) |
 | `context-1m-2025-08-07` advertised | only on true 1M-window turns | not by default | **plugin** (curated families are natively 1M; add via `PI_CLAUDE_NATIVE_ANTHROPIC_BETA` if your plan needs it) |
-| `user-agent` version/profile | `external, cli` interactively; `external, sdk-cli` under `-p` | `external, cli` | **plugin** (`headers`; comparator accepts this documented profile pair) |
+| `user-agent` version/profile | `external, sdk-cli` (both interactive and `-p` since 2.1.241) | `external, sdk-cli` | **plugin** (`headers`) |
 | `x-app: cli` | ✅ | ✅ | Pi built-in (plugin restates it) |
 | `system[0]` = `x-anthropic-billing-header: …` | ✅ | ✅ | **plugin** (`before_provider_request`) |
 | `system[1]` = `You are Claude Code, …` identity | ✅ | ✅ | Pi built-in |
@@ -28,26 +28,30 @@ comes from. Verified against the installed `@earendil-works/pi-ai` /
 
 `x-anthropic-billing-header: cc_version=<v>.<suffix>; cc_entrypoint=<e>; cch=<cch>;`
 
-- `cch = sha256(firstUserMessageText)[:5]`
 - `suffix = sha256(SALT + chars[4,7,20] of firstUserMessageText + version)[:3]`
+  — **verified byte-for-byte** against Claude Code 2.1.261's own implementation
+  (`Gdt`/`kzn`, plain JS embedded in the installed binary) and reproduced on
+  live captures: `"reply with the single word ok"` → `547` (the prompt behind
+  every `captures/fp-raw/req-fp-*.json`, all carrying `cc_version=2.1.261.547`),
+  `"read the hello file"` → `384`, `"hi"` → `6af`. Pinned by golden vectors in
+  `test/billing-header.test.ts`. The salt `59cf53e54c78` and positions `[4,7,20]`
+  are now ground truth, not two converging guesses.
+- `cch` — **not reproducible, and not validated by Anthropic.** The genuine
+  2.1.261 client builds the header with a literal ` cch=00000;` placeholder
+  (those are the only two occurrences of `cch=` in the whole 209 MB binary) and
+  the five zeros are overwritten downstream by a value that is *not* a function
+  of the request as sent: two requests in one turn differing only in `messages`
+  get different `cch`, and `req-fp-1/2/4` carry byte-identical first user
+  messages yet `b90da` / `abbe0` / `269e5`. The plugin emits
+  `sha256(firstUserMessageText)[:5]` to keep the wire **shape** — a stand-in, not
+  Claude Code's value. Requests have always been accepted with it, so do **not**
+  chase a new formula, and do **not** "fix" the salt or positions while trying.
 
-The `cch` is a hash of **the request's own first user message**. The plugin
-computes it over the exact bytes in the outgoing payload, so whatever Anthropic
-recomputes over the received message matches. It does **not** need to equal the
-value Claude Code would produce for the same prompt — different harnesses format
-the first user message differently, and that is fine. What must be exact is the
-**algorithm** (salt, sampled positions `[4,7,20]`, slice lengths, format):
-
-- Locked by a golden regression test (`test/billing-header.test.ts`).
-- The salt `59cf53e54c78` and positions `[4,7,20]` come from **two independent
-  reverse-engineering efforts** that converged on the same constants, and
-  opencode is in production use.
-
-> Sanity note: a genuine `claude -p "say hello"` capture shows
-> `cch=45d18`, but `sha256("say hello")[:5] = 3cad3`. That is expected — Claude
-> Code hashes the *full* first user message it builds (prompt + its own context
-> wrapping), not the raw prompt. The plugin likewise hashes Pi's full first user
-> message. Self-consistent on both sides.
+> Superseded: earlier revisions of this file explained a `cch` mismatch as
+> "Claude Code hashes the full first user message it builds". That rationalisation
+> is **falsified** — `captures/fp-raw/req-fp-1/2/4.json` have byte-identical first
+> user messages and still carry three different `cch` values. See above: the value
+> is not derivable from the request, and Anthropic does not check it.
 
 ## Prove it on the wire
 
@@ -117,39 +121,51 @@ loop, so you don't hand-compare:
 
 ```bash
 npm run capture:fingerprint             # capture + report
-npm run capture:fingerprint -- --apply  # + install ~/.pi/claude-native-fingerprint.json
+npm run capture:fingerprint -- --apply  # + install <agent dir>/claude-native/fingerprint.json
 ```
 
 It spins up the capture proxy, marks its URL first-party, drives genuine
-`claude -p` across opus/sonnet/haiku, and writes:
+`claude -p` across opus/sonnet/haiku/fable, and writes:
 
-- `captures/fingerprint-<version>.json` — `{ version, anthropicBeta }`, the exact
-  shape `src/constants.ts` reads. With `--apply` it is installed to
-  `~/.pi/claude-native-fingerprint.json` and the extension auto-adopts both the
+- `captures/fingerprint-<version>.json` — `{ version, entrypoint, userAgent,
+  anthropicBeta, modelBeta }`, the exact shape `src/constants.ts` reads.
+  `modelBeta` records each captured model's set **verbatim** (order included),
+  and the extension prefers it over its built-in deltas — so a newly-shipped
+  model becomes byte-exact by re-capturing, with no code edit. With `--apply` it is installed to
+  `<agent dir>/claude-native/fingerprint.json` and the extension auto-adopts both the
   version and the beta set (a consistent pair) with **no code edit**.
-- `captures/fingerprint-report.md` — a per-model table plus a **diff of the
-  captured `anthropic-beta` against the current `DEFAULT_ANTHROPIC_BETA`**, so a
-  changed flag is obvious. The 2.1.233 first-party capture added
-  `advanced-tool-use-2025-11-20`, `afk-mode-2026-01-31`, and
-  `cache-diagnosis-2026-04-07` relative to the 2.1.220 default.
+- `captures/fingerprint-report.md` — a per-model table, a **diff of the captured
+  base set against the current `DEFAULT_ANTHROPIC_BETA`**, and a **per-model
+  deviations** section. That last one matters: reporting only the base diff once
+  printed a confident "No change" on a run whose own table showed Fable sending a
+  14th flag. Only Opus/Sonnet may define the base — Haiku sends a subset and
+  Fable a superset, so a haiku/fable-only run is refused.
 
 `cc_version` is otherwise derived from your installed `claude` automatically, so
 the only value worth re-capturing on an update is the beta set — which this does.
 
 ## Matching the `anthropic-beta` set exactly
 
-The default is the **exact adaptive-turn set captured from `claude` 2.1.233**
-(`src/constants.ts` `DEFAULT_ANTHROPIC_BETA`): 13 flags on Fable 5, Opus 5, and
-Sonnet 5, including `advanced-tool-use-2025-11-20`, `afk-mode-2026-01-31`, and
+The default is the **exact adaptive-turn base set captured from `claude` 2.1.261**
+(`src/constants.ts` `DEFAULT_ANTHROPIC_BETA`): 13 flags on Opus 5 and Sonnet 5,
+including `advanced-tool-use-2025-11-20`, `afk-mode-2026-01-31`, and
 `cache-diagnosis-2026-04-07` (but **not** `context-1m-2025-08-07` — see "The 1M /
-long-context trap" below). Haiku 4.5 emitted 10 flags in the same run, omitting
-only `advisor-tool`, `effort`, and `afk-mode`; the provider applies that captured
-subset through a model header. An explicit `PI_CLAUDE_NATIVE_ANTHROPIC_BETA`
+long-context trap" below). The set is per-model in BOTH directions:
+
+- **Haiku 4.5** emitted 10 flags in the same run, omitting
+  `mid-conversation-system-2026-04-07`, `effort-2025-11-24` and
+  `afk-mode-2026-01-31` — it *keeps* `advisor-tool`.
+- **Fable 5.1** emitted 14: the base plus `per-turn-control-2026-07-01`, inserted
+  directly after `mid-conversation-system-2026-04-07`. Claude Code gates that flag
+  on the model's `per_turn_effort` capability and `claude-fable-5-1` is the only
+  id declaring it — `claude-fable-5` does not — so it is keyed by exact id.
+
+The provider applies each through a model header. An explicit `PI_CLAUDE_NATIVE_ANTHROPIC_BETA`
 remains byte-for-byte and is never reduced. The set is **version-specific** and
 Anthropic returns a **400 on unexpected beta values**, so values are captured,
 never guessed.
 
-If your `claude --version` differs from 2.1.233, re-capture and override:
+If your `claude --version` differs from 2.1.261, re-capture and override:
 
 1. Capture genuine `claude`'s `anthropic-beta` (Method A above prints it).
 2. Set it verbatim:
@@ -245,7 +261,7 @@ a capture shows one matters for your account, it is a one-line change:
    sees the body); the others are low-signal. None flipped the classifier in
    testing — the system prompt did.
 
-1. **`anthropic-beta` set** is captured from `claude` 2.1.233. If your installed
+1. **`anthropic-beta` set** is captured from `claude` 2.1.261. If your installed
    version sends a different set, the `compare` script flags it — set
    `PI_CLAUDE_NATIVE_ANTHROPIC_BETA` to your captured value (see "Matching the
    `anthropic-beta` set exactly" above).

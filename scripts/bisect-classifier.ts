@@ -38,7 +38,7 @@ import { join } from "node:path";
 import { type BillingMessage, buildBillingHeaderValue } from "../src/billing-header.ts";
 import {
 	ANTHROPIC_BASE_URL,
-	getAnthropicBeta,
+	getAnthropicBetaForModel,
 	getClaudeCodeEntrypoint,
 	getClaudeCodeVersion,
 	PROVIDER_ID,
@@ -74,7 +74,10 @@ function loadToken(): string {
 
 const VERSION = getClaudeCodeVersion();
 const ENTRYPOINT = getClaudeCodeEntrypoint();
-const BETA = getAnthropicBeta();
+// Per-model, not the global base: Haiku drops three flags and Fable 5.1 adds
+// one, and Anthropic 400s on a set the model does not expect.
+const BETA = getAnthropicBetaForModel(MODEL);
+const USER_AGENT = getUserAgent();
 
 // ---------------------------------------------------------------------------
 // Source the variable system text (Pi's prompt, minus billing + identity)
@@ -157,7 +160,7 @@ async function probe(text: string, label: string): Promise<ProbeResult> {
 			authorization: `Bearer ${TOKEN}`,
 			"anthropic-version": "2023-06-01",
 			"anthropic-beta": BETA,
-			"user-agent": `claude-cli/${VERSION} (external, cli)`,
+			"user-agent": USER_AGENT,
 			"x-app": "cli",
 		},
 		body: JSON.stringify(body),

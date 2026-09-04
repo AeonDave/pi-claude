@@ -38,15 +38,27 @@ function compare(claude: unknown, pi: unknown) {
 	}
 }
 
-test("compare accepts the documented sdk-cli capture versus cli provider profiles", () => {
+test("compare REJECTS a cli provider profile against an sdk-cli capture", () => {
+	// The comparator used to tolerate this pair, from when the provider emitted the
+	// interactive `cli` profile. Since 2.1.241 both sides are `sdk-cli`, so a `cli`
+	// on the Pi side is a real regression and must fail loudly.
 	const claude = request(
 		"x-anthropic-billing-header: cc_version=2.1.233.abc; cc_entrypoint=sdk-cli; cc_prompt_id=123e4567-e89b-12d3-a456-426614174000;",
 		"sdk-cli",
 	);
 	const pi = request("x-anthropic-billing-header: cc_version=2.1.233.def; cc_entrypoint=cli; cch=12345;");
 	const result = compare(claude, pi);
-	assert.equal(result.status, 0, result.stdout + result.stderr);
+	assert.notEqual(result.status, 0, "a cli-profile provider must not pass as equivalent");
 	assert.match(result.stdout, /claude=sdk-cli \| pi=cli/);
+});
+
+test("compare accepts a matching sdk-cli pair on both sides", () => {
+	const billing = (suffix: string, extra: string) =>
+		`x-anthropic-billing-header: cc_version=2.1.233.${suffix}; cc_entrypoint=sdk-cli;${extra}`;
+	const claude = request(billing("abc", " cc_prompt_id=123e4567-e89b-12d3-a456-426614174000;"), "sdk-cli");
+	const pi = request(billing("def", " cch=12345;"), "sdk-cli");
+	const result = compare(claude, pi);
+	assert.equal(result.status, 0, result.stdout + result.stderr);
 });
 
 test("compare rejects an unrelated user-agent profile", () => {

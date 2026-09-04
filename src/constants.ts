@@ -14,7 +14,26 @@ import { randomUUID } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import {
+	getModelCachePath,
+	getModelCacheReadPaths,
+	readFingerprint,
+	readInstalledClaudeVersion,
+	VERSION_RE,
+} from "./fingerprint.ts";
 import type { ModelOverride } from "./models.ts";
+import { warnConfig } from "./warn.ts";
+
+// Disk-state helpers live in `fingerprint.ts`; re-exported here so callers keep a
+// single import for the provider's configuration surface.
+export {
+	getAgentDir,
+	getFingerprintPath,
+	getModelCachePath,
+	getModelCacheReadPaths,
+	getStateDir,
+	migrateLegacyState,
+} from "./fingerprint.ts";
 
 /** Internal provider id: `auth.json` key, `model.provider`, and `/login <id>`. */
 export const PROVIDER_ID = "claude-pro-max-native";
@@ -54,7 +73,12 @@ export const TOKEN_USER_AGENT = "axios/1.13.6";
 // Claude Code client fingerprint
 // ---------------------------------------------------------------------------
 
-const DEFAULT_CC_VERSION = "2.1.241";
+// Last-resort fallback only (no fingerprint file, no readable `claude` state).
+// Anthropic gates MODEL ACCESS on the claimed version — the 400 reads "Claude
+// Code <v> does not support this model; version 2.1.251 or newer is required" —
+// so this constant must never lag the newest generation the provider exposes.
+// Captured from `claude` 2.1.261 on 2026-09-04 (captures/fingerprint-2.1.261.json).
+const DEFAULT_CC_VERSION = "2.1.261";
 const DEFAULT_CC_ENTRYPOINT = "sdk-cli";
 
 // ---------------------------------------------------------------------------
@@ -68,76 +92,84 @@ const DEFAULT_CC_ENTRYPOINT = "sdk-cli";
 //     move together (written by `scripts/capture-fingerprint.mjs`).
 // Env overrides always win; hardcoded defaults are the last-resort fallback.
 
-/**
- * A fingerprint captured from a real `claude` run by
- * `scripts/capture-fingerprint.mjs`. When present it overrides the hardcoded
- * defaults so the version and the `anthropic-beta` set stay a consistent,
- * freshly-captured pair. Path: `PI_CLAUDE_NATIVE_FINGERPRINT`, else
- * `~/.pi/claude-native-fingerprint.json`.
- */
-interface Fingerprint {
-	version?: string;
-	entrypoint?: string;
-	anthropicBeta?: string;
-	userAgent?: string;
+/** Numeric compare of dotted versions; unparsable segments sort as 0. */
+export function compareVersions(a: string, b: string): number {
+	const pa = a.split(".");
+	const pb = b.split(".");
+	for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+		const d = (Number.parseInt(pa[i] ?? "0", 10) || 0) - (Number.parseInt(pb[i] ?? "0", 10) || 0);
+		if (d !== 0) return d < 0 ? -1 : 1;
+	}
+	return 0;
 }
 
-const VERSION_RE = /^\d+\.\d+\.\d+$/;
-
-let fingerprintCache: Fingerprint | null | undefined;
-function readFingerprint(): Fingerprint | null {
-	if (fingerprintCache !== undefined) return fingerprintCache;
-	const path =
-		process.env.PI_CLAUDE_NATIVE_FINGERPRINT?.trim() || join(homedir(), ".pi", "claude-native-fingerprint.json");
-	try {
-		const data = JSON.parse(readFileSync(path, "utf8")) as Fingerprint;
-		fingerprintCache = data && typeof data === "object" ? data : null;
-	} catch {
-		fingerprintCache = null; // absent/unreadable — fall back to derivation/defaults
-	}
-	return fingerprintCache;
-}
+/** Where the resolved `cc_version` came from — surfaced by `/claude-native`. */
+export type VersionSource = "env" | "fingerprint" | "installed" | "default";
 
 /**
- * The version of the user's installed Claude Code, read from Claude's own state
- * files so the user-agent / billing `cc_version` track the real client with no
- * manual config. Tries the last-update record, then the seen-release-notes
- * marker. Returns `null` when neither is present.
+ * Pure precedence resolution, so the rule is unit-testable without touching disk.
+ *
+ * env > fingerprint > installed `claude` > hardcoded default, EXCEPT that a
+ * fingerprint version OLDER than the installed `claude` loses.
+ *
+ * Rationale: the fingerprint exists to keep version + `anthropic-beta` a
+ * consistent PAIR, but Anthropic validates the pair ASYMMETRICALLY — the beta
+ * set is checked by flag NAME (400 on an unknown flag), while the version is
+ * checked as a MINIMUM for model access ("Claude Code 2.1.241 does not support
+ * this model; version 2.1.251 or newer is required"). Claiming a NEWER version
+ * with an older captured beta set is therefore safe — verified: the 13-flag set
+ * is byte-identical across the 2.1.233 / 2.1.241 / 2.1.261 captures — while
+ * claiming an OLDER version is the one direction that hard-fails. A stale
+ * fingerprint used to pin an old version silently and permanently; that was the
+ * root cause of the 2.1.241 outage. An explicit env pin is honoured verbatim.
  */
-let installedVersionCache: string | null | undefined;
-function readInstalledClaudeVersion(): string | null {
-	if (installedVersionCache !== undefined) return installedVersionCache;
-	const home = homedir();
-	const sources: Array<[file: string, field: string]> = [
-		[join(home, ".claude", ".last-update-result.json"), "version_to"],
-		[join(home, ".claude.json"), "lastReleaseNotesSeen"],
-	];
-	for (const [file, field] of sources) {
-		try {
-			const obj = JSON.parse(readFileSync(file, "utf8")) as Record<string, unknown>;
-			const value = obj[field];
-			if (typeof value === "string" && VERSION_RE.test(value)) {
-				installedVersionCache = value;
-				return value;
-			}
-		} catch {
-			// try the next source
-		}
+export function resolveClaudeCodeVersion(input: {
+	override?: string;
+	pinned?: string;
+	installed?: string | null;
+	fallback?: string;
+}): { version: string; source: VersionSource } {
+	const override = input.override?.trim();
+	if (override) return { version: override, source: "env" };
+	const fallback = input.fallback ?? DEFAULT_CC_VERSION;
+	const pinned = input.pinned?.trim();
+	const installed = input.installed?.trim() || null;
+	if (!pinned) {
+		return installed ? { version: installed, source: "installed" } : { version: fallback, source: "default" };
 	}
-	installedVersionCache = null;
-	return null;
+	// A non-standard pin is a deliberate choice — pass it through untouched.
+	if (!VERSION_RE.test(pinned)) return { version: pinned, source: "fingerprint" };
+	if (!installed || compareVersions(pinned, installed) >= 0) return { version: pinned, source: "fingerprint" };
+	return { version: installed, source: "installed" };
+}
+
+let warnedStaleFingerprint = false;
+
+/** The resolved version plus where it came from (diagnostics). */
+export function getClaudeCodeVersionInfo(): { version: string; source: VersionSource } {
+	const pinned = readFingerprint()?.version;
+	const installed = readInstalledClaudeVersion();
+	const resolved = resolveClaudeCodeVersion({
+		override: process.env.PI_CLAUDE_NATIVE_CC_VERSION,
+		pinned,
+		installed,
+	});
+	if (pinned && installed && resolved.source === "installed" && !warnedStaleFingerprint) {
+		warnedStaleFingerprint = true;
+		warnConfig(
+			`fingerprint version ${pinned.trim()} is older than the installed claude ${installed}; sending ${installed}. ` +
+				`Re-run \`npm run capture:fingerprint -- --apply\` to refresh the captured pair.`,
+		);
+	}
+	return resolved;
 }
 
 /**
  * Claude Code version used in BOTH the `user-agent` header and the billing
  * header's `cc_version`, so the two are always consistent on the wire.
- * Resolution: `PI_CLAUDE_NATIVE_CC_VERSION` env → captured fingerprint → the
- * user's installed `claude` version → the hardcoded default.
  */
 export function getClaudeCodeVersion(): string {
-	const override = process.env.PI_CLAUDE_NATIVE_CC_VERSION?.trim();
-	if (override) return override;
-	return readFingerprint()?.version?.trim() || readInstalledClaudeVersion() || DEFAULT_CC_VERSION;
+	return getClaudeCodeVersionInfo().version;
 }
 
 /** Billing header `cc_entrypoint`. `cli` mirrors the interactive Claude Code CLI. */
@@ -165,14 +197,21 @@ export function getBaseUrl(): string {
 }
 
 /**
- * The `anthropic-beta` set captured verbatim from genuine `claude` 2.1.241's
- * adaptive normal turn (`claude -p`, Opus 5/Sonnet 5, 2026-08-23).
+ * The `anthropic-beta` BASE set captured verbatim from genuine `claude` 2.1.261's
+ * adaptive normal turn (`claude -p`, Opus 5/Sonnet 5, 2026-09-04).
  * This REPLACES Pi's per-model beta
  * logic so the header is byte-identical to Claude Code's everyday request.
  * Re-captured with the proxy marked first-party so conditional `cch` and beta
  * flags are preserved. Compared with 2.1.220, 2.1.233 added
  * `advanced-tool-use`, `afk-mode`, and `cache-diagnosis`; 2.1.241 kept the
- * same 13 flags but changed the Haiku non-effort subset (see below).
+ * same 13 flags but changed the Haiku non-effort subset; 2.1.261 keeps the same
+ * 13-flag base and adds the first per-model ADDITION (Fable 5.1, see
+ * `MODEL_BETA_DELTAS`).
+ *
+ * The set is per-model in both directions now:
+ *   Opus 5 / Sonnet 5 — this base, 13 flags;
+ *   Haiku 4.5         — 13 minus the three adaptive-effort flags = 10;
+ *   Fable 5.1         — 13 plus `per-turn-control-2026-07-01` = 14.
  *
  * `context-1m-2025-08-07` is intentionally NOT here: a subscription without
  * long-context access returns 400/429 on any request that advertises it, and
@@ -201,21 +240,129 @@ export const DEFAULT_ANTHROPIC_BETA = [
 	"cache-diagnosis-2026-04-07",
 ].join(",");
 
+const MID_CONVO = "mid-conversation-system-2026-04-07";
+const EFFORT = "effort-2025-11-24";
+const AFK_MODE = "afk-mode-2026-01-31";
+
 const ADAPTIVE_EFFORT_BETAS = new Set([
 	"mid-conversation-system-2026-04-07",
 	"effort-2025-11-24",
 	"afk-mode-2026-01-31",
 ]);
 
-/** Genuine Haiku 4.5 normal turns omit the adaptive-effort-only flags (2.1.241 capture). */
-/** Re-captured: 2.1.241 Haiku keeps `advisor-tool` but drops `mid-conversation-system`. */
+/** Genuine Haiku 4.5 normal turns omit the adaptive-effort-only flags (2.1.261 capture). */
+/** Re-captured: Haiku keeps `advisor-tool` but drops `mid-conversation-system`. */
 export const DEFAULT_NON_EFFORT_ANTHROPIC_BETA = DEFAULT_ANTHROPIC_BETA.split(",")
 	.filter((flag) => !ADAPTIVE_EFFORT_BETAS.has(flag))
 	.join(",");
 
 /**
+ * How each model's `anthropic-beta` differs from the base set — captured from
+ * `claude` 2.1.261 across every id this provider exposes (11 models, 2026-09-05).
+ * The older generations do NOT send the full 13-flag base:
+ *
+ *   opus 5 / sonnet 5 / opus 4.8 / fable 5 — the base 13 (no delta)
+ *   fable 5.1                             — 14 (adds `per-turn-control`)
+ *   opus 4.7 / opus 4.6 / sonnet 4.6      — 12 (drops `mid-conversation-system`)
+ *   opus 4.5                              — 11 (also drops `afk-mode`)
+ *   sonnet 4.5 / haiku 4.5                — 10 (also drops `effort`)
+ *
+ * Expressed as DELTAS, not verbatim sets, so they keep tracking a re-captured
+ * base instead of silently going stale beside it.
+ *
+ * None of this is derivable from `/v1/models`: Opus 4.8 and Opus 4.7 advertise
+ * identical capabilities (both xhigh, both adaptive-only) yet send different sets.
+ * It has to be captured. `add` is keyed by EXACT id for the same reason —
+ * Claude Code gates `per-turn-control` on the model's `per_turn_effort`
+ * capability and `claude-fable-5-1` is the only id declaring it (`claude-fable-5`
+ * does not), and Anthropic 400s on an unexpected flag, so the dangerous direction
+ * is sending it too widely. A future `claude-fable-5-2` therefore gets the safe
+ * base set until a re-capture records its real value under the fingerprint's
+ * `modelBeta`, which takes precedence over this table.
+ */
+export const MODEL_BETA_DELTAS: Record<string, { remove?: readonly string[]; add?: { flag: string; after: string } }> = {
+	"claude-fable-5-1": { add: { flag: "per-turn-control-2026-07-01", after: MID_CONVO } },
+	"claude-opus-4-7": { remove: [MID_CONVO] },
+	"claude-opus-4-6": { remove: [MID_CONVO] },
+	"claude-sonnet-4-6": { remove: [MID_CONVO] },
+	"claude-opus-4-5": { remove: [MID_CONVO, AFK_MODE] },
+	"claude-sonnet-4-5": { remove: [MID_CONVO, EFFORT, AFK_MODE] },
+	"claude-haiku-4-5": { remove: [MID_CONVO, EFFORT, AFK_MODE] },
+};
+
+/**
+ * The genuine flag ORDER for models that do not order like the base — Haiku sends
+ * `claude-code-20250219` sixth, not first, and filtering the base can only ever
+ * reproduce the base's order. Applied only when it holds exactly the same flags
+ * the delta above derives, so it self-invalidates: if the base set is ever
+ * re-captured differently, the sets stop matching and we emit the derived value
+ * (right flags, base order) instead of a stale captured string.
+ */
+const GENUINE_FLAG_ORDER: Record<string, readonly string[]> = {
+	"claude-haiku-4-5": [
+		"oauth-2025-04-20",
+		"interleaved-thinking-2025-05-14",
+		"thinking-token-count-2026-05-13",
+		"context-management-2025-06-27",
+		"prompt-caching-scope-2026-01-05",
+		"claude-code-20250219",
+		"advisor-tool-2026-03-01",
+		"advanced-tool-use-2025-11-20",
+		"extended-cache-ttl-2025-04-11",
+		"cache-diagnosis-2026-04-07",
+	],
+};
+
+/** Same flags, ignoring order. */
+function sameSet(a: readonly string[], b: readonly string[]): boolean {
+	if (a.length !== b.length) return false;
+	const sorted = [...b].sort();
+	return [...a].sort().every((flag, i) => flag === sorted[i]);
+}
+
+/**
+ * Look up a captured per-model beta set.
+ *
+ * A capture records the WIRE id genuine Claude Code sent
+ * (`claude-haiku-4-5-20251001`), while this provider registers the clean alias
+ * (`claude-haiku-4-5`) — the same id Anthropic resolves to that model. Match both
+ * spellings, or the captured value (and its genuine flag ORDER) would never reach
+ * the model Pi actually sends.
+ */
+function lookupCapturedBeta(modelId: string): string | undefined {
+	const map = readFingerprint()?.modelBeta;
+	if (!map) return undefined;
+	const exact = map[modelId]?.trim();
+	if (exact) return exact;
+	for (const [id, value] of Object.entries(map)) {
+		if (id.replace(/-\d{8}$/, "") === modelId) return value.trim() || undefined;
+	}
+	return undefined;
+}
+
+let warnedMissingAnchor = false;
+
+/**
+ * Insert `flag` directly after `after`. Returns the list UNCHANGED when the
+ * anchor is absent — a captured value's order is evidence, so guessing a new
+ * position (or appending) would emit bytes no genuine client ever sent.
+ */
+function insertAfter(flags: string[], flag: string, after: string): string[] {
+	if (flags.includes(flag)) return flags;
+	const at = flags.indexOf(after);
+	if (at < 0) {
+		if (!warnedMissingAnchor) {
+			warnedMissingAnchor = true;
+			warnConfig(`anthropic-beta anchor "${after}" missing; skipping the "${flag}" addition rather than guessing its position`);
+		}
+		return flags;
+	}
+	return [...flags.slice(0, at + 1), flag, ...flags.slice(at + 1)];
+}
+
+/**
  * The `anthropic-beta` header to send: `PI_CLAUDE_NATIVE_ANTHROPIC_BETA` env →
- * captured fingerprint → the hardcoded captured set (2.1.241). The fingerprint
+ * captured fingerprint → the hardcoded captured set (2.1.261). The fingerprint
  * pairs this with its version, so a freshly-captured set and its version stay
  * consistent.
  */
@@ -226,29 +373,52 @@ export function getAnthropicBeta(): string {
 }
 
 /**
- * Model-specific captured beta set. An explicit env override remains verbatim;
- * otherwise Haiku removes the three flags genuine 2.1.241 only sends with an
- * adaptive-effort request (mid-conversation-system, effort, afk-mode). Captured
- * fingerprints are reduced the same way, so version/beta pairs still move
- * together.
+ * The `anthropic-beta` for one model. Resolution, highest first:
+ *
+ *   1. `PI_CLAUDE_NATIVE_ANTHROPIC_BETA` — an explicit override is verbatim for
+ *      every model (documented contract; the user is pinning the exact bytes);
+ *   2. the fingerprint's per-model captured set (`modelBeta[<wire id>]`) — used
+ *      verbatim, so a re-capture makes a NEW model exact with no code change,
+ *      preserving the genuine flag ORDER (Haiku's differs from the base);
+ *   3. the base set ± the built-in deltas: Haiku drops the three adaptive-effort
+ *      flags, Fable 5.1 gains `per-turn-control-2026-07-01`.
  */
 export function getAnthropicBetaForModel(modelId: string): string {
 	const beta = getAnthropicBeta();
-	if (process.env.PI_CLAUDE_NATIVE_ANTHROPIC_BETA?.trim() || !modelId.startsWith("claude-haiku-")) {
-		return beta;
+	if (process.env.PI_CLAUDE_NATIVE_ANTHROPIC_BETA?.trim()) return beta;
+
+	const captured = lookupCapturedBeta(modelId);
+	if (captured) return captured;
+
+	let flags = beta.split(",").map((flag) => flag.trim()).filter(Boolean);
+	const delta = MODEL_BETA_DELTAS[modelId];
+	if (delta?.remove) {
+		const drop = new Set(delta.remove);
+		flags = flags.filter((flag) => !drop.has(flag));
+	} else if (!delta && modelId.startsWith("claude-haiku-")) {
+		// Family fallback for a Haiku id we have not captured: every Haiku observed
+		// so far omits the three adaptive-effort-only flags.
+		flags = flags.filter((flag) => !ADAPTIVE_EFFORT_BETAS.has(flag));
 	}
-	return beta
-		.split(",")
-		.filter((flag) => !ADAPTIVE_EFFORT_BETAS.has(flag.trim()))
-		.join(",");
+	if (delta?.add) flags = insertAfter(flags, delta.add.flag, delta.add.after);
+
+	const genuineOrder = GENUINE_FLAG_ORDER[modelId];
+	if (genuineOrder && sameSet(genuineOrder, flags)) return genuineOrder.join(",");
+	return flags.join(",");
 }
 
 // ---------------------------------------------------------------------------
 // Billing header reverse-engineered constants
 // ---------------------------------------------------------------------------
 //
-// Source: Claude Code's `x-anthropic-billing-header`. Kept byte-identical to two
-// independent reference implementations. Do NOT change without a fresh wire capture.
+// Source: Claude Code's `x-anthropic-billing-header`. VERIFIED byte-for-byte
+// against 2.1.261's own implementation (`Gdt`/`kzn`, readable JS in the installed
+// binary):
+//   sampled = [4,7,20].map(i => text[i] || "0").join("")
+//   suffix  = sha256(SALT + sampled + VERSION).slice(0, 3)
+// Reproduced on live wire captures: "reply with the single word ok" @2.1.261 ->
+// 547, "read the hello file" -> 384, "hi" -> 6af. These are ground truth now, not
+// a twice-guessed constant — do NOT change them.
 
 export const CCH_SALT = "59cf53e54c78";
 export const CCH_POSITIONS = [4, 7, 20] as const;
@@ -256,15 +426,6 @@ export const CCH_POSITIONS = [4, 7, 20] as const;
 // ---------------------------------------------------------------------------
 // Dynamic model configuration (optional, all env-driven)
 // ---------------------------------------------------------------------------
-
-/** Non-fatal diagnostic: bad model config must never crash the session. */
-function warnConfig(message: string): void {
-	try {
-		process.stderr.write(`[claude-native] ${message}\n`);
-	} catch {
-		// best-effort
-	}
-}
 
 function parseOverrides(json: string, source: string): ModelOverride[] {
 	let data: unknown;
@@ -313,25 +474,25 @@ export function getModelOverrides(): ModelOverride[] {
 }
 
 /**
- * Opt-in live model discovery: when enabled, the extension queries Anthropic's
- * own `GET /v1/models` with the subscription OAuth token at session start, so a
- * newly-shipped model appears the day it ships (instead of waiting for Pi's
- * bundled catalog to update) and its result is persisted as the local fallback.
- * Off by default (no network unless asked). Enable with
- * `PI_CLAUDE_NATIVE_LIVE_DISCOVERY=1` (also accepts true/yes/on).
+ * Live model discovery: the extension queries Anthropic's own `GET /v1/models`
+ * with the subscription OAuth token once per process at session start, so a
+ * newly-shipped model appears the day it ships instead of waiting for Pi's
+ * bundled catalog to update, and the result is persisted as the local fallback.
+ *
+ * ON by default. That endpoint is the only authoritative source for the facts
+ * this extension would otherwise have to hard-code per model — the effort
+ * ceiling (`capabilities.effort.xhigh`), adaptive-vs-budget thinking, and the
+ * real context window — so deriving them keeps a new model working with no code
+ * change. It is a single authenticated request to the same host the provider
+ * already talks to, it runs at most once per process, and every failure degrades
+ * silently to the cache + Pi's catalog + the curated seed.
+ *
+ * Opt out with `PI_CLAUDE_NATIVE_LIVE_DISCOVERY=0` (also accepts false/no/off).
  */
 export function isLiveDiscoveryEnabled(): boolean {
 	const v = process.env.PI_CLAUDE_NATIVE_LIVE_DISCOVERY?.trim().toLowerCase();
-	return v === "1" || v === "true" || v === "yes" || v === "on";
-}
-
-/**
- * Path to the persisted discovery cache (the "updated local seed" read at load
- * so the offline fallback stays fresh): `PI_CLAUDE_NATIVE_MODELS_CACHE` env, else
- * `~/.pi/claude-native-models.json`.
- */
-export function getModelCachePath(): string {
-	return process.env.PI_CLAUDE_NATIVE_MODELS_CACHE?.trim() || join(homedir(), ".pi", "claude-native-models.json");
+	if (v === undefined || v === "") return true;
+	return !(v === "0" || v === "false" || v === "no" || v === "off");
 }
 
 /**

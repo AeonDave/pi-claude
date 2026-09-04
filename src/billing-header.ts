@@ -7,8 +7,19 @@
  *
  *   x-anthropic-billing-header: cc_version=<v>.<suffix>; cc_entrypoint=<e>; cch=<cch>;
  *
- *   cch    = sha256(firstUserMessageText)[:5]
  *   suffix = sha256(SALT + chars[4,7,20] of firstUserMessageText + version)[:3]
+ *            VERIFIED byte-for-byte against Claude Code 2.1.261's own
+ *            implementation (`Gdt`/`kzn`, plain JS embedded in the installed
+ *            binary) and reproduced on live captures.
+ *   cch    = NOT reproducible, and NOT validated by Anthropic. The genuine
+ *            2.1.261 client builds the header with a literal ` cch=00000;`
+ *            placeholder that is overwritten downstream by a value which is not
+ *            a function of the request as sent: two requests in one turn that
+ *            differ only in `messages` get different cch, and three captures
+ *            with byte-identical first user messages carry b90da / abbe0 / 269e5.
+ *            We emit `sha256(firstUserMessageText)[:5]` to keep the wire SHAPE —
+ *            a stand-in, not Claude Code's value. Requests have always been
+ *            accepted with it, so do NOT chase a new formula here.
  *
  * Pure module — no Pi imports — so it is unit-testable in isolation.
  */

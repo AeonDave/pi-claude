@@ -105,3 +105,90 @@ test("writeModelCache / readModelCache round-trip, and readModelCache filters ju
 test("readModelCache returns [] for a missing/invalid file", () => {
 	assert.deepEqual(readModelCache(join(tmpdir(), "does-not-exist-claude-native.json")), []);
 });
+
+/** The real `/v1/models` capability shape, trimmed to the fields we read. */
+function liveModel(over: Record<string, unknown> = {}) {
+	return {
+		id: "claude-fable-5-1",
+		max_input_tokens: 1000000,
+		max_tokens: 128000,
+		capabilities: {
+			thinking: { supported: true, types: { enabled: { supported: false }, adaptive: { supported: true } } },
+			effort: { supported: true, xhigh: { supported: true }, max: { supported: true } },
+			image_input: { supported: true },
+		},
+		...over,
+	};
+}
+
+test("live capabilities derive the effort ceiling, adaptive-only flags and window", () => {
+	// This is what removes the need to hand-write an ID_OVERRIDES entry per model:
+	// verified against the real endpoint on 2026-09-05.
+	const [fable] = normalizeModelsResponse({ data: [liveModel()] });
+	assert.equal(fable.id, "claude-fable-5-1");
+	assert.equal(fable.catalog.contextWindow, 1000000);
+	assert.equal(fable.catalog.maxTokens, 128000);
+	assert.equal(fable.catalog.forceAdaptiveThinking, true);
+	assert.equal(fable.catalog.supportsEffort, true);
+	assert.equal(fable.catalog.supportsTemperature, false, "adaptive-only models reject temperature");
+	assert.deepEqual(fable.catalog.thinkingLevelMap, { xhigh: "xhigh", max: "max", off: null });
+	assert.deepEqual(fable.catalog.input, ["text", "image"]);
+	assert.ok(!("cost" in fable.catalog), "the endpoint carries no pricing — Pi's catalog must win it");
+});
+
+test("a model that tops out at max maps xhigh down; one with no effort ladder gets no map", () => {
+	const [capped] = normalizeModelsResponse({
+		data: [
+			liveModel({
+				id: "claude-opus-4-6",
+				capabilities: {
+					thinking: { supported: true, types: { enabled: { supported: true }, adaptive: { supported: true } } },
+					effort: { supported: true, xhigh: { supported: false }, max: { supported: true } },
+				},
+			}),
+		],
+	});
+	assert.deepEqual(capped.catalog.thinkingLevelMap, { xhigh: "max", max: "max" });
+	assert.equal(capped.catalog.supportsTemperature, undefined, "budget thinking is supported, so temperature stays");
+
+	const [none] = normalizeModelsResponse({
+		data: [
+			liveModel({
+				id: "claude-haiku-4-5-20251001",
+				max_input_tokens: 200000,
+				capabilities: {
+					thinking: { supported: true, types: { enabled: { supported: true }, adaptive: { supported: false } } },
+					effort: { supported: false, xhigh: { supported: false }, max: { supported: false } },
+				},
+			}),
+		],
+	});
+	assert.equal(none.catalog.supportsEffort, false);
+	assert.equal(none.catalog.thinkingLevelMap, undefined);
+	assert.equal(none.catalog.forceAdaptiveThinking, false);
+});
+
+test("a >200K window is only trusted when the model is known to be adaptive", () => {
+	// claude-sonnet-4-5 really does advertise 1M, but that window is unlocked by
+	// the `context-1m-2025-08-07` beta this provider deliberately never sends.
+	// Believing it would make Pi skip compaction and die on a hard 400.
+	const [budget1m] = normalizeModelsResponse({
+		data: [
+			liveModel({
+				id: "claude-sonnet-4-5-20250929",
+				capabilities: {
+					thinking: { supported: true, types: { enabled: { supported: true }, adaptive: { supported: false } } },
+					effort: { supported: false },
+				},
+			}),
+		],
+	});
+	assert.equal(budget1m.catalog.contextWindow, 200000, "clamped: its 1M needs a beta we do not send");
+
+	// An entry that simply does not state the thinking types tells us nothing and
+	// must not be clamped (older caches, partial responses).
+	const [unknown] = normalizeModelsResponse({
+		data: [{ id: "claude-mythos-9", max_input_tokens: 1000000, capabilities: { thinking: { supported: true } } }],
+	});
+	assert.equal(unknown.catalog.contextWindow, 1000000);
+});

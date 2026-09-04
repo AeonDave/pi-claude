@@ -6,7 +6,9 @@ const OPUS_COST = { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 };
 const SONNET_COST = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 };
 const HAIKU_COST = { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 };
 const FABLE_COST = { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 };
-const OPUS_HI = { compat: { forceAdaptiveThinking: true, supportsTemperature: false }, thinkingLevelMap: { xhigh: "xhigh" } };
+// Opus 4.8/4.7 are ADAPTIVE-ONLY per `/v1/models`, so `off: null` keeps Pi from
+// sending `thinking: {type: "disabled"}` to a model that rejects it.
+const OPUS_HI = { compat: { forceAdaptiveThinking: true, supportsTemperature: false }, thinkingLevelMap: { xhigh: "xhigh", off: null } };
 const OPUS_MAX = { compat: { forceAdaptiveThinking: true }, thinkingLevelMap: { xhigh: "max" } };
 const SONNET = { compat: { forceAdaptiveThinking: true }, thinkingLevelMap: undefined };
 const HAIKU = { compat: undefined, thinkingLevelMap: undefined };
@@ -77,8 +79,8 @@ test("discovery (A): a new catalog opus id appears as a single native-1M entry",
 	assert.ok(!models.some((m) => m.id === "claude-opus-4-9-1m"), "no -1m alias");
 });
 
-test("discovery: claude-opus-5 keeps the xhigh ceiling captured from claude 2.1.241", () => {
-	// Regression: `claude --model opus` resolves to `claude-opus-5` on 2.1.241 and
+test("discovery: claude-opus-5 keeps the xhigh ceiling captured from claude 2.1.261", () => {
+	// Regression: `claude --model opus` resolves to `claude-opus-5` on 2.1.261 and
 	// sends `output_config.effort: "xhigh"`. Without the ID_OVERRIDES entry the
 	// conservative opus family default (`xhigh -> max`) would silently downgrade
 	// every request, and temperature would be left enabled on an adaptive-only model.
@@ -92,7 +94,11 @@ test("discovery: claude-opus-5 keeps the xhigh ceiling captured from claude 2.1.
 	assert.ok(opus5, "opus-5 discovered from catalog");
 	assert.equal(opus5?.name, "Claude Opus 5");
 	assert.equal(opus5?.contextWindow, 1000000);
-	assert.deepEqual(opus5?.thinkingLevelMap, { xhigh: "xhigh" }, "xhigh must reach the wire, not be capped to max");
+	assert.deepEqual(
+		opus5?.thinkingLevelMap,
+		{ xhigh: "xhigh", off: null },
+		"xhigh must reach the wire, not be capped to max; off stays null (adaptive-only)",
+	);
 	assert.deepEqual(opus5?.compat, { forceAdaptiveThinking: true, supportsTemperature: false });
 });
 
@@ -117,7 +123,7 @@ test("overrides (B): a partial override merges over an existing id", () => {
 	const opus8 = models.find((m) => m.id === "claude-opus-4-8");
 	assert.deepEqual(opus8?.cost, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 	assert.equal(opus8?.name, "Claude Opus 4.8");
-	assert.deepEqual(opus8?.thinkingLevelMap, { xhigh: "xhigh" });
+	assert.deepEqual(opus8?.thinkingLevelMap, { xhigh: "xhigh", off: null });
 });
 
 test("overrides (B): a complete new model is appended; an incomplete one is skipped", () => {
@@ -250,7 +256,7 @@ test("discovery reads NEW anthropic models from Pi's catalog: claude-sonnet-5 + 
 	// Pi's anthropic catalog lists them. This is the "just read the anthropic
 	// models" path, incl. a bare-major id and a brand-new family.
 	const catalog = new Map([
-		["claude-sonnet-5", { cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 }, maxTokens: 64000, contextWindow: 1000000, reasoning: true, input: ["text", "image"] as ("text" | "image")[] }],
+		["claude-sonnet-5", { cost: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 }, maxTokens: 64000, contextWindow: 1000000, reasoning: true, input: ["text", "image"] as ("text" | "image")[] }],
 		["claude-mythos-5", { cost: { input: 7, output: 35, cacheRead: 0.7, cacheWrite: 8.75 }, maxTokens: 32000, contextWindow: 500000, reasoning: true, input: ["text", "image"] as ("text" | "image")[], thinkingLevelMap: { xhigh: "xhigh" as const } }],
 	]);
 	const models = buildNativeModels({ extraIds: [...catalog.keys()], catalog });
@@ -259,7 +265,10 @@ test("discovery reads NEW anthropic models from Pi's catalog: claude-sonnet-5 + 
 	assert.ok(s5, "sonnet-5 discovered from catalog");
 	assert.equal(s5?.name, "Claude Sonnet 5");
 	assert.equal(s5?.contextWindow, 1000000);
-	assert.deepEqual(s5?.cost, SONNET_COST); // carried from the catalog
+	// Deliberately DIFFERENT from the sonnet family default ($3/$15): Sonnet 5 is
+	// $2/$10 (changelog 2.1.243, and Pi 0.85's catalog). A fixture equal to the
+	// family default could pass even if the catalog cost were ignored.
+	assert.deepEqual(s5?.cost, { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 }); // carried from the catalog
 	// brand-new family: fully derived from the catalog, zero code edits
 	const mythos = models.find((m) => m.id === "claude-mythos-5");
 	assert.ok(mythos, "mythos-5 (unknown family) discovered from catalog");

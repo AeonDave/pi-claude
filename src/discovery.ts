@@ -1,15 +1,15 @@
 /**
- * Optional live model discovery + a persisted local fallback ("updated seed").
+ * Live model discovery (ON by default) + a persisted local fallback ("updated seed").
  *
  * The extension's default discovery reads Pi's *bundled* `anthropic` catalog
  * (`ctx.modelRegistry.getAll()`), which is a static generated file — so a
  * brand-new Claude (e.g. `claude-mythos-5`) only appears after the Pi package
- * ships an updated catalog. This module closes that gap, opt-in:
+ * ships an updated catalog. This module closes that gap:
  *
  *   1. `fetchLiveModels` queries Anthropic's own `GET /v1/models` with the
  *      subscription's OAuth token, so a model appears the day it ships;
  *   2. `writeModelCache`/`readModelCache` persist the result to
- *      `~/.pi/claude-native-models.json`, which `index.ts` reads at load — so the
+ *      `<agent dir>/claude-native/models.json`, which `index.ts` reads at load — so the
  *      offline/pre-session fallback stays as fresh as the last successful fetch.
  *
  * Everything is best-effort: any network/parse/fs error degrades silently to the
@@ -28,13 +28,24 @@ export interface DiscoveredModel {
 	catalog: CatalogEntry;
 }
 
+/** One `capabilities.<x>` node: `{ supported: boolean }`, possibly with children. */
+interface Supported {
+	supported?: unknown;
+}
+
 /** Anthropic `/v1/models` item (only the fields we read; all optional/defensive). */
 interface ModelInfo {
 	id?: unknown;
 	max_input_tokens?: unknown;
 	max_tokens?: unknown;
-	capabilities?: { thinking?: { supported?: unknown } };
+	capabilities?: {
+		thinking?: Supported & { types?: { enabled?: Supported; adaptive?: Supported } };
+		effort?: Supported & { xhigh?: Supported; max?: Supported };
+		image_input?: Supported;
+	};
 }
+
+const isSupported = (node: Supported | undefined): boolean => node?.supported === true;
 
 interface ModelCacheFile {
 	version: number;
@@ -54,13 +65,62 @@ export function stripDateSuffix(id: string): string {
 	return id.replace(/-\d{8}$/, "");
 }
 
-/** Map a `/v1/models` item to a `CatalogEntry` — never sets `cost` (not provided). */
+/**
+ * Map a `/v1/models` item to a `CatalogEntry` — never sets `cost` (the endpoint
+ * carries no pricing, so Pi's catalog wins that field in the merge).
+ *
+ * Everything else this extension would otherwise hard-code per model IS here,
+ * which is what lets a newly-shipped model work with no code change:
+ *   - `capabilities.effort.xhigh/max`      → the effort ceiling (`thinkingLevelMap`)
+ *   - `capabilities.thinking.types.*`      → adaptive vs budget, and adaptive-ONLY
+ *   - `max_input_tokens` / `max_tokens`    → the real window and output cap
+ *   - `capabilities.image_input`           → input modalities
+ */
 function modelInfoToCatalog(m: ModelInfo): CatalogEntry {
 	const entry: CatalogEntry = {};
-	if (typeof m.max_input_tokens === "number" && m.max_input_tokens > 0) entry.contextWindow = m.max_input_tokens;
+	const caps = m.capabilities;
+	const adaptive = isSupported(caps?.thinking?.types?.adaptive);
+	const budget = isSupported(caps?.thinking?.types?.enabled);
+
+	// Only a source that explicitly reports the thinking TYPES can rule adaptive
+	// out; an entry that simply omits them (an older cache, a partial response)
+	// tells us nothing and must not trigger the clamp below.
+	const knownNonAdaptive = !!caps?.thinking?.types && !adaptive;
+
+	if (typeof m.max_input_tokens === "number" && m.max_input_tokens > 0) {
+		// Guard: some older ids advertise a 1M window that is only unlocked by the
+		// `context-1m-2025-08-07` beta, which this provider deliberately never sends
+		// (a plan without long-context 400/429s on it). Adopting that number would
+		// tell Pi it has 5x the room it really has, so it would never compact and the
+		// request would die on a hard "prompt too long". Across Anthropic's 2026-09
+		// catalog, native-1M and adaptive-thinking coincide exactly (opus 4.6+,
+		// sonnet 4.6+, fable 5+ are both; sonnet 4.5 claims 1M but is budget-only and
+		// needs the beta), so gate the >200K window on adaptive support. Erring low
+		// only costs an early compaction; erring high is fatal. Pi's own catalog
+		// wins this field anyway wherever it knows the id.
+		entry.contextWindow = m.max_input_tokens > 200_000 && knownNonAdaptive ? 200_000 : m.max_input_tokens;
+	}
 	if (typeof m.max_tokens === "number" && m.max_tokens > 0) entry.maxTokens = m.max_tokens;
-	const thinking = m.capabilities?.thinking?.supported;
-	if (typeof thinking === "boolean") entry.reasoning = thinking;
+	if (typeof caps?.thinking?.supported === "boolean") entry.reasoning = caps.thinking.supported;
+	if (caps?.thinking?.types) entry.forceAdaptiveThinking = adaptive;
+	if (caps?.image_input) entry.input = isSupported(caps.image_input) ? ["text", "image"] : ["text"];
+
+	// Effort ceiling. `xhigh` is the fact that used to require a hand-written
+	// ID_OVERRIDES entry per model; the endpoint states it directly.
+	if (typeof caps?.effort?.supported === "boolean") entry.supportsEffort = caps.effort.supported;
+	if (isSupported(caps?.effort)) {
+		const map: Record<string, string | null> = {};
+		if (isSupported(caps?.effort?.xhigh)) map.xhigh = "xhigh";
+		else if (isSupported(caps?.effort?.max)) map.xhigh = "max";
+		if (isSupported(caps?.effort?.max)) map.max = "max";
+		// Adaptive-ONLY models reject `thinking: {type: "disabled"}`. `off: null` is
+		// how Pi is told not to send it (see its anthropic-messages path).
+		if (adaptive && !budget) map.off = null;
+		if (Object.keys(map).length > 0) entry.thinkingLevelMap = map as CatalogEntry["thinkingLevelMap"];
+	}
+	// Adaptive-only models also reject `temperature`.
+	if (caps?.thinking?.types && adaptive && !budget) entry.supportsTemperature = false;
+
 	return entry;
 }
 

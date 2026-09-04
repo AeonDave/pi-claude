@@ -9,11 +9,16 @@
  *   - captures/fingerprint-report.md       — human-readable diff vs the current
  *     defaults, telling you exactly what (if anything) changed.
  *
- *   node scripts/capture-fingerprint.mjs                     # capture + report
- *   node scripts/capture-fingerprint.mjs --apply             # also install the
- *       fingerprint to ~/.pi/claude-native-fingerprint.json (the extension then
- *       auto-adopts version + beta with no code edit)
- *   node scripts/capture-fingerprint.mjs --models opus,sonnet,haiku
+ * Run it through the npm script (it needs `tsx` to import from `src/`):
+ *
+ *   npm run capture:fingerprint                              # capture + report
+ *   npm run capture:fingerprint -- --apply                   # also install the
+ *       fingerprint to <agent dir>/claude-native/fingerprint.json (the extension
+ *       then auto-adopts version + per-model beta with no code edit), retiring any
+ *       pre-1.5.0 ~/.pi/claude-native-fingerprint.json
+ *   npm run capture:fingerprint -- --models opus,sonnet,haiku,fable
+ *   npm run capture:fingerprint -- --reuse                   # re-distill from the
+ *       existing captures/fp-raw/ without driving `claude` again
  *
  * Requires a logged-in `claude` on PATH (uses your subscription; tiny prompts).
  * Override the executable with `PI_CLAUDE_NATIVE_CLAUDE_BIN` when needed.
@@ -26,6 +31,12 @@ import net from "node:net";
 import { homedir } from "node:os";
 import { delimiter, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+// Imported, never duplicated: the state-dir resolution and the hardcoded default
+// beta set are single-sourced from the extension itself (run via `tsx`, see the
+// `capture:fingerprint` script). Re-deriving them here is what lets the script and
+// the extension drift apart.
+import { DEFAULT_ANTHROPIC_BETA } from "../src/constants.ts";
+import { getStateDir } from "../src/fingerprint.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..");
@@ -36,9 +47,13 @@ const PROXY = join(HERE, "capture-proxy.mjs");
 
 const args = process.argv.slice(2);
 const APPLY = args.includes("--apply");
+// Re-distill from the raw captures already in captures/fp-raw/ instead of driving
+// `claude` again. Lets the report/fingerprint logic be iterated without spending
+// subscription calls, and recovers a run that captured cleanly but failed later.
+const REUSE = args.includes("--reuse");
 const modelsArg = (() => {
 	const i = args.indexOf("--models");
-	return i >= 0 && args[i + 1] ? args[i + 1] : "opus,sonnet,haiku";
+	return i >= 0 && args[i + 1] ? args[i + 1] : "opus,sonnet,haiku,fable";
 })();
 const MODELS = modelsArg.split(",").map((m) => m.trim()).filter(Boolean);
 if (MODELS.length === 0 || MODELS.some((model) => !/^[a-zA-Z0-9][a-zA-Z0-9._:-]*$/.test(model))) {
@@ -118,24 +133,35 @@ function runClaude(model, baseUrl) {
 	});
 }
 
-/** Best-effort read of the current DEFAULT_ANTHROPIC_BETA array from constants.ts. */
-function currentDefaultBeta() {
-	try {
-		const src = readFileSync(join(ROOT, "src", "constants.ts"), "utf8");
-		const block = src.match(/DEFAULT_ANTHROPIC_BETA\s*=\s*\[([\s\S]*?)\]/);
-		if (!block) return [];
-		return [...block[1].matchAll(/"([^"]+)"/g)].map((m) => m[1]);
-	} catch {
-		return [];
-	}
-}
-
 function betaList(value) {
 	return (value || "").split(",").map((s) => s.trim()).filter(Boolean);
 }
 
+/** Which alias triggered each raw capture — persisted so `--reuse` keeps it. */
+const OWNERS_PATH = join(RAW_DIR, "owners.json");
+
 async function main() {
 	mkdirSync(RAW_DIR, { recursive: true });
+	const captureOwner = new Map();
+	const runResults = [];
+
+	if (REUSE) {
+		console.log("> --reuse: re-distilling from existing captures in captures/fp-raw/");
+		try {
+			for (const [file, alias] of Object.entries(JSON.parse(readFileSync(OWNERS_PATH, "utf8")))) {
+				captureOwner.set(file, alias);
+			}
+		} catch {
+			console.warn("! no owners.json — base-set selection falls back to matching by wire model name");
+		}
+	} else {
+		await captureFromClaude(captureOwner, runResults);
+	}
+
+	await distill(captureOwner, runResults);
+}
+
+async function captureFromClaude(captureOwner, runResults) {
 	// Clear stale raw captures so we only read this run's.
 	for (const f of readdirSync(RAW_DIR)) {
 		if (/^req-fp-\d+\.json$/.test(f)) {
@@ -152,8 +178,6 @@ async function main() {
 		env: { ...process.env, PI_CAPTURE_PORT: String(PORT), PI_CAPTURE_DIR: RAW_DIR, PI_CAPTURE_LABEL: "fp" },
 		stdio: "ignore",
 	});
-	const captureOwner = new Map();
-	const runResults = [];
 	try {
 		await waitForPort(PORT);
 		const baseUrl = `http://127.0.0.1:${PORT}`;
@@ -171,6 +195,15 @@ async function main() {
 		await sleep(200);
 	}
 
+	// Persist the file→alias map so `--reuse` can pick the same base set.
+	try {
+		writeFileSync(OWNERS_PATH, JSON.stringify(Object.fromEntries(captureOwner), null, 2), "utf8");
+	} catch {
+		// best-effort; --reuse just falls back to name matching
+	}
+}
+
+async function distill(captureOwner, runResults) {
 	// Collect the largest capture per wire-model.
 	const byModel = new Map();
 	for (const f of readdirSync(RAW_DIR)) {
@@ -220,26 +253,71 @@ async function main() {
 		if (detectedVersion && !version) version = detectedVersion;
 	}
 
-	// The provider default is the adaptive normal-turn set. Haiku omits three
-	// effort-only flags, so a Haiku-only run cannot safely produce the global
-	// fingerprint used by Opus/Fable/Sonnet.
+	// The provider default is the adaptive normal-turn set, and ONLY Opus or Sonnet
+	// may define it. Haiku omits three effort-only flags (a subset), while Fable 5.1
+	// ADDS `per-turn-control-2026-07-01` (a superset) — promoting either to the
+	// global base would send a model-specific flag to every model, and Anthropic
+	// 400s on an unexpected beta. A fable/haiku-only run therefore cannot produce a
+	// fingerprint.
+	// Prefer the capture triggered by the BARE alias (`--model opus` / `sonnet`):
+	// that is the current generation's adaptive normal turn, which is what the
+	// provider default must mirror. Falling back to "any opus with effort" could
+	// otherwise pick an explicitly-requested older id (claude-opus-4-6, …) and
+	// silently redefine the base set from a previous generation.
 	const candidates = Object.values(perModel);
-	const base = candidates.find((p) => /opus/.test(p.wireModel) && p.effort) || candidates.find((p) => p.effort);
+	const byAlias = (alias) => candidates.find((p) => p.triggeredBy.includes(alias) && p.effort);
+	const base =
+		byAlias("opus") ||
+		byAlias("sonnet") ||
+		candidates.find((p) => /opus/.test(p.wireModel) && p.effort) ||
+		candidates.find((p) => /sonnet/.test(p.wireModel) && p.effort);
 	if (!base) {
-		console.error("! no adaptive-effort capture recorded — include opus, fable, or sonnet in --models");
+		console.error("! no Opus/Sonnet adaptive-effort capture recorded — include opus or sonnet in --models");
+		console.error("  (Haiku sends a subset and Fable a superset; neither can define the global base set.)");
 		process.exit(1);
 	}
 	const fingerprintBeta = base.beta.filter((b) => b !== ONE_M_BETA);
+
+	// Per-model sets are stored VERBATIM (order included — genuine Haiku does not
+	// order its flags like the base). The extension prefers these over its built-in
+	// deltas, so re-capturing is all a NEW model needs: no code change.
+	const modelBeta = {};
+	for (const p of candidates) {
+		const flags = p.beta.filter((b) => b !== ONE_M_BETA);
+		if (flags.length > 0) modelBeta[p.wireModel] = flags.join(",");
+	}
+
 	const fingerprint = {
 		capturedAt: new Date().toISOString(),
 		version: version || null,
+		entrypoint: base.entrypoint || null,
+		userAgent: base.userAgent || null,
 		anthropicBeta: fingerprintBeta.join(","),
+		modelBeta,
 	};
 
 	// Diff vs the current hardcoded default.
-	const current = currentDefaultBeta();
+	const current = DEFAULT_ANTHROPIC_BETA.split(",");
 	const added = fingerprintBeta.filter((b) => !current.includes(b));
 	const removed = current.filter((b) => !fingerprintBeta.includes(b));
+
+	// Per-model deviations from the BASE set. Reporting only the base diff used to
+	// print a confident "No change" on a run whose own table showed Fable sending
+	// an extra flag — the drift was captured, displayed, and then thrown away.
+	const deviations = candidates
+		.map((p) => {
+			const flags = p.beta.filter((b) => b !== ONE_M_BETA);
+			return {
+				wireModel: p.wireModel,
+				adds: flags.filter((b) => !fingerprintBeta.includes(b)),
+				drops: fingerprintBeta.filter((b) => !flags.includes(b)),
+				reordered: flags.length === fingerprintBeta.length && flags.join(",") !== fingerprintBeta.join(","),
+			};
+		})
+		.filter((d) => d.adds.length > 0 || d.drops.length > 0 || d.reordered);
+
+	const applyDest = join(getStateDir(), "fingerprint.json");
+	let removedLegacy = null;
 
 	const outJson = join(CAPTURE_DIR, `fingerprint-${version || "unknown"}.json`);
 	writeFileSync(outJson, `${JSON.stringify(fingerprint, null, 2)}\n`, "utf8");
@@ -263,8 +341,20 @@ async function main() {
 		added.length ? `- ➕ ADDED: ${added.join(", ")}` : `- ➕ ADDED: (none)`,
 		removed.length ? `- ➖ REMOVED: ${removed.join(", ")}` : `- ➖ REMOVED: (none)`,
 		added.length || removed.length
-			? `\n**The beta set changed — update \`DEFAULT_ANTHROPIC_BETA\` (or \`--apply\` this fingerprint).**`
-			: `\n**No change — the hardcoded default still matches your \`claude\`.**`,
+			? `\n**The base beta set changed — update \`DEFAULT_ANTHROPIC_BETA\` (or \`--apply\` this fingerprint).**`
+			: `\n**Base set unchanged — the hardcoded default still matches your \`claude\`.**`,
+		``,
+		`## Per-model deviations from the base set`,
+		``,
+		...(deviations.length === 0
+			? [`- (none — every captured model sends the base set verbatim)`]
+			: deviations.map(
+					(d) =>
+						`- \`${d.wireModel}\`: ${d.adds.length ? `➕ ${d.adds.join(", ")}` : ""}${d.adds.length && d.drops.length ? " / " : ""}${d.drops.length ? `➖ ${d.drops.join(", ")}` : ""}${d.reordered ? " (same set, different order)" : ""}`,
+				)),
+		deviations.length
+			? `\n**${deviations.length} model(s) deviate.** \`--apply\` records each verbatim under the fingerprint's \`modelBeta\`, which the extension prefers over its built-in deltas — so this needs no code change.`
+			: ``,
 		``,
 		`## Per model (wire)`,
 		``,
@@ -280,22 +370,32 @@ async function main() {
 		...runResults.map((r) => `- \`${r.model}\`: ${r.captures} request(s), ${r.timedOut ? "timed out" : r.error ? `spawn error: ${r.error.message}` : `exit ${r.code}${r.signal ? ` (${r.signal})` : ""}`}`),
 		``,
 		`Machine fingerprint written to \`${outJson}\`.`,
-		APPLY ? `Applied to \`~/.pi/claude-native-fingerprint.json\` — the extension will auto-adopt it.` : `Run again with \`--apply\` to install it for the extension to auto-adopt.`,
+		APPLY ? `Applied to \`${applyDest}\` — the extension will auto-adopt it.` : `Run again with \`--apply\` to install it for the extension to auto-adopt.`,
 		``,
 	].join("\n");
 	const outMd = join(CAPTURE_DIR, "fingerprint-report.md");
 	writeFileSync(outMd, report, "utf8");
 
 	if (APPLY) {
-		const dest = join(homedir(), ".pi", "claude-native-fingerprint.json");
-		mkdirSync(dirname(dest), { recursive: true });
-		writeFileSync(dest, `${JSON.stringify(fingerprint, null, 2)}\n`, "utf8");
+		mkdirSync(dirname(applyDest), { recursive: true });
+		writeFileSync(applyDest, `${JSON.stringify(fingerprint, null, 2)}\n`, "utf8");
+		// Retire the pre-1.5.0 loose file so there is exactly one source of truth.
+		const legacy = join(homedir(), ".pi", "claude-native-fingerprint.json");
+		try {
+			if (existsSync(legacy)) {
+				unlinkSync(legacy);
+				removedLegacy = legacy;
+			}
+		} catch {
+			// harmless: the extension prefers the new path anyway
+		}
 	}
 
 	console.log(`\n${report}`);
 	console.log(`✓ wrote ${outJson}`);
 	console.log(`✓ wrote ${outMd}`);
-	if (APPLY) console.log(`✓ applied to ~/.pi/claude-native-fingerprint.json`);
+	if (APPLY) console.log(`✓ applied to ${applyDest}`);
+	if (removedLegacy) console.log(`✓ removed legacy ${removedLegacy}`);
 	if (runResults.some((r) => r.captures === 0)) {
 		console.error("! one or more requested model runs produced no capture");
 		process.exitCode = 1;

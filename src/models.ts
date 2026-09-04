@@ -69,6 +69,15 @@ export interface CatalogEntry {
 	input?: ("text" | "image")[];
 	thinkingLevelMap?: Model<Api>["thinkingLevelMap"];
 	/**
+	 * Whether the source says this id supports an `output_config.effort` at all.
+	 * `false` (only Anthropic's `/v1/models` states it) means the model has no
+	 * effort ladder — Haiku 4.5, Opus 4.5, Sonnet 4.5 — so a curated family
+	 * ceiling must NOT be inherited, or Pi would offer a level the model rejects.
+	 */
+	supportsEffort?: boolean;
+	/** `false` for adaptive-ONLY models, which reject `temperature`. */
+	supportsTemperature?: boolean;
+	/**
 	 * Whether Pi's catalog marks this id as an ADAPTIVE-thinking model. Adaptive is a
 	 * per-VERSION capability, not per-family: newer Claudes (opus/sonnet 4-6+) support it;
 	 * older ids (e.g. `claude-sonnet-4-5`) use budget thinking and the subscription route
@@ -200,31 +209,58 @@ export function parseModelId(id: string): { family: string; versionLabel: string
  */
 const ID_OVERRIDES: Record<string, Pick<NativeModel, "compat" | "thinkingLevelMap">> = {
 	// Opus 5 is DISCOVERED (not seeded), but the conservative opus family default
-	// would cap it at `max`. Re-captured on claude 2.1.241 — `claude --model opus`
+	// would cap it at `max`. Re-captured on claude 2.1.261 — `claude --model opus`
 	// resolves to `claude-opus-5` and sends `output_config.effort: "xhigh"` — so the
 	// higher ceiling is confirmed on the wire, not assumed. Adaptive-only per
 	// `/v1/models` (`thinking.types.enabled.supported: false`), hence no temperature.
 	"claude-opus-5": {
 		compat: { forceAdaptiveThinking: true, supportsTemperature: false },
-		thinkingLevelMap: { xhigh: "xhigh" },
+		thinkingLevelMap: { xhigh: "xhigh", off: null },
 	},
-	// Sonnet 5 is DISCOVERED (not seeded). Re-captured on claude 2.1.241 —
+	// Sonnet 5 is DISCOVERED (not seeded). Re-captured on claude 2.1.261 —
 	// `claude --model sonnet` resolves to `claude-sonnet-5` and sends
 	// `output_config.effort: "xhigh"`. The conservative sonnet family default has no
 	// thinkingLevelMap (caps at max); this confirms the higher ceiling on the wire.
+	// Adaptive-ONLY per `/v1/models` (`thinking.types.enabled.supported: false`),
+	// like Opus 5 — Pi's bundled catalog omits both facts for this id, and the
+	// catalog wins the merge, so they are pinned here where the overlay wins.
 	"claude-sonnet-5": {
-		compat: { forceAdaptiveThinking: true },
-		thinkingLevelMap: { xhigh: "xhigh" },
+		compat: { forceAdaptiveThinking: true, supportsTemperature: false },
+		thinkingLevelMap: { xhigh: "xhigh", off: null },
 	},
+	// Seed ids deliberately bypass the catalog (so the offline line-up is stable),
+	// which means `off: null` has to be stated here. Both are ADAPTIVE-ONLY per
+	// Anthropic's `/v1/models` (`thinking.types.enabled.supported: false`), and Pi
+	// sends `thinking: {type: "disabled"}` whenever `thinkingLevelMap.off !== null`
+	// — a request genuine Claude Code never makes for these models, and the one the
+	// 2.1.251 changelog records as failing. Opus 4.6 / Sonnet 4.6 DO support budget
+	// thinking, so they must NOT carry `off: null`.
 	"claude-opus-4-8": {
 		compat: { forceAdaptiveThinking: true, supportsTemperature: false },
-		thinkingLevelMap: { xhigh: "xhigh" },
+		thinkingLevelMap: { xhigh: "xhigh", off: null },
 	},
 	"claude-opus-4-7": {
 		compat: { forceAdaptiveThinking: true, supportsTemperature: false },
-		thinkingLevelMap: { xhigh: "xhigh" },
+		thinkingLevelMap: { xhigh: "xhigh", off: null },
 	},
 };
+
+/**
+ * Merge thinking-level maps left-to-right (later sources win per KEY, not
+ * wholesale). Preserves `null` values — `off: null` is meaningful: it tells Pi
+ * NOT to send `thinking: {type: "disabled"}`. Returns `undefined` when every
+ * source is absent, so the field is omitted rather than registered empty.
+ */
+function mergeThinkingLevels(
+	...maps: (Model<Api>["thinkingLevelMap"] | undefined)[]
+): Model<Api>["thinkingLevelMap"] | undefined {
+	let out: Record<string, unknown> | undefined;
+	for (const map of maps) {
+		if (!map) continue;
+		out = { ...(out ?? {}), ...map };
+	}
+	return out && Object.keys(out).length > 0 ? (out as Model<Api>["thinkingLevelMap"]) : undefined;
+}
 
 function displayName(family: string, versionLabel: string): string {
 	const fam = family.charAt(0).toUpperCase() + family.slice(1);
@@ -252,21 +288,37 @@ function buildFamilyModels(id: string, fromCatalog?: CatalogEntry): NativeModel[
 	const input = fromCatalog?.input ?? ["text", "image"];
 	// Known families keep their exact curated compat (haiku intentionally has none);
 	// unknown families default to adaptive thinking when they reason.
-	let compat = overlay?.compat ?? known?.compat ?? (known || !reasoning ? undefined : { forceAdaptiveThinking: true });
+	// LAYER these, never replace: family default (the only source for a SEED id) →
+	// catalog / live `/v1/models` capability (authoritative for a DISCOVERED id) →
+	// ID_OVERRIDES (an explicit pin, always wins).
+	//
+	// Replacing is what used to drop the catalog's `off: null` from an adaptive-only
+	// model, which let Pi emit `thinking: {type: "disabled"}` — a request genuine
+	// Claude Code never makes and the subscription route rejects. Layering also means
+	// a NEWLY-SHIPPED model inherits its real ceiling from the endpoint instead of the
+	// conservative family default, so it needs no hand-written entry here.
+	const compatBag: Record<string, unknown> = { ...(known?.compat ?? (known || !reasoning ? {} : { forceAdaptiveThinking: true })) };
 	// forceAdaptiveThinking is per-VERSION, not per-family: the curated family default marks
 	// the whole family adaptive, but an older DISCOVERED id (e.g. `claude-sonnet-4-5`) does not
-	// support it and the subscription route 400s on adaptive. When Pi's catalog tells us the
-	// id's real capability, honour it over the family default (a curated ID_OVERRIDES entry —
-	// the seed opus ids — still wins; seed ids carry no catalog entry, so they're untouched).
-	if (!overlay && fromCatalog && typeof fromCatalog.forceAdaptiveThinking === "boolean") {
-		const merged: Record<string, unknown> = { ...(compat ?? {}) };
-		if (fromCatalog.forceAdaptiveThinking) merged.forceAdaptiveThinking = true;
-		else delete merged.forceAdaptiveThinking;
-		compat = (Object.keys(merged).length > 0 ? merged : undefined) as NativeModel["compat"];
+	// support it and the subscription route 400s on adaptive.
+	if (fromCatalog && typeof fromCatalog.forceAdaptiveThinking === "boolean") {
+		if (fromCatalog.forceAdaptiveThinking) compatBag.forceAdaptiveThinking = true;
+		else delete compatBag.forceAdaptiveThinking;
 	}
-	// Known families keep their curated effort ceiling; unknown families derive it
-	// from the catalog (the only honest source for a model we don't curate).
-	const thinkingLevelMap = overlay?.thinkingLevelMap ?? known?.thinkingLevelMap ?? (known ? undefined : fromCatalog?.thinkingLevelMap);
+	if (fromCatalog && typeof fromCatalog.supportsTemperature === "boolean") {
+		compatBag.supportsTemperature = fromCatalog.supportsTemperature;
+	}
+	if (overlay?.compat) Object.assign(compatBag, overlay.compat);
+	const compat = (Object.keys(compatBag).length > 0 ? compatBag : undefined) as NativeModel["compat"];
+
+	// A source that DESCRIBES the effort ladder is authoritative for it, so the
+	// curated family ceiling must not be inherited alongside it. Anthropic's
+	// `/v1/models` always states `capabilities.effort.supported`, so `supportsEffort`
+	// being defined at all means "this ladder is fully known". Without this, Opus 4.5
+	// (effort: low/medium/high, NO xhigh, NO max) would keep the opus family's
+	// `xhigh → max` and Pi would offer a level the model rejects.
+	const familyLevels = fromCatalog?.supportsEffort !== undefined ? undefined : known?.thinkingLevelMap;
+	const thinkingLevelMap = mergeThinkingLevels(familyLevels, fromCatalog?.thinkingLevelMap, overlay?.thinkingLevelMap);
 
 	const make = (contextWindow: number): NativeModel => ({
 		id,

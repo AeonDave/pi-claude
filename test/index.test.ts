@@ -5,6 +5,14 @@ import { join } from "node:path";
 import { test } from "node:test";
 import claudeProMaxNative from "../src/index.ts";
 
+// Isolation: never read the developer's REAL ~/.pi/claude-native-fingerprint.json.
+// A locally-applied capture (a newer version, or a per-model `modelBeta` set)
+// silently changes the flag counts asserted below, so the suite would pass or fail
+// depending on whose machine it runs on. Point at a path that cannot exist.
+process.env.PI_CLAUDE_NATIVE_FINGERPRINT = join(tmpdir(), `claude-native-absent-fingerprint-${randomUUID()}.json`);
+// Live discovery is on by default; tests must never hit the network.
+process.env.PI_CLAUDE_NATIVE_LIVE_DISCOVERY = "0";
+
 const FABLE_COST = { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 };
 
 function fableModel(cost = FABLE_COST) {
