@@ -24,6 +24,7 @@
  * takes effect immediately, with no `/reload`.
  */
 
+import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
 import {
 	getAnthropicBeta,
@@ -268,9 +269,23 @@ export default function claudeProMaxNative(pi: ExtensionAPI) {
 		next = applyContextManagement(next);
 		next = applyDiagnostics(next);
 		next = applyMetadata(next, getClaudeUserId());
-		next = applyBillingHeader(next, version, entrypoint);
+		next = applyBillingHeader(next, version, entrypoint, getSessionId());
 		logNativeRequest(next, { model: ctx.model?.id, userAgent: getUserAgent(), version, entrypoint });
 		return next === event.payload ? undefined : next;
+	});
+
+	// `x-client-request-id`: genuine Claude Code sends a fresh UUID on every request
+	// (verified across the 2.1.261 captures — four requests, four distinct ids). Pi
+	// sets this header on its OpenAI/Codex paths but not on the Anthropic one, so it
+	// is the last header gap for this provider.
+	//
+	// Pi IGNORES this handler's return value (`emitBeforeProviderHeaders` returns the
+	// object it was given), so the headers must be mutated in place. Requires Pi
+	// >= 0.80.5, where the hook was introduced; `pi.on` simply never fires on older
+	// versions, so nothing breaks there.
+	pi.on("before_provider_headers", (event, ctx) => {
+		if (!isNativeOAuth(ctx)) return;
+		event.headers["x-client-request-id"] = randomUUID();
 	});
 
 	pi.on("session_start", (_event, ctx) => {

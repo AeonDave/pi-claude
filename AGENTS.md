@@ -31,7 +31,7 @@ The extension only adds what Pi omits.
 - `src/billing-header.ts` — pure: builds `x-anthropic-billing-header`.
 - `src/payload.ts` — pure: idempotent `system[0]` billing-header injection, `sanitizeSystemPrompt`, `applyMetadata`, and `thinking.display: "omitted"` alignment for adaptive/budget modes.
 - `src/debug.ts` — optional `PI_CLAUDE_NATIVE_DEBUG` body logging.
-- `src/index.ts` — factory: `registerProvider` (seed+cache at load, refreshed on `session_start` from a merge of cache < in-memory live < `ctx.modelRegistry.getAll()` — Pi's catalog wins since it alone carries `cost`; `runLiveDiscovery` fires async once per process when opt-in enabled, then re-registers) + `before_provider_request` (sanitize → thinking display → metadata → billing) + status + `/claude-native` (now reports live-discovery state + cache size).
+- `src/index.ts` — factory: `registerProvider` (seed+cache at load, refreshed on `session_start` from a merge of cache < in-memory live < `ctx.modelRegistry.getAll()` — Pi's catalog wins since it alone carries `cost`; `runLiveDiscovery` fires async once per process when opt-in enabled, then re-registers) + `before_provider_request` (sanitize → thinking display → context_management → diagnostics → metadata → billing incl. `cc_prompt_id`) + `before_provider_headers` (`x-client-request-id`) + status + `/claude-native` (now reports live-discovery state + cache size).
 - `scripts/` — `capture-proxy.mjs`, mitmproxy addon, `compare-requests.mjs`, the classifier pair **`dump-system-prompt.mjs`** (Pi extension: dumps the full system prompt Pi sends on a given machine to `~/claude-native-prompt-dump.json`) + **`bisect-classifier.ts`** (`npm run classifier:find` = `auto` mode: reads that dump, replays with the live token removing one paragraph at a time, prints the trigger paragraph(s) and a ready `PI_CLAUDE_NATIVE_SYSTEM_ANCHORS`; version/beta/entrypoint come from `constants.ts`, no duplicated wire values), and **`capture-fingerprint.mjs`** (`npm run capture:fingerprint [--apply] [--reuse] [--models …]`: spawns the proxy, drives `claude -p` across models, distills version + entrypoint + user-agent + the base `anthropic-beta` + a per-model `modelBeta`, diffs vs current defaults **and reports per-model deviations**, writes `captures/fingerprint-<v>.json` + report, and with `--apply` installs the fingerprint the extension auto-adopts. Runs under `tsx` and IMPORTS `DEFAULT_ANTHROPIC_BETA` / `getStateDir()` from `src/` — it must never re-derive them. Only Opus/Sonnet may define the base set; `--reuse` re-distills from `captures/fp-raw/` using the persisted `owners.json`).
 
 ## Invariants (do not break)
@@ -45,6 +45,11 @@ The extension only adds what Pi omits.
   a re-capture. The fingerprint's `modelBeta` outranks both. None of this is
   derivable from `/v1/models` — Opus 4.8 and 4.7 advertise identical capabilities
   and send different sets.
+- **`before_provider_headers` mutates in place.** Pi's `emitBeforeProviderHeaders`
+  IGNORES the handler's return value and forwards the object it passed in, so a
+  returned copy is silently dropped. Requires Pi >= 0.80.5 (the hook does not exist
+  before that; `pi.on` simply never fires, so older Pi degrades rather than breaks)
+  — `peerDependencies` states the floor.
 - **Header override path.** `user-agent`, `x-app`, and the adaptive
   `anthropic-beta` are provider `headers`; the captured Haiku subset is a
   registered model header (Pi merges registered model headers after provider

@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
+import { PROVIDER_ID } from "../src/constants.ts";
 import claudeProMaxNative from "../src/index.ts";
 
 // Isolation: never read the developer's REAL ~/.pi/claude-native-fingerprint.json.
@@ -109,4 +110,41 @@ test("a failed provider registration is retried with the same model set", () => 
 		if (previous === undefined) delete process.env.PI_CLAUDE_NATIVE_MODELS_CACHE;
 		else process.env.PI_CLAUDE_NATIVE_MODELS_CACHE = previous;
 	}
+});
+
+test("x-client-request-id is set per request, in place, and only for this provider", () => {
+	const { pi, handlers } = harness(() => {});
+	claudeProMaxNative(pi as never);
+	const hook = handlers.get("before_provider_headers");
+	assert.ok(hook, "the hook must be registered (Pi >= 0.80.5 fires it)");
+
+	const nativeCtx = {
+		model: { provider: PROVIDER_ID, id: "claude-opus-5" },
+		modelRegistry: { getAll: () => [], isUsingOAuth: () => true, getApiKeyForProvider: async () => undefined },
+		ui: { setStatus() {} },
+	};
+
+	// Pi ignores the handler's return value and forwards the SAME object, so the
+	// header only reaches the wire if it is mutated in place.
+	const headers: Record<string, string> = {};
+	hook({ type: "before_provider_headers", headers }, nativeCtx);
+	const first = headers["x-client-request-id"];
+	assert.match(first, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+
+	// Genuine Claude Code sends a FRESH id on every request.
+	const second: Record<string, string> = {};
+	hook({ type: "before_provider_headers", headers: second }, nativeCtx);
+	assert.notEqual(second["x-client-request-id"], first, "each request gets its own id");
+
+	// Never touch another provider's request.
+	const foreign: Record<string, string> = {};
+	hook(
+		{ type: "before_provider_headers", headers: foreign },
+		{
+			model: { provider: "anthropic", id: "claude-opus-5" },
+			modelRegistry: { getAll: () => [], isUsingOAuth: () => true, getApiKeyForProvider: async () => undefined },
+			ui: { setStatus() {} },
+		},
+	);
+	assert.deepEqual(foreign, {}, "scoped strictly to this provider");
 });

@@ -23,6 +23,9 @@ thinking display, and the system-prompt classifier fix. Your built-in
 
 ## Install
 
+Requires **Pi >= 0.80.5** — that is where the `before_provider_headers` hook
+landed, which this extension uses to send Claude Code's `x-client-request-id`.
+
 Install straight from GitHub and verify:
 
 ```bash
@@ -116,7 +119,8 @@ catalog knows (so older 4.x point releases show too) — tighten the set with
 | Bearer OAuth, `anthropic-beta` core flags, `x-app: cli`, `"You are Claude Code…"` identity, PascalCase tool names | Pi built-in (triggered by the OAuth token) |
 | `user-agent: claude-cli/<v> (external, sdk-cli)` | this extension (`headers`) |
 | captured `anthropic-beta` set (2.1.261 adaptive normal-turn; no `context-1m`) | this extension (`headers`, per model: Haiku −3 flags, Fable 5.1 +`per-turn-control`) |
-| `x-anthropic-billing-header` as `system[0]` | this extension (`before_provider_request`) |
+| `x-client-request-id` (fresh UUID per request) | this extension (`before_provider_headers`; Pi sets it only on its OpenAI/Codex paths) |
+| `x-anthropic-billing-header` as `system[0]`, incl. the trailing `cc_prompt_id` | this extension (`before_provider_request`) |
 | `metadata.user_id` (device/account/session ids) | this extension (read from `~/.claude.json`) |
 | `thinking.display: "omitted"` (adaptive and budget) | this extension (`before_provider_request`) |
 | system prompt free of the third-party-agent fingerprint | this extension (`sanitizeSystemPrompt` strips the "Pi documentation" block — confirmed to clear the classifier) |

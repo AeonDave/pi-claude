@@ -17,6 +17,10 @@ installed `@earendil-works/pi-ai` / `pi-coding-agent` (not just docs).
 | `user-agent` version/profile | `external, sdk-cli` (both interactive and `-p` since 2.1.241) | `external, sdk-cli` | **plugin** (`headers`) |
 | `x-app: cli` | ✅ | ✅ | Pi built-in (plugin restates it) |
 | `system[0]` = `x-anthropic-billing-header: …` | ✅ | ✅ | **plugin** (`before_provider_request`) |
+| `cc_prompt_id=<uuid>;` trailing the billing header | ✅ | ✅ | **plugin** (derived per prompt — see below) |
+| `x-client-request-id` | fresh UUID per request | fresh UUID per request | **plugin** (`before_provider_headers`, Pi >= 0.80.5) |
+| `x-stainless-*` SDK telemetry, `anthropic-dangerous-direct-browser-access` | ✅ | ✅ | Pi built-in (its Anthropic SDK) |
+| `accept-language: *`, `sec-fetch-mode: cors` | absent | present | undici artifacts — not removable from inside an extension |
 | `system[1]` = `You are Claude Code, …` identity | ✅ | ✅ | Pi built-in |
 | Tool names PascalCase (`Read`, `Bash`, …) + round-trip | ✅ | ✅ | Pi built-in (`toClaudeCodeName`) |
 | `metadata.user_id` (device/account/session ids) | ✅ | ✅ | **plugin** (read from `~/.claude.json`) |
@@ -26,7 +30,7 @@ installed `@earendil-works/pi-ai` / `pi-coding-agent` (not just docs).
 
 ## How the billing header is correct *by construction*
 
-`x-anthropic-billing-header: cc_version=<v>.<suffix>; cc_entrypoint=<e>; cch=<cch>;`
+`x-anthropic-billing-header: cc_version=<v>.<suffix>; cc_entrypoint=<e>; cch=<cch>; cc_prompt_id=<uuid>;`
 
 - `suffix = sha256(SALT + chars[4,7,20] of firstUserMessageText + version)[:3]`
   — **verified byte-for-byte** against Claude Code 2.1.261's own implementation
@@ -36,6 +40,11 @@ installed `@earendil-works/pi-ai` / `pi-coding-agent` (not just docs).
   `"read the hello file"` → `384`, `"hi"` → `6af`. Pinned by golden vectors in
   `test/billing-header.test.ts`. The salt `59cf53e54c78` and positions `[4,7,20]`
   are now ground truth, not two converging guesses.
+- `cc_prompt_id` — genuine emits a random uuid per prompt and keeps it for that
+  turn's tool loop. We cannot reproduce the value, so we derive one with the same
+  **lifetime**: `uuid(sha256(session id + current prompt text))`. Same prompt (and
+  its tool_result turns) → same id; new prompt → new id. That also keeps
+  `applyBillingHeader` pure and idempotent.
 - `cch` — **not reproducible, and not validated by Anthropic.** The genuine
   2.1.261 client builds the header with a literal ` cch=00000;` placeholder
   (those are the only two occurrences of `cch=` in the whole 209 MB binary) and

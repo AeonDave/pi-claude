@@ -60,7 +60,7 @@ function toSystemBlocks(system: unknown): unknown[] {
  * message to fingerprint, or the header is already present), so callers can
  * cheaply detect "no change" by identity.
  */
-export function applyBillingHeader(payload: unknown, version: string, entrypoint: string): unknown {
+export function applyBillingHeader(payload: unknown, version: string, entrypoint: string, sessionId?: string): unknown {
 	if (!payload || typeof payload !== "object") return payload;
 	const typed = payload as AnthropicPayload;
 
@@ -76,7 +76,7 @@ export function applyBillingHeader(payload: unknown, version: string, entrypoint
 
 	const headerBlock: SystemTextBlock = {
 		type: "text",
-		text: buildBillingHeaderValue(messages, version, entrypoint),
+		text: buildBillingHeaderValue(messages, version, entrypoint, sessionId),
 	};
 
 	return { ...typed, system: [headerBlock, ...blocks] };
