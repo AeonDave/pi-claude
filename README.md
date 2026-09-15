@@ -51,9 +51,14 @@ Useful follow-ups (pass the **same source** you installed with):
 - `pi -e ./src/index.ts` — load it for a single run without installing.
 
 `pi install`/`pi remove` write to `~/.pi/agent/settings.json`; add `-l` to scope
-them to the project's `.pi/settings.json` instead. You do **not** need
-`npm install` to use the extension — Pi supplies the `@earendil-works/*` peer
-dependencies; `npm install` is only for development (typecheck/tests).
+them to the project's `.pi/settings.json` instead.
+
+You do **not** need `npm install` to use the extension, and installing it pulls
+**no dependencies at all**: Pi loads `src/` through jiti (no build step) and
+supplies the `@earendil-works/*` peer dependencies itself. The published package
+is 15 files / ~53 kB — `src` plus this file and `VERIFY.md`. `npm install` is
+only for development, and Pi installs git packages with `--omit=dev`, so those
+dev tools never land on a user's machine.
 
 ## Usage
 
@@ -329,11 +334,36 @@ Pi request.
 
 ## Development
 
+The wire tooling runs **from a clone**, never from an installed copy — that is
+what keeps the shipped package dependency-free (see
+[AGENTS.md → Packaging](AGENTS.md#packaging)).
+
 ```bash
-npm install
-npm run typecheck
-npm test
+git clone https://github.com/AeonDave/pi-claude && cd pi-claude
+npm install          # dev only: tsx, typescript, Pi types
+npm run typecheck    # covers src/, test/ and scripts/
+npm test             # every test/*.test.ts (glob — a new file can't be skipped)
+npm pack --dry-run   # sanity: must stay 15 files, no dependencies
 ```
+
+Re-capture after a `claude` update, then diff before trusting anything:
+
+```bash
+npm run capture:fingerprint            # writes captures/fingerprint-report.md
+npm run capture:fingerprint -- --reuse  # re-distill, no subscription calls spent
+npm run capture:fingerprint -- --apply  # install it for the extension to adopt
+```
+
+The report shows the base beta diff **and** per-model deviations — read both; an
+earlier version diffed only one model and reported "No change" while a model was
+in fact sending an extra flag.
+
+Tests must never read your real `~/.pi` or `~/.claude`, and never hit the
+network: sandbox `HOME`/`USERPROFILE`, point `PI_CLAUDE_NATIVE_FINGERPRINT` at a
+temp path, and set `PI_CLAUDE_NATIVE_LIVE_DISCOVERY=0`. A past test moved a real
+fingerprint file out of `~/.pi`; the suite is now isolated and a
+`resetStateCaches()` helper exists for cases that change the environment
+mid-process.
 
 `billing-header.ts`, `payload.ts`, and `models.ts` are pure (no Pi imports) and
 unit-tested, including a golden lock on the billing-header algorithm. The

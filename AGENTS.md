@@ -124,6 +124,40 @@ core beta flags, bearer auth, `x-app`, and PascalCase tool names on an
 | Re-introducing the `[1m]` wire suffix | The clean id is the valid model id; `claude-opus-4-8[1m]` 404s (`not_found`). Opus/Sonnet are natively 1M — send the clean id, no suffix |
 | Sending effort `"ultracode"` | It is a UI label only, never a wire value. The wire ladder is low/medium/high/xhigh/**max**, and `max` IS sent — `thinkingLevelMap` maps it for the models whose captures show it. Map a level only where a capture supports it |
 | Touching Pi's built-in `anthropic` provider | Scope everything to `PROVIDER_ID` |
+| Adding anything to `dependencies` | Keep the package dependency-FREE. Pi loads `src/` through jiti — there is no build step and nothing to resolve at runtime. See "Packaging" below |
+| Adding `scripts` (or `test`) to `package.json` `files` | The tarball is `src` + `README.md` + `VERIFY.md` only. Maintenance tooling is run from a clone, never from an installed copy |
+
+## Packaging
+
+**The published package is 15 files / ~53 kB with ZERO runtime dependencies**
+(`files: ["src", "README.md", "VERIFY.md"]`). Check it with `npm pack --dry-run`
+before any release; if the count or the dependency list grew, something is wrong.
+
+Why this is a hard line and not a preference:
+
+- Pi loads the extension through **jiti**. There is no build step and nothing in
+  `src/` imports a third-party module at runtime — the `@earendil-works/*`
+  packages are `peerDependencies`, supplied by Pi itself.
+- `pi install git:…` installs with **`npm install --omit=dev`** (verified in
+  pi-coding-agent's `getGitDependencyInstallArgs`). So `devDependencies` never
+  reach a user, and anything in `dependencies` is installed on **every** user's
+  machine, on every `pi install` AND every `pi update` — `cleanAndInstallGitDependencies`
+  runs `git clean -fdx` first, so the cost is re-paid each time.
+- That makes a runtime dependency expensive twice over: install weight, and a new
+  way for `pi install` to FAIL and roll back for people who are only trying to use
+  the provider.
+
+The tempting mistake, already made once: `tsx` was promoted to `dependencies` and
+`scripts` added to `files` so that `npm run capture:fingerprint` would work from an
+installed copy. It pulled esbuild (~12 MB) into every install to serve a
+maintenance command. **Run the tooling from a clone instead** — that is the only
+supported way:
+
+```bash
+git clone https://github.com/AeonDave/pi-claude && cd pi-claude
+npm install                              # dev deps: tsx, typescript, pi types
+npm run capture:fingerprint -- --apply   # writes to <agent dir>/claude-native/
+```
 
 ## Testing
 
@@ -245,6 +279,23 @@ capture both clients via `scripts/capture-proxy.mjs`, then
   model needs no code edit. It carries no pricing, so Pi's catalog wins `cost`.
   Trust a >200K window only when the model is known-adaptive: `claude-sonnet-4-5`
   advertises 1M, but only the `context-1m` beta unlocks it and we never send that.
+
+## Regressions already paid for
+
+Each of these shipped or nearly shipped once. They are cheap to repeat and
+expensive to find, so they are recorded rather than re-learned.
+
+| What happened | The rule it produced |
+|---|---|
+| A stale captured fingerprint outranked the installed `claude`, pinning an old `cc_version` forever — Anthropic gates MODEL ACCESS on it, so every new model 400'd | `resolveClaudeCodeVersion()` never claims older than the installed `claude`; it warns once and `/claude-native` shows the source |
+| `capture-fingerprint` printed a confident "No change" on a run whose own table showed Fable sending a 14th flag — it diffed only one model | The report diffs the base set AND per-model deviations; only Opus/Sonnet may define the base |
+| `ID_OVERRIDES` REPLACED the catalog's `thinkingLevelMap`, dropping `off: null` from adaptive-only models, so Pi could send `thinking: {type:"disabled"}` to a model that rejects it | Layer these maps, never replace: family default → catalog → overlay |
+| `applyClaudeCodeMaxTokens` clamped `max_tokens` under a `budget_tokens` the caller had already committed to — Anthropic requires `budget_tokens < max_tokens`, so a working request became a hard 400 | Request transforms must read the WHOLE payload they constrain, not one field |
+| A test called `migrateLegacyState()` with the real `HOME` and MOVED the developer's actual fingerprint file out of `~/.pi` | Tests sandbox `HOME`/`USERPROFILE` and every `PI_CLAUDE_NATIVE_*` path; never touch real `~/.pi` or `~/.claude` |
+| `test/index.test.ts` asserted flag counts while reading the developer's real fingerprint, so it passed or failed depending on the machine | Point `PI_CLAUDE_NATIVE_FINGERPRINT` at a non-existent temp path and set `PI_CLAUDE_NATIVE_LIVE_DISCOVERY=0` at the top of any suite that builds the provider |
+| A fingerprint bump touched `src/`, `test/` and `package.json` but no doc file, leaving `README.md`/`VERIFY.md` two releases stale — and both ship in the tarball | Docs change in the SAME commit as the code. Grep the outgoing version string before claiming done |
+| `package-lock.json` sat at 1.3.0 while `package.json` said 1.4.0 | The release commit bumps both, together |
+| `tsx` promoted to `dependencies` + `scripts` added to `files` to make a maintenance command work from an installed copy | See "Packaging" — run the tooling from a clone |
 
 ## Boundaries
 
