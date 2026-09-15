@@ -21,7 +21,8 @@
  * headers for each /v1/messages request. The bearer token is redacted on disk.
  *
  * Env: PI_CAPTURE_PORT (8118), PI_CAPTURE_TARGET (https://api.anthropic.com),
- *      PI_CAPTURE_DIR (captures), PI_CAPTURE_LABEL (capture).
+ *      PI_CAPTURE_DIR (captures), PI_CAPTURE_LABEL (capture),
+ *      PI_CAPTURE_HEALTH_NONCE (optional orchestrator ownership proof).
  */
 
 import { mkdirSync, writeFileSync } from "node:fs";
@@ -33,6 +34,8 @@ const PORT = Number(process.env.PI_CAPTURE_PORT || 8118);
 const TARGET = process.env.PI_CAPTURE_TARGET || "https://api.anthropic.com";
 const OUT_DIR = resolve(process.env.PI_CAPTURE_DIR || "captures");
 const LABEL = process.env.PI_CAPTURE_LABEL || "capture";
+const HEALTH_NONCE = process.env.PI_CAPTURE_HEALTH_NONCE?.trim() || "";
+const HEALTH_PATH = "/__pi_claude_capture_health";
 const target = new URL(TARGET);
 let count = 0;
 
@@ -47,6 +50,22 @@ function redactHeaders(headers) {
 }
 
 const server = http.createServer((req, res) => {
+	if (req.url === HEALTH_PATH) {
+		if (!HEALTH_NONCE || req.method !== "GET") {
+			res.writeHead(404, { "content-type": "text/plain", "cache-control": "no-store" });
+			res.end("not found");
+			return;
+		}
+		const body = JSON.stringify({ service: "pi-claude-capture-proxy", nonce: HEALTH_NONCE });
+		res.writeHead(200, {
+			"content-type": "application/json",
+			"content-length": Buffer.byteLength(body),
+			"cache-control": "no-store",
+		});
+		res.end(body);
+		return;
+	}
+
 	const chunks = [];
 	req.on("data", (chunk) => chunks.push(chunk));
 	req.on("end", () => {
@@ -98,6 +117,11 @@ const server = http.createServer((req, res) => {
 		});
 		upstream.end(bodyBuf);
 	});
+});
+
+server.on("error", (error) => {
+	console.error(`capture-proxy failed to listen on 127.0.0.1:${PORT}: ${error.message}`);
+	process.exitCode = 1;
 });
 
 server.listen(PORT, "127.0.0.1", () => {

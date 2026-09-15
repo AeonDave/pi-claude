@@ -1,9 +1,16 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
-import { PROVIDER_ID } from "../src/constants.ts";
+import {
+	CLAUDE_AGENT_SDK_IDENTITY,
+	CLAUDE_CODE_IDENTITY,
+	getAnthropicBetaForModel,
+	PROVIDER_ID,
+} from "../src/constants.ts";
+import { writeModelCache } from "../src/discovery.ts";
 import claudeProMaxNative from "../src/index.ts";
 
 // Isolation: never read the developer's REAL ~/.pi/claude-native-fingerprint.json.
@@ -112,6 +119,178 @@ test("a failed provider registration is retried with the same model set", () => 
 	}
 });
 
+test("Pi catalog pricing does not erase live capabilities, while its Sonnet 4.5 budget signal still wins", () => {
+	const previous = process.env.PI_CLAUDE_NATIVE_MODELS_CACHE;
+	const dir = mkdtempSync(join(tmpdir(), "claude-native-merge-"));
+	const cachePath = join(dir, "models.json");
+	process.env.PI_CLAUDE_NATIVE_MODELS_CACHE = cachePath;
+	writeModelCache(cachePath, [
+		{
+			id: "claude-mythos-5",
+			catalog: {
+				contextWindow: 500000,
+				maxTokens: 32000,
+				reasoning: true,
+				forceAdaptiveThinking: true,
+				supportsEffort: true,
+				supportsTemperature: false,
+				thinkingLevelMap: { xhigh: "xhigh", max: "max", off: null },
+			},
+		},
+		{
+			id: "claude-sonnet-4-5",
+			catalog: {
+				contextWindow: 1000000,
+				reasoning: true,
+				forceAdaptiveThinking: true,
+			},
+		},
+	]);
+
+	try {
+		const registrations: Array<{ models: Array<Record<string, unknown>> }> = [];
+		const { pi, handlers } = harness((_id, config) => registrations.push(config as never));
+		claudeProMaxNative(pi as never);
+
+		const catalogCost = { input: 7, output: 35, cacheRead: 0.7, cacheWrite: 8.75 };
+		const ctx = context(() => [
+			{
+				id: "claude-mythos-5",
+				name: "Claude Mythos 5",
+				api: "anthropic-messages",
+				provider: "anthropic",
+				baseUrl: "https://api.anthropic.com",
+				reasoning: true,
+				input: ["text", "image"],
+				cost: catalogCost,
+				contextWindow: 500000,
+				maxTokens: 32000,
+				compat: { forceAdaptiveThinking: true },
+			},
+			{
+				id: "claude-sonnet-4-5",
+				name: "Claude Sonnet 4.5",
+				api: "anthropic-messages",
+				provider: "anthropic",
+				baseUrl: "https://api.anthropic.com",
+				reasoning: true,
+				input: ["text", "image"],
+				cost: { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 },
+				contextWindow: 1000000,
+				maxTokens: 64000,
+			},
+		]);
+		handlers.get("session_start")?.({}, ctx);
+
+		const applied = registrations.at(-1)?.models;
+		const mythos = applied?.find((model) => model.id === "claude-mythos-5");
+		assert.deepEqual(mythos?.cost, catalogCost, "Pi remains authoritative for pricing");
+		assert.deepEqual(mythos?.thinkingLevelMap, { xhigh: "xhigh", max: "max", off: null });
+		assert.deepEqual(mythos?.compat, { forceAdaptiveThinking: true, supportsTemperature: false });
+
+		const sonnet45 = applied?.find((model) => model.id === "claude-sonnet-4-5");
+		assert.deepEqual(
+			sonnet45?.compat,
+			{ forceAdaptiveThinking: false },
+			"Pi's missing adaptive marker is retained as an explicit budget signal",
+		);
+		assert.equal(sonnet45?.contextWindow, 200000, "budget Sonnet cannot inherit the beta-gated 1M window");
+	} finally {
+		if (previous === undefined) delete process.env.PI_CLAUDE_NATIVE_MODELS_CACHE;
+		else process.env.PI_CLAUDE_NATIVE_MODELS_CACHE = previous;
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("before_provider_request applies the captured Claude Code max_tokens cap", () => {
+	const { pi, handlers } = harness(() => {});
+	claudeProMaxNative(pi as never);
+	const before = handlers.get("before_provider_request");
+	assert.ok(before);
+	const ctx = {
+		model: { provider: PROVIDER_ID, id: "claude-opus-5" },
+		modelRegistry: { isUsingOAuth: () => true },
+	};
+	const result = before(
+		{
+			payload: {
+				max_tokens: 128_000,
+				messages: [{ role: "user", content: "hi" }],
+				system: [{ type: "text", text: "You are Claude Code, Anthropic's official CLI for Claude." }],
+			},
+		},
+		ctx,
+	) as { max_tokens: number };
+	assert.equal(result.max_tokens, 64_000);
+});
+
+test("request and header hooks emit coherent TUI and print Claude profiles", () => {
+	const envNames = [
+		"PI_CLAUDE_NATIVE_ANTHROPIC_BETA",
+		"PI_CLAUDE_NATIVE_CC_ENTRYPOINT",
+		"PI_CLAUDE_NATIVE_USER_AGENT",
+	] as const;
+	const saved = new Map(envNames.map((name) => [name, process.env[name]]));
+	for (const name of envNames) delete process.env[name];
+
+	try {
+		const { pi, handlers } = harness(() => {});
+		claudeProMaxNative(pi as never);
+		const beforeRequest = handlers.get("before_provider_request");
+		const beforeHeaders = handlers.get("before_provider_headers");
+		assert.ok(beforeRequest);
+		assert.ok(beforeHeaders);
+
+		const applyProfile = (mode: "tui" | "print", sourceIdentity: string) => {
+			const ctx = {
+				mode,
+				model: { provider: PROVIDER_ID, id: "claude-opus-5" },
+				modelRegistry: { isUsingOAuth: () => true },
+			};
+			const transformed = beforeRequest(
+				{
+					payload: {
+						max_tokens: 8_192,
+						messages: [{ role: "user", content: "hi" }],
+						system: [{ type: "text", text: sourceIdentity }, { type: "text", text: "pi system prompt" }],
+						thinking: { type: "adaptive", display: "summarized" },
+					},
+				},
+				ctx,
+			) as {
+				system: Array<{ type: string; text: string }>;
+				thinking: { type: string; display: string };
+			};
+			const headers: Record<string, string> = {};
+			beforeHeaders({ type: "before_provider_headers", headers }, ctx);
+			return { transformed, headers };
+		};
+
+		const tui = applyProfile("tui", CLAUDE_AGENT_SDK_IDENTITY);
+		assert.match(tui.transformed.system[0]?.text ?? "", /cc_entrypoint=cli;/);
+		assert.equal(tui.transformed.system[1]?.text, CLAUDE_CODE_IDENTITY);
+		assert.equal(tui.transformed.thinking.display, "updates");
+		assert.match(tui.headers["user-agent"] ?? "", /^claude-cli\/[0-9]+\.[0-9]+\.[0-9]+ \(external, cli\)$/);
+		assert.equal(tui.headers["anthropic-beta"], getAnthropicBetaForModel("claude-opus-5", "tui"));
+		assert.ok(tui.headers["anthropic-beta"].includes("thinking-display-updates-2026-08-18"));
+		assert.ok(tui.headers["anthropic-beta"].includes("fallback-credit-2026-06-01"));
+
+		const print = applyProfile("print", CLAUDE_CODE_IDENTITY);
+		assert.match(print.transformed.system[0]?.text ?? "", /cc_entrypoint=sdk-cli;/);
+		assert.equal(print.transformed.system[1]?.text, CLAUDE_AGENT_SDK_IDENTITY);
+		assert.equal(print.transformed.thinking.display, "omitted");
+		assert.match(print.headers["user-agent"] ?? "", /^claude-cli\/[0-9]+\.[0-9]+\.[0-9]+ \(external, sdk-cli\)$/);
+		assert.equal(print.headers["anthropic-beta"], getAnthropicBetaForModel("claude-opus-5", "print"));
+		assert.equal(print.headers["anthropic-beta"].includes("thinking-display-updates-2026-08-18"), false);
+		assert.equal(print.headers["anthropic-beta"].includes("fallback-credit-2026-06-01"), false);
+	} finally {
+		for (const [name, value] of saved) {
+			if (value === undefined) delete process.env[name];
+			else process.env[name] = value;
+		}
+	}
+});
+
 test("x-client-request-id is set per request, in place, and only for this provider", () => {
 	const { pi, handlers } = harness(() => {});
 	claudeProMaxNative(pi as never);
@@ -147,4 +326,55 @@ test("x-client-request-id is set per request, in place, and only for this provid
 		},
 	);
 	assert.deepEqual(foreign, {}, "scoped strictly to this provider");
+});
+
+test("the full before_provider_request chain produces a valid budget-thinking request", () => {
+	// The riskiest new code (identity → display → max_tokens cap → budget profile)
+	// was only ever asserted one transform at a time. This exercises the real hook
+	// end-to-end and checks the invariant Anthropic enforces: budget_tokens < max_tokens.
+	const { pi, handlers } = harness(() => {});
+	claudeProMaxNative(pi as never);
+	const hook = handlers.get("before_provider_request");
+	assert.ok(hook, "before_provider_request must be registered");
+
+	const ctx = {
+		mode: "print",
+		model: { provider: PROVIDER_ID, id: "claude-sonnet-4-5" },
+		modelRegistry: { getAll: () => [], isUsingOAuth: () => true, getApiKeyForProvider: async () => undefined },
+		ui: { setStatus() {} },
+	};
+
+	// Pi's stock `high` budget (16384) against its catalog ceiling.
+	const payload = {
+		model: "claude-sonnet-4-5",
+		max_tokens: 64_000,
+		thinking: { type: "enabled", budget_tokens: 16_384 },
+		system: [{ type: "text", text: "You are Claude Code, Anthropic's official CLI for Claude." }],
+		messages: [{ role: "user", content: [{ type: "text", text: "hi" }] }],
+	};
+
+	const out = hook({ type: "before_provider_request", payload }, ctx) as {
+		max_tokens: number;
+		thinking: { type: string; budget_tokens: number; display: string };
+		system: Array<{ text: string }>;
+	};
+
+	assert.ok(out, "the chain must rewrite this payload");
+	assert.ok(
+		out.thinking.budget_tokens < out.max_tokens,
+		`budget_tokens (${out.thinking.budget_tokens}) must stay below max_tokens (${out.max_tokens}) or Anthropic 400s`,
+	);
+	assert.equal(out.system[0].text.startsWith("x-anthropic-billing-header:"), true, "billing header is system[0]");
+
+	// A caller-chosen budget larger than the captured cap must not be clamped into
+	// an invalid pair (the regression this review found).
+	const big = { ...payload, thinking: { type: "enabled", budget_tokens: 40_000 } };
+	const bigOut = hook({ type: "before_provider_request", payload: big }, ctx) as {
+		max_tokens: number;
+		thinking: { budget_tokens: number };
+	};
+	assert.ok(
+		bigOut.thinking.budget_tokens < bigOut.max_tokens,
+		`budget_tokens (${bigOut.thinking.budget_tokens}) must stay below max_tokens (${bigOut.max_tokens})`,
+	);
 });

@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { getSupportedThinkingLevels, type Model } from "@earendil-works/pi-ai";
 import { ALLOWLIST_RE, buildNativeModels, NATIVE_MODELS, parseModelId } from "../src/models.ts";
 
 const OPUS_COST = { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 };
@@ -8,9 +9,12 @@ const HAIKU_COST = { input: 1, output: 5, cacheRead: 0.1, cacheWrite: 1.25 };
 const FABLE_COST = { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 };
 // Opus 4.8/4.7 are ADAPTIVE-ONLY per `/v1/models`, so `off: null` keeps Pi from
 // sending `thinking: {type: "disabled"}` to a model that rejects it.
-const OPUS_HI = { compat: { forceAdaptiveThinking: true, supportsTemperature: false }, thinkingLevelMap: { xhigh: "xhigh", off: null } };
-const OPUS_MAX = { compat: { forceAdaptiveThinking: true }, thinkingLevelMap: { xhigh: "max" } };
-const SONNET = { compat: { forceAdaptiveThinking: true }, thinkingLevelMap: undefined };
+const OPUS_HI = {
+	compat: { forceAdaptiveThinking: true, supportsTemperature: false },
+	thinkingLevelMap: { xhigh: "xhigh", max: "max", off: null },
+};
+const OPUS_MAX = { compat: { forceAdaptiveThinking: true }, thinkingLevelMap: { xhigh: "max", max: "max" } };
+const SONNET_MAX = { compat: { forceAdaptiveThinking: true }, thinkingLevelMap: { xhigh: "max", max: "max" } };
 const HAIKU = { compat: undefined, thinkingLevelMap: undefined };
 
 /**
@@ -22,7 +26,7 @@ const EXPECTED_SEED = [
 	{ id: "claude-opus-4-8", name: "Claude Opus 4.8", contextWindow: 1000000, maxTokens: 128000, cost: OPUS_COST, ...OPUS_HI },
 	{ id: "claude-opus-4-7", name: "Claude Opus 4.7", contextWindow: 1000000, maxTokens: 128000, cost: OPUS_COST, ...OPUS_HI },
 	{ id: "claude-opus-4-6", name: "Claude Opus 4.6", contextWindow: 1000000, maxTokens: 128000, cost: OPUS_COST, ...OPUS_MAX },
-	{ id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6", contextWindow: 1000000, maxTokens: 64000, cost: SONNET_COST, ...SONNET },
+	{ id: "claude-sonnet-4-6", name: "Claude Sonnet 4.6", contextWindow: 1000000, maxTokens: 64000, cost: SONNET_COST, ...SONNET_MAX },
 	{ id: "claude-haiku-4-5", name: "Claude Haiku 4.5", contextWindow: 200000, maxTokens: 64000, cost: HAIKU_COST, ...HAIKU },
 ];
 
@@ -51,6 +55,27 @@ test("seed exposes natively-1M opus/sonnet (clean ids, no -1m alias) and 200K ha
 	}
 });
 
+test("seed thinking levels follow Pi 0.85.1 runtime semantics and the live capability cache", () => {
+	const levels = (id: string) => {
+		const model = NATIVE_MODELS.find((candidate) => candidate.id === id);
+		assert.ok(model, `${id} is seeded`);
+		return getSupportedThinkingLevels({
+			...model,
+			api: "anthropic-messages",
+			provider: "claude-pro-max-native",
+			baseUrl: "https://api.anthropic.com",
+		} as Model<"anthropic-messages">);
+	};
+
+	for (const id of ["claude-opus-4-8", "claude-opus-4-7"]) {
+		assert.deepEqual(levels(id), ["minimal", "low", "medium", "high", "xhigh", "max"]);
+	}
+	for (const id of ["claude-opus-4-6", "claude-sonnet-4-6"]) {
+		assert.deepEqual(levels(id), ["off", "minimal", "low", "medium", "high", "xhigh", "max"]);
+	}
+	assert.deepEqual(levels("claude-haiku-4-5"), ["off", "minimal", "low", "medium", "high"]);
+});
+
 test("ALLOWLIST_RE accepts current-gen ids and rejects aliases / dated / legacy / 1m-marker ids", () => {
 	for (const id of ["claude-opus-4-8", "claude-sonnet-4-6", "claude-haiku-4-5", "claude-opus-4-9"]) {
 		assert.ok(ALLOWLIST_RE.test(id), `should accept ${id}`);
@@ -64,7 +89,16 @@ test("discovery (A): a new catalog opus id appears as a single native-1M entry",
 	const models = buildNativeModels({
 		extraIds: ["claude-opus-4-9"],
 		catalog: new Map([
-			["claude-opus-4-9", { cost: { input: 6, output: 30, cacheRead: 0.6, cacheWrite: 7.5 }, maxTokens: 200000 }],
+			[
+				"claude-opus-4-9",
+				{
+					cost: { input: 6, output: 30, cacheRead: 0.6, cacheWrite: 7.5 },
+					maxTokens: 200000,
+					forceAdaptiveThinking: true,
+					supportsEffort: true,
+					thinkingLevelMap: { xhigh: "max", max: "max" },
+				},
+			],
 		]),
 	});
 	const opus9 = models.filter((m) => m.id === "claude-opus-4-9");
@@ -75,12 +109,12 @@ test("discovery (A): a new catalog opus id appears as a single native-1M entry",
 	assert.deepEqual(base.cost, { input: 6, output: 30, cacheRead: 0.6, cacheWrite: 7.5 }); // from catalog
 	assert.equal(base.maxTokens, 200000); // from catalog
 	// Conservative effort cap until an explicit overlay says xhigh is supported.
-	assert.deepEqual(base.thinkingLevelMap, { xhigh: "max" });
+	assert.deepEqual(base.thinkingLevelMap, { xhigh: "max", max: "max" });
 	assert.ok(!models.some((m) => m.id === "claude-opus-4-9-1m"), "no -1m alias");
 });
 
-test("discovery: claude-opus-5 keeps the xhigh ceiling captured from claude 2.1.261", () => {
-	// Regression: `claude --model opus` resolves to `claude-opus-5` on 2.1.261 and
+test("discovery: claude-opus-5 keeps the xhigh/max ceiling captured from claude 2.1.266", () => {
+	// Regression: `claude --model opus` resolves to `claude-opus-5` on 2.1.266 and
 	// sends `output_config.effort: "xhigh"`. Without the ID_OVERRIDES entry the
 	// conservative opus family default (`xhigh -> max`) would silently downgrade
 	// every request, and temperature would be left enabled on an adaptive-only model.
@@ -96,7 +130,7 @@ test("discovery: claude-opus-5 keeps the xhigh ceiling captured from claude 2.1.
 	assert.equal(opus5?.contextWindow, 1000000);
 	assert.deepEqual(
 		opus5?.thinkingLevelMap,
-		{ xhigh: "xhigh", off: null },
+		{ xhigh: "xhigh", max: "max", off: null },
 		"xhigh must reach the wire, not be capped to max; off stays null (adaptive-only)",
 	);
 	assert.deepEqual(opus5?.compat, { forceAdaptiveThinking: true, supportsTemperature: false });
@@ -123,7 +157,7 @@ test("overrides (B): a partial override merges over an existing id", () => {
 	const opus8 = models.find((m) => m.id === "claude-opus-4-8");
 	assert.deepEqual(opus8?.cost, { input: 0, output: 0, cacheRead: 0, cacheWrite: 0 });
 	assert.equal(opus8?.name, "Claude Opus 4.8");
-	assert.deepEqual(opus8?.thinkingLevelMap, { xhigh: "xhigh", off: null });
+	assert.deepEqual(opus8?.thinkingLevelMap, { xhigh: "xhigh", max: "max", off: null });
 });
 
 test("overrides (B): a complete new model is appended; an incomplete one is skipped", () => {
@@ -181,7 +215,10 @@ test("discovery: Fable 5 auto-appears with the current Pi catalog values", () =>
 					contextWindow: 1000000,
 					reasoning: true,
 					input: ["text", "image"],
-					thinkingLevelMap: { xhigh: "xhigh" },
+					thinkingLevelMap: { xhigh: "xhigh", max: "max", off: null },
+					forceAdaptiveThinking: true,
+					supportsEffort: true,
+					supportsTemperature: false,
 				},
 			],
 		]),
@@ -192,8 +229,8 @@ test("discovery: Fable 5 auto-appears with the current Pi catalog values", () =>
 	assert.equal(fable?.contextWindow, 1000000); // unknown family → real catalog window, single entry
 	assert.equal(fable?.maxTokens, 128000);
 	assert.deepEqual(fable?.cost, FABLE_COST);
-	assert.deepEqual(fable?.thinkingLevelMap, { xhigh: "xhigh" }); // effort derived from catalog
-	assert.deepEqual(fable?.compat, { forceAdaptiveThinking: true });
+	assert.deepEqual(fable?.thinkingLevelMap, { xhigh: "xhigh", max: "max", off: null }); // effort derived from catalog
+	assert.deepEqual(fable?.compat, { forceAdaptiveThinking: true, supportsTemperature: false });
 	// no [1m] alias for an unknown family (the 1M wire trick is curated-only)
 	assert.ok(!models.some((m) => m.id === "claude-fable-5-1m"));
 });
@@ -206,13 +243,27 @@ test("adaptive thinking is per-version: a discovered non-adaptive sonnet drops t
 	const models = buildNativeModels({
 		extraIds: ["claude-sonnet-4-5"],
 		catalog: new Map([
-			["claude-sonnet-4-5", { cost: SONNET_COST, maxTokens: 64000, reasoning: true, forceAdaptiveThinking: false }],
+			[
+				"claude-sonnet-4-5",
+				{
+					cost: SONNET_COST,
+					maxTokens: 64000,
+					contextWindow: 1000000,
+					reasoning: true,
+					forceAdaptiveThinking: false,
+				},
+			],
 		]),
 	});
 	const s45 = models.find((m) => m.id === "claude-sonnet-4-5");
 	assert.ok(s45, "sonnet-4-5 discovered from catalog");
 	assert.equal(s45?.reasoning, true, "still a reasoning model — just budget, not adaptive");
-	assert.equal(s45?.compat, undefined, "no forced adaptive thinking (catalog says budget) — compat drops entirely");
+	assert.deepEqual(
+		s45?.compat,
+		{ forceAdaptiveThinking: false },
+		"the explicit catalog budget signal remains visible to request-profile selection",
+	);
+	assert.equal(s45?.contextWindow, 200000, "its advertised 1M requires the context beta this provider does not send");
 });
 
 test("adaptive thinking is per-version: a discovered adaptive sonnet keeps it", () => {
@@ -226,15 +277,64 @@ test("adaptive thinking is per-version: a discovered adaptive sonnet keeps it", 
 	assert.deepEqual(s47?.compat, { forceAdaptiveThinking: true }, "catalog says adaptive → keep it");
 });
 
-test("a catalog with no adaptive signal keeps the conservative family default", () => {
-	// When the source can't tell adaptive from budget (e.g. /v1/models), forceAdaptiveThinking
-	// is undefined and the curated family default stands — we don't silently drop adaptive.
+test("a catalog with no adaptive signal stays conservatively budget-only", () => {
+	// A family name is not positive evidence that a newly discovered id supports
+	// adaptive thinking; Pi's serializer defaults safely to budget mode.
 	const models = buildNativeModels({
 		extraIds: ["claude-sonnet-4-9"],
 		catalog: new Map([["claude-sonnet-4-9", { cost: SONNET_COST, maxTokens: 64000, reasoning: true }]]),
 	});
 	const s49 = models.find((m) => m.id === "claude-sonnet-4-9");
-	assert.deepEqual(s49?.compat, { forceAdaptiveThinking: true }, "no catalog signal → family default (adaptive) holds");
+	assert.deepEqual(s49?.compat, { forceAdaptiveThinking: false }, "no per-id signal must not assume adaptive thinking");
+});
+
+test("an unknown reasoning family does not imply adaptive thinking or a trusted >200K window", () => {
+	const models = buildNativeModels({
+		extraIds: ["claude-mythos-5"],
+		catalog: new Map([
+			[
+				"claude-mythos-5",
+				{
+					cost: { input: 7, output: 35, cacheRead: 0.7, cacheWrite: 8.75 },
+					maxTokens: 32000,
+					contextWindow: 500000,
+					reasoning: true,
+				},
+			],
+		]),
+	});
+	const mythos = models.find((m) => m.id === "claude-mythos-5");
+	assert.ok(mythos);
+	assert.deepEqual(mythos.compat, { forceAdaptiveThinking: false }, "reasoning alone is an explicit budget fallback");
+	assert.equal(mythos.contextWindow, 200000, "a long window needs a positive adaptive capability signal");
+});
+
+test("a positive adaptive signal keeps a discovered long window", () => {
+	const models = buildNativeModels({
+		extraIds: ["claude-mythos-5"],
+		catalog: new Map([
+			[
+				"claude-mythos-5",
+				{
+					contextWindow: 500000,
+					reasoning: true,
+					forceAdaptiveThinking: true,
+				},
+			],
+		]),
+	});
+	const mythos = models.find((m) => m.id === "claude-mythos-5");
+	assert.deepEqual(mythos?.compat, { forceAdaptiveThinking: true });
+	assert.equal(mythos?.contextWindow, 500000);
+});
+
+test("an explicit override may opt a discovered model back into a larger window", () => {
+	const models = buildNativeModels({
+		extraIds: ["claude-mythos-5"],
+		catalog: new Map([["claude-mythos-5", { contextWindow: 500000, reasoning: true }]]),
+		overrides: [{ id: "claude-mythos-5", contextWindow: 500000 }],
+	});
+	assert.equal(models.find((m) => m.id === "claude-mythos-5")?.contextWindow, 500000);
 });
 
 test("the extension hardwires NO sonnet-5/mythos-5 — they come only from Pi's catalog", () => {
@@ -257,7 +357,18 @@ test("discovery reads NEW anthropic models from Pi's catalog: claude-sonnet-5 + 
 	// models" path, incl. a bare-major id and a brand-new family.
 	const catalog = new Map([
 		["claude-sonnet-5", { cost: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 }, maxTokens: 64000, contextWindow: 1000000, reasoning: true, input: ["text", "image"] as ("text" | "image")[] }],
-		["claude-mythos-5", { cost: { input: 7, output: 35, cacheRead: 0.7, cacheWrite: 8.75 }, maxTokens: 32000, contextWindow: 500000, reasoning: true, input: ["text", "image"] as ("text" | "image")[], thinkingLevelMap: { xhigh: "xhigh" as const } }],
+		[
+			"claude-mythos-5",
+			{
+				cost: { input: 7, output: 35, cacheRead: 0.7, cacheWrite: 8.75 },
+				maxTokens: 32000,
+				contextWindow: 500000,
+				reasoning: true,
+				input: ["text", "image"] as ("text" | "image")[],
+				thinkingLevelMap: { xhigh: "xhigh" as const },
+				forceAdaptiveThinking: true,
+			},
+		],
 	]);
 	const models = buildNativeModels({ extraIds: [...catalog.keys()], catalog });
 	// bare-major known family: surfaces, curated sonnet policy pins native 1M
@@ -265,6 +376,8 @@ test("discovery reads NEW anthropic models from Pi's catalog: claude-sonnet-5 + 
 	assert.ok(s5, "sonnet-5 discovered from catalog");
 	assert.equal(s5?.name, "Claude Sonnet 5");
 	assert.equal(s5?.contextWindow, 1000000);
+	assert.deepEqual(s5?.thinkingLevelMap, { xhigh: "xhigh", max: "max", off: null });
+	assert.deepEqual(s5?.compat, { forceAdaptiveThinking: true, supportsTemperature: false });
 	// Deliberately DIFFERENT from the sonnet family default ($3/$15): Sonnet 5 is
 	// $2/$10 (changelog 2.1.243, and Pi 0.85's catalog). A fixture equal to the
 	// family default could pass even if the catalog cost were ignored.

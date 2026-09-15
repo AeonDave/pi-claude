@@ -15,6 +15,7 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
+	type Fingerprint,
 	getModelCachePath,
 	getModelCacheReadPaths,
 	readFingerprint,
@@ -77,9 +78,16 @@ export const TOKEN_USER_AGENT = "axios/1.13.6";
 // Anthropic gates MODEL ACCESS on the claimed version — the 400 reads "Claude
 // Code <v> does not support this model; version 2.1.251 or newer is required" —
 // so this constant must never lag the newest generation the provider exposes.
-// Captured from `claude` 2.1.261 on 2026-09-04 (captures/fingerprint-2.1.261.json).
-const DEFAULT_CC_VERSION = "2.1.261";
-const DEFAULT_CC_ENTRYPOINT = "sdk-cli";
+// Captured from `claude` 2.1.266 on 2026-09-09 (captures/fingerprint-2.1.266.json).
+const DEFAULT_CC_VERSION = "2.1.266";
+export const DEFAULT_CC_ENTRYPOINT = "sdk-cli";
+export const DEFAULT_PRINT_THINKING_DISPLAY = "omitted";
+
+/** Pi runtime modes mapped onto the two genuine Claude Code wire profiles. */
+export type ClaudeCodeRuntimeMode = "tui" | "rpc" | "json" | "print";
+
+export const CLAUDE_CODE_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude.";
+export const CLAUDE_AGENT_SDK_IDENTITY = "You are a Claude agent, built on Anthropic's Claude Agent SDK.";
 
 // ---------------------------------------------------------------------------
 // Derived fingerprint (robustness): track the user's real Claude install
@@ -109,19 +117,20 @@ export type VersionSource = "env" | "fingerprint" | "installed" | "default";
 /**
  * Pure precedence resolution, so the rule is unit-testable without touching disk.
  *
- * env > fingerprint > installed `claude` > hardcoded default, EXCEPT that a
- * fingerprint version OLDER than the installed `claude` loses.
+ * env > newest trustworthy version among fingerprint / installed `claude` /
+ * hardcoded default. An older fingerprint must never lower either the installed
+ * version or the bundled capture floor.
  *
  * Rationale: the fingerprint exists to keep version + `anthropic-beta` a
  * consistent PAIR, but Anthropic validates the pair ASYMMETRICALLY — the beta
  * set is checked by flag NAME (400 on an unknown flag), while the version is
  * checked as a MINIMUM for model access ("Claude Code 2.1.241 does not support
- * this model; version 2.1.251 or newer is required"). Claiming a NEWER version
- * with an older captured beta set is therefore safe — verified: the 13-flag set
- * is byte-identical across the 2.1.233 / 2.1.241 / 2.1.261 captures — while
- * claiming an OLDER version is the one direction that hard-fails. A stale
- * fingerprint used to pin an old version silently and permanently; that was the
- * root cause of the 2.1.241 outage. An explicit env pin is honoured verbatim.
+ * this model; version 2.1.251 or newer is required"). The version must therefore
+ * move upward independently when necessary. Beta freshness is enforced
+ * separately by `getUsableFingerprint`: 2.1.266 proved that byte-identical sets
+ * cannot be assumed forever. A stale fingerprint used to pin an old version
+ * silently and permanently; that was the root cause of the 2.1.241 outage. An
+ * explicit env pin is honoured verbatim.
  */
 export function resolveClaudeCodeVersion(input: {
 	override?: string;
@@ -134,16 +143,49 @@ export function resolveClaudeCodeVersion(input: {
 	const fallback = input.fallback ?? DEFAULT_CC_VERSION;
 	const pinned = input.pinned?.trim();
 	const installed = input.installed?.trim() || null;
+	const floor = installed && compareVersions(installed, fallback) > 0
+		? { version: installed, source: "installed" as const }
+		: { version: fallback, source: "default" as const };
 	if (!pinned) {
-		return installed ? { version: installed, source: "installed" } : { version: fallback, source: "default" };
+		return floor;
 	}
 	// A non-standard pin is a deliberate choice — pass it through untouched.
 	if (!VERSION_RE.test(pinned)) return { version: pinned, source: "fingerprint" };
-	if (!installed || compareVersions(pinned, installed) >= 0) return { version: pinned, source: "fingerprint" };
-	return { version: installed, source: "installed" };
+	if (compareVersions(pinned, floor.version) >= 0) return { version: pinned, source: "fingerprint" };
+	return floor;
 }
 
 let warnedStaleFingerprint = false;
+
+function isOlderThanBundledFingerprint(fingerprint: Fingerprint | null): boolean {
+	const version = fingerprint?.version?.trim();
+	return !!version && VERSION_RE.test(version) && compareVersions(version, DEFAULT_CC_VERSION) < 0;
+}
+
+/**
+ * Captured beta/entrypoint values require a version and only outrank the bundled
+ * capture when a comparable version is at least as new. A non-semver version is
+ * retained as the same deliberate manual choice accepted by version resolution.
+ * Claude 2.1.266 disproved the former assumption that an older
+ * beta set remains byte-identical forever: Opus 5 gained a model-specific flag
+ * while Sonnet 5 did not. Keeping a 2.1.261 fingerprint would otherwise mask the
+ * corrected 2.1.266 per-model defaults indefinitely.
+ */
+function getUsableFingerprint(): Fingerprint | null {
+	const fingerprint = readFingerprint();
+	if (!fingerprint) return null;
+	const version = fingerprint.version?.trim();
+	const missingVersion = !version;
+	if (!missingVersion && !isOlderThanBundledFingerprint(fingerprint)) return fingerprint;
+	if (!warnedStaleFingerprint) {
+		warnedStaleFingerprint = true;
+		const reason = missingVersion
+			? "fingerprint has no version, so its capture freshness cannot be verified"
+			: `fingerprint version ${version} is older than the bundled Claude Code ${DEFAULT_CC_VERSION} capture`;
+		warnConfig(`${reason}; ignoring its beta/entrypoint/per-model values. Re-run \`npm run capture:fingerprint -- --apply\` to refresh it.`);
+	}
+	return null;
+}
 
 /** The resolved version plus where it came from (diagnostics). */
 export function getClaudeCodeVersionInfo(): { version: string; source: VersionSource } {
@@ -154,7 +196,9 @@ export function getClaudeCodeVersionInfo(): { version: string; source: VersionSo
 		pinned,
 		installed,
 	});
-	if (pinned && installed && resolved.source === "installed" && !warnedStaleFingerprint) {
+	if (isOlderThanBundledFingerprint(readFingerprint())) {
+		getUsableFingerprint(); // emits the one-time stale bundled-capture diagnostic
+	} else if (pinned && installed && resolved.source === "installed" && !warnedStaleFingerprint) {
 		warnedStaleFingerprint = true;
 		warnConfig(
 			`fingerprint version ${pinned.trim()} is older than the installed claude ${installed}; sending ${installed}. ` +
@@ -172,18 +216,37 @@ export function getClaudeCodeVersion(): string {
 	return getClaudeCodeVersionInfo().version;
 }
 
-/** Billing header `cc_entrypoint`. `cli` mirrors the interactive Claude Code CLI. */
-export function getClaudeCodeEntrypoint(): string {
+/**
+ * Billing-header/client profile for the current Pi mode.
+ *
+ * Claude Code 2.1.266 is genuinely mode-dependent: its interactive TUI uses
+ * `cli`, while `claude -p` uses `sdk-cli`. Pi exposes the same distinction as
+ * `ctx.mode === "tui"` versus print/json/rpc. The fingerprint is captured with
+ * `claude -p`, so it remains the non-interactive fallback. An explicit override
+ * deliberately wins for every mode.
+ */
+export function getClaudeCodeEntrypoint(mode?: ClaudeCodeRuntimeMode): string {
 	const override = process.env.PI_CLAUDE_NATIVE_CC_ENTRYPOINT?.trim();
 	if (override) return override;
-	return readFingerprint()?.entrypoint?.trim() || DEFAULT_CC_ENTRYPOINT;
+	if (mode === "tui") return "cli";
+	return getUsableFingerprint()?.entrypoint?.trim() || DEFAULT_CC_ENTRYPOINT;
 }
 
-/** `claude-cli/<version> (external, sdk-cli)` — the genuine external CLI User-Agent. */
-export function getUserAgent(): string {
+/** Genuine external-CLI User-Agent for the selected runtime mode. */
+export function getUserAgent(mode?: ClaudeCodeRuntimeMode): string {
 	const override = process.env.PI_CLAUDE_NATIVE_USER_AGENT?.trim();
 	if (override && override.length > 0) return override;
-	return `claude-cli/${getClaudeCodeVersion()} (external, sdk-cli)`;
+	return `claude-cli/${getClaudeCodeVersion()} (external, ${getClaudeCodeEntrypoint(mode)})`;
+}
+
+/** Exact `system` identity paired with the selected genuine client profile. */
+export function getClaudeCodeIdentity(mode?: ClaudeCodeRuntimeMode): string {
+	return getClaudeCodeEntrypoint(mode) === "cli" ? CLAUDE_CODE_IDENTITY : CLAUDE_AGENT_SDK_IDENTITY;
+}
+
+/** Interactive Claude renders thinking updates; non-interactive Claude omits them. */
+export function getClaudeCodeThinkingDisplay(mode?: ClaudeCodeRuntimeMode): "updates" | "omitted" {
+	return getClaudeCodeEntrypoint(mode) === "cli" ? "updates" : DEFAULT_PRINT_THINKING_DISPLAY;
 }
 
 /**
@@ -197,21 +260,23 @@ export function getBaseUrl(): string {
 }
 
 /**
- * The `anthropic-beta` BASE set captured verbatim from genuine `claude` 2.1.261's
- * adaptive normal turn (`claude -p`, Opus 5/Sonnet 5, 2026-09-04).
+ * The conservative `anthropic-beta` BASE shared verbatim by genuine Claude Code
+ * 2.1.266's Opus 5 and Sonnet 5 normal turns (`claude -p`, 2026-09-09).
  * This REPLACES Pi's per-model beta
  * logic so the header is byte-identical to Claude Code's everyday request.
  * Re-captured with the proxy marked first-party so conditional `cch` and beta
  * flags are preserved. Compared with 2.1.220, 2.1.233 added
  * `advanced-tool-use`, `afk-mode`, and `cache-diagnosis`; 2.1.241 kept the
- * same 13 flags but changed the Haiku non-effort subset; 2.1.261 keeps the same
- * 13-flag base and adds the first per-model ADDITION (Fable 5.1, see
- * `MODEL_BETA_DELTAS`).
+ * same 13 flags but changed the Haiku non-effort subset; 2.1.261 added Fable
+ * 5.1's first per-model flag. In 2.1.266 Opus and Sonnet diverged: the shared
+ * safe base remains these 13 flags, while exact additions live in
+ * `MODEL_BETA_DELTAS`.
  *
  * The set is per-model in both directions now:
- *   Opus 5 / Sonnet 5 — this base, 13 flags;
- *   Haiku 4.5         — 13 minus the three adaptive-effort flags = 10;
- *   Fable 5.1         — 13 plus `per-turn-control-2026-07-01` = 14.
+ *   Sonnet 5          — this base, 13 flags;
+ *   Opus 5 / Opus 4.8 / Fable 5 — base + `mid-conversation-tool-changes` = 14;
+ *   Haiku 4.5         — base minus the three adaptive-effort flags = 10;
+ *   Fable 5.1         — base + `per-turn-control` + tool changes = 15.
  *
  * `context-1m-2025-08-07` is intentionally NOT here: a subscription without
  * long-context access returns 400/429 on any request that advertises it, and
@@ -241,8 +306,13 @@ export const DEFAULT_ANTHROPIC_BETA = [
 ].join(",");
 
 const MID_CONVO = "mid-conversation-system-2026-04-07";
+const PER_TURN_CONTROL = "per-turn-control-2026-07-01";
+const MID_CONVO_TOOL_CHANGES = "mid-conversation-tool-changes-2026-07-01";
 const EFFORT = "effort-2025-11-24";
 const AFK_MODE = "afk-mode-2026-01-31";
+const ADVANCED_TOOL_USE = "advanced-tool-use-2025-11-20";
+const FALLBACK_CREDIT = "fallback-credit-2026-06-01";
+const THINKING_DISPLAY_UPDATES = "thinking-display-updates-2026-08-18";
 
 const ADAPTIVE_EFFORT_BETAS = new Set([
 	"mid-conversation-system-2026-04-07",
@@ -250,19 +320,20 @@ const ADAPTIVE_EFFORT_BETAS = new Set([
 	"afk-mode-2026-01-31",
 ]);
 
-/** Genuine Haiku 4.5 normal turns omit the adaptive-effort-only flags (2.1.261 capture). */
+/** Genuine Haiku 4.5 normal turns omit the adaptive-effort-only flags (2.1.266 capture). */
 /** Re-captured: Haiku keeps `advisor-tool` but drops `mid-conversation-system`. */
 export const DEFAULT_NON_EFFORT_ANTHROPIC_BETA = DEFAULT_ANTHROPIC_BETA.split(",")
 	.filter((flag) => !ADAPTIVE_EFFORT_BETAS.has(flag))
 	.join(",");
 
 /**
- * How each model's `anthropic-beta` differs from the base set — captured from
- * `claude` 2.1.261 across every id this provider exposes (11 models, 2026-09-05).
- * The older generations do NOT send the full 13-flag base:
+ * How each model's `anthropic-beta` differs from the common base set — captured
+ * from `claude` 2.1.266 across every id this provider exposes (11 models,
+ * 2026-09-09). The exact sets are:
  *
- *   opus 5 / sonnet 5 / opus 4.8 / fable 5 — the base 13 (no delta)
- *   fable 5.1                             — 14 (adds `per-turn-control`)
+ *   sonnet 5                              — the common base 13 (no delta)
+ *   opus 5 / opus 4.8 / fable 5          — 14 (adds tool changes)
+ *   fable 5.1                             — 15 (adds per-turn + tool changes)
  *   opus 4.7 / opus 4.6 / sonnet 4.6      — 12 (drops `mid-conversation-system`)
  *   opus 4.5                              — 11 (also drops `afk-mode`)
  *   sonnet 4.5 / haiku 4.5                — 10 (also drops `effort`)
@@ -272,22 +343,50 @@ export const DEFAULT_NON_EFFORT_ANTHROPIC_BETA = DEFAULT_ANTHROPIC_BETA.split(",
  *
  * None of this is derivable from `/v1/models`: Opus 4.8 and Opus 4.7 advertise
  * identical capabilities (both xhigh, both adaptive-only) yet send different sets.
- * It has to be captured. `add` is keyed by EXACT id for the same reason —
- * Claude Code gates `per-turn-control` on the model's `per_turn_effort`
- * capability and `claude-fable-5-1` is the only id declaring it (`claude-fable-5`
- * does not), and Anthropic 400s on an unexpected flag, so the dangerous direction
- * is sending it too widely. A future `claude-fable-5-2` therefore gets the safe
- * base set until a re-capture records its real value under the fingerprint's
- * `modelBeta`, which takes precedence over this table.
+ * It has to be captured. Every addition is keyed by EXACT id because Anthropic
+ * 400s on unexpected flags. A future version therefore gets the safe common base
+ * until a re-capture records its real value under the fingerprint's `modelBeta`,
+ * which takes precedence over this table.
  */
-export const MODEL_BETA_DELTAS: Record<string, { remove?: readonly string[]; add?: { flag: string; after: string } }> = {
-	"claude-fable-5-1": { add: { flag: "per-turn-control-2026-07-01", after: MID_CONVO } },
+export interface ModelBetaDelta {
+	remove?: readonly string[];
+	add?: readonly { flag: string; after: string }[];
+}
+
+export const MODEL_BETA_DELTAS: Record<string, ModelBetaDelta> = {
+	"claude-opus-5": { add: [{ flag: MID_CONVO_TOOL_CHANGES, after: MID_CONVO }] },
+	"claude-fable-5-1": {
+		add: [
+			{ flag: PER_TURN_CONTROL, after: MID_CONVO },
+			{ flag: MID_CONVO_TOOL_CHANGES, after: PER_TURN_CONTROL },
+		],
+	},
+	"claude-fable-5": { add: [{ flag: MID_CONVO_TOOL_CHANGES, after: MID_CONVO }] },
+	"claude-opus-4-8": { add: [{ flag: MID_CONVO_TOOL_CHANGES, after: MID_CONVO }] },
 	"claude-opus-4-7": { remove: [MID_CONVO] },
 	"claude-opus-4-6": { remove: [MID_CONVO] },
 	"claude-sonnet-4-6": { remove: [MID_CONVO] },
 	"claude-opus-4-5": { remove: [MID_CONVO, AFK_MODE] },
 	"claude-sonnet-4-5": { remove: [MID_CONVO, EFFORT, AFK_MODE] },
 	"claude-haiku-4-5": { remove: [MID_CONVO, EFFORT, AFK_MODE] },
+};
+
+/**
+ * Exact-id exceptions captured from genuine Claude Code 2.1.266's interactive
+ * TUI. All eleven models added `thinking-display-updates`, so that flag is a
+ * captured mode-wide signal applied below (including to newly-discovered
+ * families); only Opus 5 and Fable 5/5.1 also added `fallback-credit`.
+ */
+export const TUI_MODEL_BETA_DELTAS: Readonly<Record<string, ModelBetaDelta>> = {
+	"claude-opus-5": {
+		add: [{ flag: FALLBACK_CREDIT, after: EFFORT }],
+	},
+	"claude-fable-5-1": {
+		add: [{ flag: FALLBACK_CREDIT, after: EFFORT }],
+	},
+	"claude-fable-5": {
+		add: [{ flag: FALLBACK_CREDIT, after: EFFORT }],
+	},
 };
 
 /**
@@ -330,7 +429,7 @@ function sameSet(a: readonly string[], b: readonly string[]): boolean {
  * the model Pi actually sends.
  */
 function lookupCapturedBeta(modelId: string): string | undefined {
-	const map = readFingerprint()?.modelBeta;
+	const map = getUsableFingerprint()?.modelBeta;
 	if (!map) return undefined;
 	const exact = map[modelId]?.trim();
 	if (exact) return exact;
@@ -362,49 +461,164 @@ function insertAfter(flags: string[], flag: string, after: string): string[] {
 
 /**
  * The `anthropic-beta` header to send: `PI_CLAUDE_NATIVE_ANTHROPIC_BETA` env →
- * captured fingerprint → the hardcoded captured set (2.1.261). The fingerprint
- * pairs this with its version, so a freshly-captured set and its version stay
- * consistent.
+ * captured fingerprint (when at least as new as the bundled capture) → the
+ * hardcoded 2.1.266 common set. The fingerprint pairs this with its version, so
+ * a freshly-captured set and its version stay consistent without letting stale
+ * state mask newer built-in per-model evidence.
  */
 export function getAnthropicBeta(): string {
 	const override = process.env.PI_CLAUDE_NATIVE_ANTHROPIC_BETA?.trim();
 	if (override && override.length > 0) return override;
-	return readFingerprint()?.anthropicBeta?.trim() || DEFAULT_ANTHROPIC_BETA;
+	return getUsableFingerprint()?.anthropicBeta?.trim() || DEFAULT_ANTHROPIC_BETA;
 }
 
 /**
- * The `anthropic-beta` for one model. Resolution, highest first:
+ * The `anthropic-beta` for one model and Pi runtime mode. Resolution, highest
+ * first:
  *
  *   1. `PI_CLAUDE_NATIVE_ANTHROPIC_BETA` — an explicit override is verbatim for
  *      every model (documented contract; the user is pinning the exact bytes);
  *   2. the fingerprint's per-model captured set (`modelBeta[<wire id>]`) — used
  *      verbatim, so a re-capture makes a NEW model exact with no code change,
  *      preserving the genuine flag ORDER (Haiku's differs from the base);
- *   3. the base set ± the built-in deltas: Haiku drops the three adaptive-effort
- *      flags, Fable 5.1 gains `per-turn-control-2026-07-01`.
+ *   3. the common base set ± the built-in captured model deltas;
+ *   4. in TUI mode, the universal interactive-display flag plus the three
+ *      captured exact-id fallback-credit exceptions.
  */
-export function getAnthropicBetaForModel(modelId: string): string {
+export function getAnthropicBetaForModel(
+	modelId: string,
+	mode?: ClaudeCodeRuntimeMode,
+	forceAdaptiveThinking?: boolean,
+): string {
 	const beta = getAnthropicBeta();
 	if (process.env.PI_CLAUDE_NATIVE_ANTHROPIC_BETA?.trim()) return beta;
 
+	const cleanModelId = modelId.replace(/-\d{8}$/, "");
+	const fingerprint = getUsableFingerprint();
 	const captured = lookupCapturedBeta(modelId);
-	if (captured) return captured;
-
-	let flags = beta.split(",").map((flag) => flag.trim()).filter(Boolean);
-	const delta = MODEL_BETA_DELTAS[modelId];
-	if (delta?.remove) {
-		const drop = new Set(delta.remove);
-		flags = flags.filter((flag) => !drop.has(flag));
-	} else if (!delta && modelId.startsWith("claude-haiku-")) {
-		// Family fallback for a Haiku id we have not captured: every Haiku observed
-		// so far omits the three adaptive-effort-only flags.
+	let flags = (captured || beta).split(",").map((flag) => flag.trim()).filter(Boolean);
+	// Built-in model deltas are evidence for exactly the bundled capture version.
+	// If a newer fingerprint omitted this model, composing its new common base
+	// with old deltas would create a flag set no genuine client was observed
+	// sending. Use the newer common base conservatively instead. The capture script
+	// now records every exposed id by default, so this branch is chiefly for a
+	// newly-discovered model or an intentionally partial capture.
+	const canUseBundledModelEvidence =
+		!fingerprint || fingerprint.version?.trim() === DEFAULT_CC_VERSION;
+	const bundledDelta = MODEL_BETA_DELTAS[cleanModelId];
+	// Live discovery can positively identify a budget-only model before its first
+	// wire capture. Use the non-effort subset only when no exact captured/bundled
+	// delta exists: Opus 4.5 is budget-thinking but still sends `effort`.
+	if (!captured && forceAdaptiveThinking === false && !(canUseBundledModelEvidence && bundledDelta)) {
 		flags = flags.filter((flag) => !ADAPTIVE_EFFORT_BETAS.has(flag));
 	}
-	if (delta?.add) flags = insertAfter(flags, delta.add.flag, delta.add.after);
+	if (!captured && canUseBundledModelEvidence) {
+		const delta = bundledDelta;
+		if (delta?.remove) {
+			const drop = new Set(delta.remove);
+			flags = flags.filter((flag) => !drop.has(flag));
+		} else if (!delta && cleanModelId.startsWith("claude-haiku-")) {
+			// Family fallback for a Haiku id we have not captured: every Haiku observed
+			// so far omits the three adaptive-effort-only flags.
+			flags = flags.filter((flag) => !ADAPTIVE_EFFORT_BETAS.has(flag));
+		}
+		for (const addition of delta?.add ?? []) {
+			flags = insertAfter(flags, addition.flag, addition.after);
+		}
 
-	const genuineOrder = GENUINE_FLAG_ORDER[modelId];
-	if (genuineOrder && sameSet(genuineOrder, flags)) return genuineOrder.join(",");
+		const genuineOrder = GENUINE_FLAG_ORDER[cleanModelId];
+		if (genuineOrder && sameSet(genuineOrder, flags)) flags = [...genuineOrder];
+	}
+
+	// `modelBeta` is captured by `claude -p`. Interactive mode adds one signal on
+	// every captured model, plus a narrowly-scoped exception on three exact ids.
+	// Treat the universal 11/11 signal as part of the mode profile so a newly
+	// discovered family remains immediately usable; never spread the exception.
+	if (getClaudeCodeEntrypoint(mode) === "cli") {
+		if (canUseBundledModelEvidence) {
+			for (const addition of TUI_MODEL_BETA_DELTAS[cleanModelId]?.add ?? []) {
+				flags = insertAfter(flags, addition.flag, addition.after);
+			}
+		}
+		const displayAnchor = flags.includes(FALLBACK_CREDIT)
+			? FALLBACK_CREDIT
+			: flags.includes(EFFORT)
+				? EFFORT
+				: ADVANCED_TOOL_USE;
+		flags = insertAfter(flags, THINKING_DISPLAY_UPDATES, displayAnchor);
+	}
 	return flags.join(",");
+}
+
+/**
+ * Genuine Claude Code 2.1.266 request caps captured across all eleven exposed
+ * model ids. These are intentionally distinct from `/v1/models.max_tokens` and
+ * Pi's catalog `maxTokens`: those advertise the API ceiling (128K/64K), while
+ * the CLI actually puts 64K/32K on the wire. Keep the catalog values for model
+ * metadata and clamp only the serialized request in `before_provider_request`.
+ * Unknown models are left untouched until a real capture records their value.
+ */
+export const DEFAULT_MODEL_MAX_TOKENS: Readonly<Record<string, number>> = {
+	"claude-opus-5": 64_000,
+	"claude-sonnet-5": 64_000,
+	"claude-fable-5-1": 64_000,
+	"claude-fable-5": 64_000,
+	"claude-opus-4-8": 64_000,
+	"claude-opus-4-7": 64_000,
+	"claude-opus-4-6": 64_000,
+	"claude-sonnet-4-6": 32_000,
+	"claude-opus-4-5": 32_000,
+	"claude-sonnet-4-5": 32_000,
+	"claude-haiku-4-5": 32_000,
+};
+
+/** Captured request cap for one model, preferring a usable fingerprint. */
+export function getClaudeCodeMaxTokensForModel(modelId: string): number | undefined {
+	const cleanModelId = modelId.replace(/-\d{8}$/, "");
+	const fingerprint = getUsableFingerprint();
+	const captured = fingerprint?.modelMaxTokens;
+	if (captured) {
+		const exact = captured[modelId] ?? captured[cleanModelId];
+		if (exact !== undefined) return exact;
+		for (const [id, value] of Object.entries(captured)) {
+			if (id.replace(/-\d{8}$/, "") === cleanModelId) return value;
+		}
+	}
+	// Like beta deltas, request caps are capture-version evidence. A newer partial
+	// fingerprint must not make an uncaptured model inherit a 2.1.266 client cap;
+	// leave Pi's serialized value alone until that id is observed.
+	if (fingerprint && fingerprint.version?.trim() !== DEFAULT_CC_VERSION) return undefined;
+	return DEFAULT_MODEL_MAX_TOKENS[modelId] ?? DEFAULT_MODEL_MAX_TOKENS[cleanModelId];
+}
+
+export interface ClaudeCodeBudgetThinkingProfile {
+	budgetTokens: number;
+	effort?: "low" | "medium" | "high" | "xhigh" | "max";
+}
+
+/** Exact budget-thinking request shapes observed on genuine Claude 2.1.266. */
+export const DEFAULT_BUDGET_THINKING_PROFILES: Readonly<Record<string, ClaudeCodeBudgetThinkingProfile>> = {
+	"claude-opus-4-5": { budgetTokens: 31_999, effort: "high" },
+	"claude-sonnet-4-5": { budgetTokens: 31_999 },
+	"claude-haiku-4-5": { budgetTokens: 31_999 },
+};
+
+/** Do not project a 2.1.266 budget profile through a newer partial fingerprint. */
+export function getClaudeCodeBudgetThinkingProfileForModel(
+	modelId: string,
+): ClaudeCodeBudgetThinkingProfile | undefined {
+	const fingerprint = getUsableFingerprint();
+	const cleanModelId = modelId.replace(/-\d{8}$/, "");
+	const captured = fingerprint?.modelBudgetThinking;
+	if (captured) {
+		const exact = captured[modelId] ?? captured[cleanModelId];
+		if (exact) return exact;
+		for (const [id, profile] of Object.entries(captured)) {
+			if (id.replace(/-\d{8}$/, "") === cleanModelId) return profile;
+		}
+	}
+	if (fingerprint && fingerprint.version?.trim() !== DEFAULT_CC_VERSION) return undefined;
+	return DEFAULT_BUDGET_THINKING_PROFILES[modelId] ?? DEFAULT_BUDGET_THINKING_PROFILES[cleanModelId];
 }
 
 // ---------------------------------------------------------------------------
@@ -416,9 +630,10 @@ export function getAnthropicBetaForModel(modelId: string): string {
 // binary):
 //   sampled = [4,7,20].map(i => text[i] || "0").join("")
 //   suffix  = sha256(SALT + sampled + VERSION).slice(0, 3)
-// Reproduced on live wire captures: "reply with the single word ok" @2.1.261 ->
-// 547, "read the hello file" -> 384, "hi" -> 6af. These are ground truth now, not
-// a twice-guessed constant — do NOT change them.
+// Reproduced on live wire captures: "reply with the single word ok" -> 547 at
+// 2.1.261 and 9d8 at 2.1.266; "read the hello file" -> 384 and "hi" -> 6af at
+// 2.1.261. These are ground truth now, not a twice-guessed constant — do NOT
+// change them.
 
 export const CCH_SALT = "59cf53e54c78";
 export const CCH_POSITIONS = [4, 7, 20] as const;

@@ -1,0 +1,374 @@
+export interface FingerprintCandidate {
+	wireModel: string;
+	userAgent: string;
+	version: string | null | undefined;
+	entrypoint: string | null | undefined;
+	effort: unknown;
+	maxTokens: unknown;
+	thinkingType?: unknown;
+	budgetTokens?: unknown;
+	hasCch?: boolean;
+	identity?: unknown;
+	thinkingDisplay?: unknown;
+	has1mBeta: boolean;
+	beta: string[];
+	triggeredBy: string[];
+}
+
+export interface FingerprintBaseline {
+	opus: FingerprintCandidate;
+	sonnet: FingerprintCandidate;
+	beta: string[];
+}
+
+export interface BetaDeviation {
+	wireModel: string;
+	adds: string[];
+	drops: string[];
+	reordered: boolean;
+}
+
+export interface CaptureRunSummary {
+	model: string;
+	captures: number;
+	mainCaptures: number;
+	wireModels?: readonly string[];
+}
+
+/**
+ * Moving aliases discover the next flagship on rollover; exact ids retain full
+ * coverage of every model currently exposed by the provider.
+ */
+export const DEFAULT_CAPTURE_MODELS = [
+	"opus",
+	"sonnet",
+	"haiku",
+	"fable",
+	"claude-opus-5",
+	"claude-sonnet-5",
+	"claude-fable-5-1",
+	"claude-fable-5",
+	"claude-opus-4-8",
+	"claude-opus-4-7",
+	"claude-opus-4-6",
+	"claude-sonnet-4-6",
+	"claude-opus-4-5",
+	"claude-sonnet-4-5",
+	"claude-haiku-4-5",
+] as const;
+
+const CONTEXT_1M_BETA = "context-1m-2025-08-07";
+
+/** Validate the private readiness proof returned by the just-spawned capture proxy. */
+export function isCaptureProxyHealthResponse(
+	statusCode: number | undefined,
+	body: string,
+	expectedNonce: string,
+): boolean {
+	if (statusCode !== 200 || expectedNonce.length === 0) return false;
+	let payload: unknown;
+	try {
+		payload = JSON.parse(body);
+	} catch {
+		return false;
+	}
+	if (!payload || typeof payload !== "object" || Array.isArray(payload)) return false;
+	const record = payload as Record<string, unknown>;
+	return record.service === "pi-claude-capture-proxy" && record.nonce === expectedNonce;
+}
+
+/** Refuse to publish/apply a live run that missed any requested model. */
+export function assertRequestedCapturesComplete(runs: readonly CaptureRunSummary[]): void {
+	const missing = runs
+		.filter((run) => !Number.isSafeInteger(run.mainCaptures) || run.mainCaptures <= 0)
+		.map((run) => run.model);
+	if (missing.length > 0) {
+		throw new Error(`requested model run(s) produced no matching main capture: ${missing.join(", ")}`);
+	}
+}
+
+function stripDateSuffix(modelId: string): string {
+	return modelId.replace(/-\d{8}$/, "");
+}
+
+/** Reject clean/dated aliases that disagree on any distilled wire field. */
+export function assertNoCanonicalModelDrift(candidates: readonly FingerprintCandidate[]): void {
+	const canonical = new Map<string, FingerprintCandidate>();
+	for (const candidate of candidates) {
+		const key = stripDateSuffix(candidate.wireModel);
+		const previous = canonical.get(key);
+		if (previous) assertConsistentFingerprintCandidate(previous, candidate);
+		else canonical.set(key, candidate);
+	}
+}
+
+/** `capture:fingerprint` drives `claude -p`; reject hybrid/TUI request shapes. */
+export function assertNonInteractiveCaptureProfile(
+	candidates: readonly FingerprintCandidate[],
+	expected: { entrypoint: string; identity: string; thinkingDisplay: string },
+): void {
+	for (const candidate of candidates) {
+		if (candidate.entrypoint !== expected.entrypoint) {
+			throw new Error(`${candidate.wireModel}: expected ${expected.entrypoint} non-interactive entrypoint`);
+		}
+		if (candidate.identity !== expected.identity) {
+			throw new Error(`${candidate.wireModel}: non-interactive system identity mismatch`);
+		}
+		if (candidate.thinkingDisplay !== expected.thinkingDisplay) {
+			throw new Error(`${candidate.wireModel}: non-interactive thinking.display mismatch`);
+		}
+	}
+}
+
+/** Distinguish the requested normal turn from title/auxiliary traffic. */
+export function isRequestedMainCapture(
+	requestedModel: string,
+	wireModel: string,
+	firstUserText: string | undefined,
+	expectedPrompt: string,
+): boolean {
+	if (firstUserText !== expectedPrompt) return false;
+	const requested = stripDateSuffix(requestedModel);
+	const wire = stripDateSuffix(wireModel);
+	if (["opus", "sonnet", "haiku", "fable"].includes(requested)) {
+		return wire.startsWith(`claude-${requested}-`);
+	}
+	if (requested.startsWith("claude-")) return wire === requested;
+	// Claude supports additional moving aliases. Their resolved id is unknowable
+	// here, but the exact probe text still separates the normal turn from helpers.
+	return true;
+}
+
+/** Validate that UA and billing describe one real captured client profile. */
+export function parseCaptureProfile(
+	wireModel: string,
+	userAgent: string,
+	billingSystemText: string,
+): { version: string; entrypoint: string } {
+	const ua = userAgent.match(/^claude-cli\/(\d+\.\d+\.\d+) \(external, ([\w-]+)\)$/);
+	const billing = billingSystemText.match(
+		/cc_version=(\d+\.\d+\.\d+)\.[0-9a-f]{3}; cc_entrypoint=([\w-]+);/,
+	);
+	if (!ua || !billing) throw new Error(`${wireModel}: missing Claude Code user-agent or billing profile`);
+	if (ua[1] !== billing[1]) {
+		throw new Error(`${wireModel}: user-agent/billing version mismatch: ${ua[1]} vs ${billing[1]}`);
+	}
+	if (ua[2] !== billing[2]) {
+		throw new Error(`${wireModel}: user-agent/billing entrypoint mismatch: ${ua[2]} vs ${billing[2]}`);
+	}
+	return { version: ua[1], entrypoint: ua[2] };
+}
+
+/** Repeated alias/exact captures of one wire id must agree on distilled fields. */
+export function assertConsistentFingerprintCandidate(
+	previous: FingerprintCandidate,
+	current: FingerprintCandidate,
+): void {
+	const fields: ReadonlyArray<[string, unknown, unknown]> = [
+		["user-agent", previous.userAgent, current.userAgent],
+		["version", previous.version, current.version],
+		["entrypoint", previous.entrypoint, current.entrypoint],
+		["anthropic-beta", previous.beta.join(","), current.beta.join(",")],
+		["max_tokens", previous.maxTokens, current.maxTokens],
+		["effort", previous.effort, current.effort],
+		["thinking.type", previous.thinkingType, current.thinkingType],
+		["thinking.budget_tokens", previous.budgetTokens, current.budgetTokens],
+		["system identity", previous.identity, current.identity],
+		["thinking.display", previous.thinkingDisplay, current.thinkingDisplay],
+	];
+	for (const [field, before, after] of fields) {
+		if (JSON.stringify(before) !== JSON.stringify(after)) {
+			throw new Error(`${current.wireModel}: repeated main captures disagree on ${field}`);
+		}
+	}
+}
+
+function generationFor(modelId: string, family: "opus" | "sonnet"): number[] | null {
+	const prefix = `claude-${family}-`;
+	const clean = stripDateSuffix(modelId);
+	if (!clean.startsWith(prefix)) return null;
+	const generation = clean.slice(prefix.length);
+	if (!/^\d+(?:-\d+)*$/.test(generation)) return null;
+	return generation.split("-").map(Number);
+}
+
+function compareGeneration(a: readonly number[], b: readonly number[]): number {
+	for (let i = 0; i < Math.max(a.length, b.length); i++) {
+		const delta = (a[i] ?? 0) - (b[i] ?? 0);
+		if (delta !== 0) return delta;
+	}
+	return 0;
+}
+
+function selectFamilyBaseline(
+	candidates: readonly FingerprintCandidate[],
+	family: "opus" | "sonnet",
+): FingerprintCandidate {
+	const label = family[0].toUpperCase() + family.slice(1);
+	const familyCandidates = candidates.filter(
+		(candidate) => generationFor(candidate.wireModel, family) !== null && Boolean(candidate.effort),
+	);
+	const aliasMatches = familyCandidates.filter((candidate) => candidate.triggeredBy.includes(family));
+	if (aliasMatches.length > 1) {
+		throw new Error(
+			`ambiguous ${label} baseline: bare alias ${family} produced ${aliasMatches.map((candidate) => candidate.wireModel).join(", ")}`,
+		);
+	}
+	if (aliasMatches.length === 1) return aliasMatches[0];
+
+	// A comprehensive update capture commonly requests every full model id rather
+	// than the bare aliases. Only consider captures whose owner is that exact wire
+	// id (allowing a dated wire id for a clean requested id), then select the unique
+	// newest generation. This excludes auxiliary/title-generation requests.
+	const explicitMatches = familyCandidates.filter((candidate) =>
+		candidate.triggeredBy.some((owner) => stripDateSuffix(owner) === stripDateSuffix(candidate.wireModel)),
+	);
+	// `--reuse` predates owners.json and explicitly promises recovery when that
+	// sidecar is absent. In that case the wire ids are the only provenance left:
+	// rank the ownerless family candidates by generation and keep the same
+	// ambiguity checks below. If any exact owners exist, they remain preferred so
+	// an auxiliary/title request cannot outrank a requested model.
+	const selectable = explicitMatches.length > 0
+		? explicitMatches
+		: familyCandidates.filter((candidate) => candidate.triggeredBy.length === 0);
+	if (selectable.length === 0) {
+		throw new Error(`missing ${label} baseline: capture the bare ${family} alias or an explicit claude-${family}-<version> id`);
+	}
+
+	const ranked = selectable
+		.map((candidate) => ({ candidate, generation: generationFor(candidate.wireModel, family) }))
+		.filter((item): item is { candidate: FingerprintCandidate; generation: number[] } => item.generation !== null)
+		.sort((a, b) => compareGeneration(b.generation, a.generation));
+	const newest = ranked[0];
+	const tied = ranked.filter((item) => compareGeneration(item.generation, newest.generation) === 0);
+	if (tied.length > 1) {
+		throw new Error(
+			`ambiguous ${label} baseline: newest generation is represented by ${tied.map((item) => item.candidate.wireModel).join(", ")}`,
+		);
+	}
+	return newest.candidate;
+}
+
+function assertUsableCapture(candidate: FingerprintCandidate): void {
+	if (!candidate.version || !candidate.entrypoint || !candidate.userAgent) {
+		throw new Error(`${candidate.wireModel}: missing version, entrypoint, or user-agent`);
+	}
+	if (candidate.beta.length === 0) throw new Error(`${candidate.wireModel}: anthropic-beta is empty`);
+	if (candidate.hasCch !== true) throw new Error(`${candidate.wireModel}: first-party cch marker is missing`);
+	if (new Set(candidate.beta).size !== candidate.beta.length) {
+		throw new Error(`${candidate.wireModel}: anthropic-beta contains duplicate flags`);
+	}
+	if (candidate.has1mBeta || candidate.beta.includes(CONTEXT_1M_BETA)) {
+		throw new Error(`${candidate.wireModel}: normal-turn capture unexpectedly contains ${CONTEXT_1M_BETA}`);
+	}
+}
+
+export function selectFingerprintBaseline(candidates: readonly FingerprintCandidate[]): FingerprintBaseline {
+	for (const candidate of candidates) assertUsableCapture(candidate);
+
+	const opus = selectFamilyBaseline(candidates, "opus");
+	const sonnet = selectFamilyBaseline(candidates, "sonnet");
+	for (const [field, opusValue, sonnetValue] of [
+		["version", opus.version, sonnet.version],
+		["entrypoint", opus.entrypoint, sonnet.entrypoint],
+		["user-agent", opus.userAgent, sonnet.userAgent],
+	] as const) {
+		if (opusValue !== sonnetValue) {
+			throw new Error(`Opus/Sonnet baseline ${field} mismatch: opus=${opusValue} sonnet=${sonnetValue}`);
+		}
+	}
+
+	// The global fallback must be safe for both current flagship families. Keep
+	// Opus order, require Sonnet to order the shared flags identically, and record
+	// every model's full string separately below. This prevents an Opus-only flag
+	// from being promoted globally (the drift first observed in Claude 2.1.266).
+	const sonnetSet = new Set(sonnet.beta);
+	const opusSet = new Set(opus.beta);
+	const beta = opus.beta.filter((flag) => sonnetSet.has(flag));
+	const sonnetOrder = sonnet.beta.filter((flag) => opusSet.has(flag));
+	if (beta.length === 0) throw new Error("Opus/Sonnet baseline intersection is empty");
+	if (beta.join(",") !== sonnetOrder.join(",")) {
+		throw new Error("Opus/Sonnet shared anthropic-beta flags have incompatible ordering");
+	}
+
+	// Mixing capture runs can silently pair one version with another version's
+	// per-model beta values. Refuse that before producing or applying a file.
+	for (const candidate of candidates) {
+		if (
+			candidate.version !== opus.version ||
+			candidate.entrypoint !== opus.entrypoint ||
+			candidate.userAgent !== opus.userAgent
+		) {
+			throw new Error(`${candidate.wireModel}: capture fingerprint differs from the selected Opus/Sonnet baseline`);
+		}
+	}
+
+	return { opus, sonnet, beta };
+}
+
+export function buildModelBeta(candidates: readonly FingerprintCandidate[]): Record<string, string> {
+	const modelBeta: Record<string, string> = {};
+	for (const candidate of candidates) {
+		if (candidate.beta.length > 0) modelBeta[candidate.wireModel] = candidate.beta.join(",");
+	}
+	return modelBeta;
+}
+
+/** Preserve each wire model's exact captured output ceiling, rejecting malformed raw captures. */
+export function buildModelMaxTokens(candidates: readonly FingerprintCandidate[]): Record<string, number> {
+	const modelMaxTokens: Record<string, number> = {};
+	for (const candidate of candidates) {
+		const maxTokens = candidate.maxTokens;
+		if (typeof maxTokens !== "number" || !Number.isSafeInteger(maxTokens) || maxTokens <= 0) {
+			throw new Error(`${candidate.wireModel}: max_tokens must be a positive integer`);
+		}
+		modelMaxTokens[candidate.wireModel] = maxTokens;
+	}
+	return modelMaxTokens;
+}
+
+/** Preserve exact legacy budget-thinking bodies for future no-code refreshes. */
+export function buildModelBudgetThinking(
+	candidates: readonly FingerprintCandidate[],
+): Record<string, { budgetTokens: number; effort?: "low" | "medium" | "high" | "xhigh" | "max" }> {
+	const result: Record<string, { budgetTokens: number; effort?: "low" | "medium" | "high" | "xhigh" | "max" }> = {};
+	const efforts = new Set(["low", "medium", "high", "xhigh", "max"]);
+	for (const candidate of candidates) {
+		if (candidate.thinkingType !== "enabled") continue;
+		if (!Number.isSafeInteger(candidate.budgetTokens) || (candidate.budgetTokens as number) <= 0) {
+			throw new Error(`${candidate.wireModel}: thinking.budget_tokens must be a positive integer`);
+		}
+		const profile: { budgetTokens: number; effort?: "low" | "medium" | "high" | "xhigh" | "max" } = {
+			budgetTokens: candidate.budgetTokens as number,
+		};
+		if (candidate.effort !== null && candidate.effort !== undefined) {
+			if (typeof candidate.effort !== "string" || !efforts.has(candidate.effort)) {
+				throw new Error(`${candidate.wireModel}: output_config.effort is invalid`);
+			}
+			profile.effort = candidate.effort as typeof profile.effort;
+		}
+		result[candidate.wireModel] = profile;
+	}
+	return result;
+}
+
+export function computeBetaDeviations(
+	candidates: readonly FingerprintCandidate[],
+	base: readonly string[],
+): BetaDeviation[] {
+	const baseSet = new Set(base);
+	return candidates
+		.map((candidate) => {
+			const candidateSet = new Set(candidate.beta);
+			return {
+				wireModel: candidate.wireModel,
+				adds: candidate.beta.filter((flag) => !baseSet.has(flag)),
+				drops: base.filter((flag) => !candidateSet.has(flag)),
+				reordered:
+					candidate.beta.length === base.length &&
+					candidate.beta.every((flag) => baseSet.has(flag)) &&
+					candidate.beta.join(",") !== base.join(","),
+			};
+		})
+		.filter((deviation) => deviation.adds.length > 0 || deviation.drops.length > 0 || deviation.reordered);
+}

@@ -13,12 +13,12 @@ Anthropic's backend accepts them like the real client.
 ## What it does
 
 Pi already ships Anthropic OAuth support, and on an `sk-ant-oat…` token its
-built-in Anthropic path emits most of the Claude Code fingerprint (identity,
-beta flags, bearer auth, tool-name canonicalization). This extension wraps that
-proven path in a dedicated provider, adds its own OAuth login, and completes the
-captured fingerprint: current `user-agent`/beta headers, the
-`x-anthropic-billing-header`, `metadata.user_id`, Claude Code's omitted
-thinking display, and the system-prompt classifier fix. Your built-in
+built-in Anthropic path emits most of the Claude Code transport (initial
+identity, beta flags, bearer auth, tool-name canonicalization). This extension
+wraps that proven path in a dedicated provider, adds its own OAuth login, and
+completes the captured fingerprint: mode-aware identity/user-agent/beta/thinking,
+the `x-anthropic-billing-header`, `metadata.user_id`, captured per-model request
+`max_tokens`, and the system-prompt classifier fix. Your built-in
 `anthropic` provider and API-key auth are untouched.
 
 ## Install
@@ -87,8 +87,9 @@ suffix and no `…-1m` opt-in alias** — the old suffix produced an invalid wir
 default `anthropic-beta` also omits `context-1m-2025-08-07`: these models don't
 need it to expose their window, and a plan *without* long-context access returns
 400/429 on any request that advertises it. If your subscription needs the beta to
-unlock >200K, add it via `PI_CLAUDE_NATIVE_ANTHROPIC_BETA`. Effort follows Pi's
-thinking level via `output_config.effort`.
+unlock >200K, add it via `PI_CLAUDE_NATIVE_ANTHROPIC_BETA`. Adaptive-model effort
+follows Pi's thinking level via `output_config.effort`; the captured default/high
+Opus 4.5 budget profile emits effort `high`.
 
 The list is **dynamic and family-agnostic**: the curated seed above is augmented
 at session start from Pi's built-in `anthropic` catalog and from your
@@ -97,6 +98,9 @@ accepts **any** `claude-<family>-<version>` id, so when Anthropic ships a new
 family (e.g. **Fable**, Mythos) it appears on its own the moment Pi's catalog
 lists it: curated families keep their pinned cost/effort/context-window policy, while a
 new family derives everything (cost, window, effort) straight from the catalog.
+For every discovered model, a window above 200K is trusted only when the source
+positively marks that exact id as adaptive; partial or budget-only entries are
+clamped to 200K because this provider does not advertise `context-1m`.
 The subscription serves whichever your plan grants; an ungranted one simply
 errors at request time. Discovery surfaces every current-generation model your
 catalog knows (so older 4.x point releases show too) — tighten the set with
@@ -112,23 +116,43 @@ catalog knows (so older 4.x point releases show too) — tighten the set with
 > with `PI_CLAUDE_NATIVE_LIVE_DISCOVERY=0`; every failure degrades silently to
 > cache + Pi's catalog + the curated seed.
 
+Newly discovered families also inherit the signals captured on every model for
+the active client mode. When live capabilities positively identify a budget-only
+model, its beta header uses the captured non-effort subset; adaptive-only flags
+are not sent blindly. Only exceptional beta flags remain exact-id scoped. This
+keeps a new model visible and usable immediately without spreading a risky
+model-specific flag; re-capture is needed only for exceptions `/v1/models`
+cannot describe.
+
 ## How it works
+
+Claude 2.1.266 has two distinct wire profiles, and the extension follows Pi's
+runtime mode instead of mixing them:
+
+| Pi mode | Genuine counterpart | Entrypoint / user-agent | `system[1]` identity | `thinking.display` |
+|---------|---------------------|-------------------------|----------------------|--------------------|
+| `tui` | interactive `claude` | `cli` | `You are Claude Code…` | `updates` |
+| `print`, `json`, `rpc` | `claude -p` / SDK | `sdk-cli` | `You are a Claude agent…Agent SDK.` | `omitted` |
 
 | Claude Code signal | Source |
 |--------------------|--------|
-| Bearer OAuth, `anthropic-beta` core flags, `x-app: cli`, `"You are Claude Code…"` identity, PascalCase tool names | Pi built-in (triggered by the OAuth token) |
-| `user-agent: claude-cli/<v> (external, sdk-cli)` | this extension (`headers`) |
-| captured `anthropic-beta` set (2.1.261 adaptive normal-turn; no `context-1m`) | this extension (`headers`, per model: Haiku −3 flags, Fable 5.1 +`per-turn-control`) |
+| Bearer OAuth, `x-app: cli`, initial identity, PascalCase tool-name mapping/round-trip | Pi built-in (triggered by the OAuth token) |
+| mode-specific identity, `user-agent`, billing `cc_entrypoint`, thinking display | this extension (`ctx.mode`) |
+| captured `anthropic-beta` sets (2.1.266; no `context-1m`) | this extension; `claude -p` common/per-model fingerprint plus the 11/11-captured interactive display flag and exact-id interactive exceptions |
 | `x-client-request-id` (fresh UUID per request) | this extension (`before_provider_headers`; Pi sets it only on its OpenAI/Codex paths) |
 | `x-anthropic-billing-header` as `system[0]`, incl. the trailing `cc_prompt_id` | this extension (`before_provider_request`) |
 | `metadata.user_id` (device/account/session ids) | this extension (read from `~/.claude.json`) |
-| `thinking.display: "omitted"` (adaptive and budget) | this extension (`before_provider_request`) |
+| `thinking.display: "updates"` in TUI, `"omitted"` otherwise (adaptive and budget) | this extension (`before_provider_request`) |
+| captured request `max_tokens` (64K/32K on 2.1.266) | this extension (`before_provider_request`; catalog ceilings remain intact) |
+| captured budget-thinking shape (31,999 tokens on Opus/Sonnet/Haiku 4.5; Opus 4.5 effort `high`) | this extension (`before_provider_request`) |
 | system prompt free of the third-party-agent fingerprint | this extension (`sanitizeSystemPrompt` strips the "Pi documentation" block — confirmed to clear the classifier) |
 
 The billing header's `cc_version` is kept consistent with the `user-agent`
 version, and the `anthropic-beta` value is captured from a real `claude` request
 rather than guessed (Anthropic returns 400 on unexpected beta flags). The default
-set is a genuine **normal turn** (no `context-1m`); the natively-1M models expose their window without it.
+is the ordered 13-flag intersection of genuine Opus/Sonnet **normal turns** (no
+`context-1m`); exact model additions/removals are layered afterward, and the
+natively-1M models expose their window without the long-context beta.
 Anthropic also fingerprints the **system prompt** to flag third-party agent
 harnesses (a 400 *disguised* as `…draw from your extra usage…`). Bisection
 (`scripts/bisect-classifier.ts`) isolated Pi's tell to its meta-development
@@ -145,12 +169,12 @@ env vars below pin them when you want full control.
 
 | Env var | Default | Purpose |
 |---------|---------|---------|
-| `PI_CLAUDE_NATIVE_CC_VERSION` | _(derived from your installed `claude`, else `2.1.261`)_ | Version in `user-agent` **and** billing header (kept consistent). |
-| `PI_CLAUDE_NATIVE_CC_ENTRYPOINT` | `cli` | Billing header `cc_entrypoint`. |
-| `PI_CLAUDE_NATIVE_USER_AGENT` | `claude-cli/<v> (external, sdk-cli)` | Full `user-agent` override. |
+| `PI_CLAUDE_NATIVE_CC_VERSION` | _(newest of installed `claude`, usable fingerprint, or bundled `2.1.266`)_ | Version in `user-agent` **and** billing header (kept consistent). |
+| `PI_CLAUDE_NATIVE_CC_ENTRYPOINT` | _(mode-derived: `cli` in TUI, `sdk-cli` otherwise)_ | Pins the **whole** wire profile, not just billing/user-agent: entrypoint, identity, thinking display and the mode-specific beta flags all follow it. Set it only to force one profile everywhere. |
+| `PI_CLAUDE_NATIVE_USER_AGENT` | `claude-cli/<v> (external, <mode profile>)` | Full `user-agent` override. |
 | `PI_CLAUDE_NATIVE_ANTHROPIC_BETA` | _(fingerprint, else captured normal-turn set, no `context-1m`)_ | Verbatim `anthropic-beta` override (including on Haiku). Set to a value **captured** from your `claude` — never guess. |
 | `PI_CLAUDE_NATIVE_STATE_DIR` | `<agent dir>/claude-native` | Where this extension keeps its state. `<agent dir>` is `PI_CODING_AGENT_DIR`, else `~/.pi/agent` — the same directory Pi uses for `auth.json`, `settings.json` and every other extension's state. |
-| `PI_CLAUDE_NATIVE_FINGERPRINT` | `<agent dir>/claude-native/fingerprint.json` | Path to a captured `{ version, entrypoint, userAgent, anthropicBeta, modelBeta }` (written by `capture:fingerprint --apply`); overrides version + beta together. `modelBeta` holds each model's captured set verbatim, so a new model becomes byte-exact by re-capturing. A version OLDER than your installed `claude` is ignored. |
+| `PI_CLAUDE_NATIVE_FINGERPRINT` | `<agent dir>/claude-native/fingerprint.json` | Path to a non-interactive capture `{ version, entrypoint, userAgent, anthropicBeta, modelBeta, modelMaxTokens, modelBudgetThinking }` (written by `capture:fingerprint --apply`). Per-model maps preserve beta, request cap, and legacy thinking profiles. An older/versionless fingerprint cannot override captured fields; a newer partial fingerprint never inherits older exact-id rules. |
 | `PI_CLAUDE_NATIVE_BASE_URL` | `https://api.anthropic.com` | Route through a proxy/gateway (e.g. the capture proxy). |
 | `PI_CLAUDE_NATIVE_DEBUG` | _(off)_ | JSONL path; logs the transformed body per request. |
 | `PI_CLAUDE_NATIVE_MODELS` / `…_FILE` | _(none)_ | JSON array of model overrides (inline or file) merged over the list. |
@@ -174,7 +198,8 @@ rest:
 - **Version is derived.** `cc_version` / `user-agent` read your installed
   `claude`'s version from its own state files (`~/.claude/.last-update-result.json`,
   then `~/.claude.json`), so they follow `claude` updates with no config. A
-  captured fingerprint never pins a version *older* than the installed `claude` —
+  captured fingerprint never pins a version *older* than either the installed
+  `claude` or the bundled capture —
   Anthropic gates model access on `cc_version`, so a stale pin would 400 with
   "Claude Code <v> does not support this model; version <n> or newer is required".
   `/claude-native` shows which source the version came from.
@@ -190,12 +215,21 @@ rest:
   ```
 
   This spins up the capture proxy, marks the proxy URL as first-party (so `cch`
-  and conditional beta flags survive), drives genuine `claude -p` across opus/
-  sonnet/haiku/fable, distills the exact `anthropic-beta` set + version, records
-  each model's captured set verbatim, and **diffs them against the current
-  defaults — base set and per-model deviations both** — telling you precisely what (if anything)
-  changed. With `--apply`, the extension auto-adopts the captured version + beta
-  (no code edit). Re-run it whenever `claude` updates or Anthropic starts 400-ing.
+  and conditional beta flags survive), drives genuine **non-interactive**
+  `claude -p` across the moving family aliases (to catch a flagship rollover)
+  plus all 11 currently exposed ids, requires both Opus and Sonnet baselines,
+  derives their
+  ordered common beta set, records every model's captured set verbatim, and
+  records its request `max_tokens`, then **diffs the common base and per-model
+  deviations against the current defaults**. With `--apply`, the extension
+  auto-adopts the reviewed version + exact per-model beta/caps/budget profiles
+  (no code edit).
+  Each run persists a completeness manifest: auxiliary requests are excluded,
+  repeated alias/exact observations must agree, and `--reuse --apply` refuses a
+  missing or incomplete manifest.
+  Re-run it whenever `claude` updates or Anthropic starts 400-ing. Interactive
+  TUI differences are a separate captured mode overlay; verify that profile with
+  the manual interactive pair in [VERIFY.md](VERIFY.md).
 
 ## "does not support this model; version N or newer is required"
 
@@ -216,12 +250,13 @@ claude --version                    # what you actually run
 Then in Pi, `/claude-native` prints the version *and where it came from*:
 
 ```
-cc_version:     2.1.261 (from your installed claude)
+cc_version:     2.1.266 (from built-in fallback)
 ```
 
-The extension now refuses to claim a version older than your installed `claude`,
-so this resolves itself on update. If the source says `captured fingerprint` and
-the version is behind, refresh the pair:
+The extension refuses to claim a version older than its bundled capture or your
+installed `claude`. It also ignores beta/entrypoint values from a fingerprint
+older than the bundle, so an old file cannot mask newer per-model defaults. If
+the fingerprint is behind, refresh the pair:
 
 ```bash
 npm run capture:fingerprint -- --apply
@@ -304,7 +339,7 @@ npm test
 unit-tested, including a golden lock on the billing-header algorithm. The
 `scripts/` folder holds the wire tooling: `capture-proxy.mjs` (+ `mitmproxy_dump.py`
 fallback) for capture, `compare-requests.mjs` for the fidelity checklist,
-`capture-fingerprint.mjs` to refresh version + beta after a `claude` update, and
+`capture-fingerprint.mjs` to refresh version + per-model beta/request caps after a `claude` update, and
 the classifier pair `dump-system-prompt.mjs` (full system-prompt dump) +
 `bisect-classifier.ts` (`npm run classifier:find` auto-isolates the trigger
 paragraph). See [AGENTS.md](AGENTS.md) for architecture and contributor guidance.

@@ -10,7 +10,7 @@
  *
  *   1. a curated SEED of known ids (always present — works offline / at load);
  *   2. extra ids discovered at runtime (Pi's built-in `anthropic` catalog and,
- *      opt-in, Anthropic's live `/v1/models` — see `discovery.ts` / `index.ts`),
+ *      by default, Anthropic's live `/v1/models` — see `discovery.ts` / `index.ts`),
  *      so a newly-shipped Claude appears on its own without editing this file; and
  *   3. user overrides from `PI_CLAUDE_NATIVE_MODELS` / `…_FILE` (highest priority).
  *
@@ -24,8 +24,8 @@
  * Effort: the adaptive models send `output_config.effort` derived from Pi's
  * thinking level via `thinkingLevelMap`. Wire effort values are
  * low/medium/high/xhigh/max — Opus 4.8/4.7 support xhigh, Opus 4.6/Sonnet 4.6
- * top out at max (so xhigh maps to max), Haiku 4.5 has no effort (budget
- * thinking only). "ultracode" is a Claude Code UI label (xhigh + multi-agent
+ * top out at max (so xhigh maps to max), while older 4.5 models use budget
+ * thinking (only Opus 4.5 also emits captured effort `high`). "ultracode" is a Claude Code UI label (xhigh + multi-agent
  * permission), not a wire value, so it is intentionally absent.
  *
  * 1M context: Opus 4.8/4.7/4.6 and Sonnet 4.6 are natively 1M, so each is a
@@ -71,7 +71,7 @@ export interface CatalogEntry {
 	/**
 	 * Whether the source says this id supports an `output_config.effort` at all.
 	 * `false` (only Anthropic's `/v1/models` states it) means the model has no
-	 * effort ladder — Haiku 4.5, Opus 4.5, Sonnet 4.5 — so a curated family
+	 * effort ladder — Haiku 4.5 and Sonnet 4.5 — so a curated family
 	 * ceiling must NOT be inherited, or Pi would offer a level the model rejects.
 	 */
 	supportsEffort?: boolean;
@@ -82,8 +82,8 @@ export interface CatalogEntry {
 	 * per-VERSION capability, not per-family: newer Claudes (opus/sonnet 4-6+) support it;
 	 * older ids (e.g. `claude-sonnet-4-5`) use budget thinking and the subscription route
 	 * 400s on an adaptive request. Carried from Pi's catalog so a DISCOVERED id inherits its
-	 * real capability instead of the blanket family default. `undefined` when the source
-	 * (e.g. `/v1/models`, which can't tell adaptive from budget) doesn't say.
+	 * real capability instead of the blanket family default. Live `/v1/models` responses
+	 * derive it from `capabilities.thinking.types`; `undefined` means the source did not say.
 	 */
 	forceAdaptiveThinking?: boolean;
 }
@@ -125,7 +125,6 @@ const FAMILY_DEFAULTS: Record<KnownFamily, FamilyDefault> = {
 		cost: { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 },
 		maxTokens: 128000,
 		compat: { forceAdaptiveThinking: true },
-		thinkingLevelMap: { xhigh: "max" },
 		context: "single-1m",
 	},
 	sonnet: {
@@ -202,31 +201,30 @@ export function parseModelId(id: string): { family: string; versionLabel: string
 }
 
 /**
- * Per-id refinements of the family default, for facts that are not derivable
- * (which models genuinely support the higher `xhigh` effort, and which disable
- * temperature). Anything not listed here inherits the conservative family
- * default. Re-capture before claiming a new id supports `xhigh`.
+ * Exact per-id fallbacks for the curated seed and captured current generation.
+ * Live discovery normally derives these capabilities; the overlays keep load-
+ * time/offline registration exact. Re-capture before claiming a new id supports
+ * `xhigh`, `max`, or adaptive-only behavior.
  */
 const ID_OVERRIDES: Record<string, Pick<NativeModel, "compat" | "thinkingLevelMap">> = {
-	// Opus 5 is DISCOVERED (not seeded), but the conservative opus family default
-	// would cap it at `max`. Re-captured on claude 2.1.261 — `claude --model opus`
+	// Opus 5 is DISCOVERED (not seeded). Re-captured on claude 2.1.266 —
+	// `claude --model opus`
 	// resolves to `claude-opus-5` and sends `output_config.effort: "xhigh"` — so the
 	// higher ceiling is confirmed on the wire, not assumed. Adaptive-only per
 	// `/v1/models` (`thinking.types.enabled.supported: false`), hence no temperature.
 	"claude-opus-5": {
 		compat: { forceAdaptiveThinking: true, supportsTemperature: false },
-		thinkingLevelMap: { xhigh: "xhigh", off: null },
+		thinkingLevelMap: { xhigh: "xhigh", max: "max", off: null },
 	},
-	// Sonnet 5 is DISCOVERED (not seeded). Re-captured on claude 2.1.261 —
+	// Sonnet 5 is DISCOVERED (not seeded). Re-captured on claude 2.1.266 —
 	// `claude --model sonnet` resolves to `claude-sonnet-5` and sends
-	// `output_config.effort: "xhigh"`. The conservative sonnet family default has no
-	// thinkingLevelMap (caps at max); this confirms the higher ceiling on the wire.
+	// `output_config.effort: "xhigh"`; the live endpoint also advertises wire max.
 	// Adaptive-ONLY per `/v1/models` (`thinking.types.enabled.supported: false`),
-	// like Opus 5 — Pi's bundled catalog omits both facts for this id, and the
-	// catalog wins the merge, so they are pinned here where the overlay wins.
+	// like Opus 5. Pi's bundled catalog omits `off: null` and temperature=false for
+	// this id, so the exact overlay completes its otherwise-correct effort map.
 	"claude-sonnet-5": {
 		compat: { forceAdaptiveThinking: true, supportsTemperature: false },
-		thinkingLevelMap: { xhigh: "xhigh", off: null },
+		thinkingLevelMap: { xhigh: "xhigh", max: "max", off: null },
 	},
 	// Seed ids deliberately bypass the catalog (so the offline line-up is stable),
 	// which means `off: null` has to be stated here. Both are ADAPTIVE-ONLY per
@@ -237,11 +235,23 @@ const ID_OVERRIDES: Record<string, Pick<NativeModel, "compat" | "thinkingLevelMa
 	// thinking, so they must NOT carry `off: null`.
 	"claude-opus-4-8": {
 		compat: { forceAdaptiveThinking: true, supportsTemperature: false },
-		thinkingLevelMap: { xhigh: "xhigh", off: null },
+		thinkingLevelMap: { xhigh: "xhigh", max: "max", off: null },
 	},
 	"claude-opus-4-7": {
 		compat: { forceAdaptiveThinking: true, supportsTemperature: false },
-		thinkingLevelMap: { xhigh: "xhigh", off: null },
+		thinkingLevelMap: { xhigh: "xhigh", max: "max", off: null },
+	},
+	// The 2026-09-09 live capability cache reports no native xhigh for these two,
+	// but does report max. Pi's xhigh UI tier therefore maps down to wire `max`,
+	// while its max tier remains available directly. Both support budget thinking,
+	// so off must continue to send `thinking: {type:"disabled"}` (no `off: null`).
+	"claude-opus-4-6": {
+		compat: { forceAdaptiveThinking: true },
+		thinkingLevelMap: { xhigh: "max", max: "max" },
+	},
+	"claude-sonnet-4-6": {
+		compat: { forceAdaptiveThinking: true },
+		thinkingLevelMap: { xhigh: "max", max: "max" },
 	},
 };
 
@@ -275,7 +285,7 @@ function displayName(family: string, versionLabel: string): string {
  * sonnet 1M, haiku 200K, unknown → catalog). Returns `[]` for ids that should
  * not be exposed.
  */
-function buildFamilyModels(id: string, fromCatalog?: CatalogEntry): NativeModel[] {
+function buildFamilyModels(id: string, fromCatalog?: CatalogEntry, isSeed = false): NativeModel[] {
 	const parsed = parseModelId(id);
 	if (!parsed) return [];
 	const { family, versionLabel } = parsed;
@@ -286,8 +296,10 @@ function buildFamilyModels(id: string, fromCatalog?: CatalogEntry): NativeModel[
 	const maxTokens = fromCatalog?.maxTokens ?? known?.maxTokens ?? 64000;
 	const reasoning = fromCatalog?.reasoning ?? true;
 	const input = fromCatalog?.input ?? ["text", "image"];
-	// Known families keep their exact curated compat (haiku intentionally has none);
-	// unknown families default to adaptive thinking when they reason.
+	// Known families keep their exact curated compat (haiku intentionally has none).
+	// Unknown families must not infer adaptive thinking merely from `reasoning`:
+	// budget-thinking models reason too, and sending adaptive to one is a hard 400.
+	// Live discovery / Pi's catalog must state the capability positively.
 	// LAYER these, never replace: family default (the only source for a SEED id) →
 	// catalog / live `/v1/models` capability (authoritative for a DISCOVERED id) →
 	// ID_OVERRIDES (an explicit pin, always wins).
@@ -297,13 +309,18 @@ function buildFamilyModels(id: string, fromCatalog?: CatalogEntry): NativeModel[
 	// Claude Code never makes and the subscription route rejects. Layering also means
 	// a NEWLY-SHIPPED model inherits its real ceiling from the endpoint instead of the
 	// conservative family default, so it needs no hand-written entry here.
-	const compatBag: Record<string, unknown> = { ...(known?.compat ?? (known || !reasoning ? {} : { forceAdaptiveThinking: true })) };
+	// Family defaults are capture evidence for the curated SEED, not proof for a
+	// newly discovered version. New ids require a positive per-id capability or an
+	// exact overlay; otherwise preserve an explicit budget signal for the request
+	// serializer and beta selector.
+	const compatBag: Record<string, unknown> = { ...(isSeed ? known?.compat ?? {} : {}) };
+	if (!isSeed && fromCatalog?.forceAdaptiveThinking !== true) compatBag.forceAdaptiveThinking = false;
 	// forceAdaptiveThinking is per-VERSION, not per-family: the curated family default marks
 	// the whole family adaptive, but an older DISCOVERED id (e.g. `claude-sonnet-4-5`) does not
 	// support it and the subscription route 400s on adaptive.
 	if (fromCatalog && typeof fromCatalog.forceAdaptiveThinking === "boolean") {
 		if (fromCatalog.forceAdaptiveThinking) compatBag.forceAdaptiveThinking = true;
-		else delete compatBag.forceAdaptiveThinking;
+		else compatBag.forceAdaptiveThinking = false;
 	}
 	if (fromCatalog && typeof fromCatalog.supportsTemperature === "boolean") {
 		compatBag.supportsTemperature = fromCatalog.supportsTemperature;
@@ -317,7 +334,7 @@ function buildFamilyModels(id: string, fromCatalog?: CatalogEntry): NativeModel[
 	// being defined at all means "this ladder is fully known". Without this, Opus 4.5
 	// (effort: low/medium/high, NO xhigh, NO max) would keep the opus family's
 	// `xhigh → max` and Pi would offer a level the model rejects.
-	const familyLevels = fromCatalog?.supportsEffort !== undefined ? undefined : known?.thinkingLevelMap;
+	const familyLevels = isSeed && fromCatalog?.supportsEffort === undefined ? known?.thinkingLevelMap : undefined;
 	const thinkingLevelMap = mergeThinkingLevels(familyLevels, fromCatalog?.thinkingLevelMap, overlay?.thinkingLevelMap);
 
 	const make = (contextWindow: number): NativeModel => ({
@@ -341,9 +358,18 @@ function buildFamilyModels(id: string, fromCatalog?: CatalogEntry): NativeModel[
 	// (`claude-opus-4-1` / `claude-opus-4-5` are 200K). Inheriting 1M for those makes
 	// Pi believe it has 5× the room it does, so it never compacts and the request
 	// dies on a hard "prompt too long" 400. Seed ids are passed no catalog entry, so
-	// their pinned windows stay byte-stable.
-	if (known) return [make(fromCatalog?.contextWindow ?? (known.context === "single-1m" ? 1000000 : 200000))];
-	return [make(fromCatalog?.contextWindow ?? 200000)];
+	// their pinned windows stay byte-stable. For every non-seed entry, a window
+	// above 200K additionally requires a positive per-id adaptive signal from the
+	// catalog/live endpoint or an exact captured ID overlay. `reasoning: true` and
+	// a broad family default are not sufficient proof. User overrides are applied
+	// later and remain an explicit escape hatch.
+	const familyWindow = known?.context === "single-1m" ? 1000000 : 200000;
+	if (isSeed) return [make(familyWindow)];
+	const advertisedWindow = fromCatalog?.contextWindow ?? familyWindow;
+	const overlayForcesAdaptive =
+		(overlay?.compat as { forceAdaptiveThinking?: boolean } | undefined)?.forceAdaptiveThinking === true;
+	const adaptiveIsProven = fromCatalog?.forceAdaptiveThinking === true || overlayForcesAdaptive;
+	return [make(advertisedWindow > 200000 && !adaptiveIsProven ? 200000 : advertisedWindow)];
 }
 
 function isCompleteModel(value: ModelOverride): value is NativeModel {
@@ -393,8 +419,9 @@ export function buildNativeModels(opts?: {
 	const out: NativeModel[] = [];
 	const indexById = new Map<string, number>();
 	for (const id of ids) {
-		const fromCatalog = (SEED_IDS as readonly string[]).includes(id) ? undefined : opts?.catalog?.get(id);
-		for (const model of buildFamilyModels(id, fromCatalog)) {
+		const isSeed = (SEED_IDS as readonly string[]).includes(id);
+		const fromCatalog = isSeed ? undefined : opts?.catalog?.get(id);
+		for (const model of buildFamilyModels(id, fromCatalog, isSeed)) {
 			if (indexById.has(model.id)) continue;
 			indexById.set(model.id, out.length);
 			out.push(model);

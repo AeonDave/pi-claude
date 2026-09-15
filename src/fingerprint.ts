@@ -39,8 +39,9 @@ export const VERSION_RE = /^\d+\.\d+\.\d+$/;
 /**
  * A fingerprint captured from a real `claude` run by
  * `scripts/capture-fingerprint.mjs`. When present it overrides the hardcoded
- * defaults so the version and the `anthropic-beta` set stay a consistent,
- * freshly-captured pair. Path: `PI_CLAUDE_NATIVE_FINGERPRINT`, else
+ * non-interactive defaults so the version, per-model `anthropic-beta`, and
+ * request caps stay a consistent, freshly-captured `claude -p` fingerprint.
+ * Interactive mode-specific signals are layered separately. Path: `PI_CLAUDE_NATIVE_FINGERPRINT`, else
  * `<agent dir>/claude-native/fingerprint.json` (see `getStateDir`), with the
  * pre-1.5.0 `~/.pi/claude-native-fingerprint.json` still read as a fallback.
  */
@@ -57,6 +58,14 @@ export interface Fingerprint {
 	 * deltas, and an older extension simply ignores the key.
 	 */
 	modelBeta?: Record<string, string>;
+	/**
+	 * Per-model `max_tokens` observed on the genuine request. Anthropic's model
+	 * endpoint/catalog advertises the absolute API ceiling, but Claude Code 2.1.266
+	 * deliberately requests a lower cap (64K or 32K on the captured models).
+	 */
+	modelMaxTokens?: Record<string, number>;
+	/** Exact legacy budget-thinking body per captured wire id. */
+	modelBudgetThinking?: Record<string, { budgetTokens: number; effort?: "low" | "medium" | "high" | "xhigh" | "max" }>;
 }
 
 /** A hand-edited fingerprint must never crash the session — validate every field. */
@@ -77,6 +86,30 @@ export function coerceFingerprint(data: unknown): Fingerprint | null {
 			if (typeof value === "string" && value.length > 0) map[id] = value;
 		}
 		if (Object.keys(map).length > 0) out.modelBeta = map;
+	}
+	const modelMaxTokens = raw.modelMaxTokens;
+	if (modelMaxTokens && typeof modelMaxTokens === "object" && !Array.isArray(modelMaxTokens)) {
+		const map: Record<string, number> = {};
+		for (const [id, value] of Object.entries(modelMaxTokens as Record<string, unknown>)) {
+			if (typeof value === "number" && Number.isSafeInteger(value) && value > 0) map[id] = value;
+		}
+		if (Object.keys(map).length > 0) out.modelMaxTokens = map;
+	}
+	const modelBudgetThinking = raw.modelBudgetThinking;
+	if (modelBudgetThinking && typeof modelBudgetThinking === "object" && !Array.isArray(modelBudgetThinking)) {
+		const map: NonNullable<Fingerprint["modelBudgetThinking"]> = {};
+		const efforts = new Set(["low", "medium", "high", "xhigh", "max"]);
+		for (const [id, value] of Object.entries(modelBudgetThinking as Record<string, unknown>)) {
+			if (!value || typeof value !== "object" || Array.isArray(value)) continue;
+			const profile = value as Record<string, unknown>;
+			if (typeof profile.budgetTokens !== "number" || !Number.isSafeInteger(profile.budgetTokens) || profile.budgetTokens <= 0) continue;
+			if (profile.effort !== undefined && (typeof profile.effort !== "string" || !efforts.has(profile.effort))) continue;
+			map[id] = {
+				budgetTokens: profile.budgetTokens,
+				...(profile.effort ? { effort: profile.effort as NonNullable<Fingerprint["modelBudgetThinking"]>[string]["effort"] } : {}),
+			};
+		}
+		if (Object.keys(map).length > 0) out.modelBudgetThinking = map;
 	}
 	return out;
 }
@@ -232,4 +265,3 @@ export function getModelCacheReadPaths(): string[] {
 	const explicit = process.env.PI_CLAUDE_NATIVE_MODELS_CACHE?.trim();
 	return explicit ? [explicit] : [getModelCachePath(), legacyStatePath("claude-native-models.json")];
 }
-

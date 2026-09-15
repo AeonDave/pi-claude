@@ -82,10 +82,11 @@ function modelInfoToCatalog(m: ModelInfo): CatalogEntry {
 	const adaptive = isSupported(caps?.thinking?.types?.adaptive);
 	const budget = isSupported(caps?.thinking?.types?.enabled);
 
-	// Only a source that explicitly reports the thinking TYPES can rule adaptive
-	// out; an entry that simply omits them (an older cache, a partial response)
-	// tells us nothing and must not trigger the clamp below.
-	const knownNonAdaptive = !!caps?.thinking?.types && !adaptive;
+	// A >200K window is safe only when the endpoint positively identifies the
+	// model as adaptive. An older/partial response that omits thinking types is not
+	// evidence: trusting its larger number would make Pi skip compaction even
+	// though this provider never sends the context-1m beta.
+	const knownAdaptive = !!caps?.thinking?.types && adaptive;
 
 	if (typeof m.max_input_tokens === "number" && m.max_input_tokens > 0) {
 		// Guard: some older ids advertise a 1M window that is only unlocked by the
@@ -98,7 +99,7 @@ function modelInfoToCatalog(m: ModelInfo): CatalogEntry {
 		// needs the beta), so gate the >200K window on adaptive support. Erring low
 		// only costs an early compaction; erring high is fatal. Pi's own catalog
 		// wins this field anyway wherever it knows the id.
-		entry.contextWindow = m.max_input_tokens > 200_000 && knownNonAdaptive ? 200_000 : m.max_input_tokens;
+		entry.contextWindow = m.max_input_tokens > 200_000 && !knownAdaptive ? 200_000 : m.max_input_tokens;
 	}
 	if (typeof m.max_tokens === "number" && m.max_tokens > 0) entry.maxTokens = m.max_tokens;
 	if (typeof caps?.thinking?.supported === "boolean") entry.reasoning = caps.thinking.supported;

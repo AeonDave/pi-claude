@@ -2,10 +2,12 @@
 /**
  * All-in-one Claude Code fingerprint capture.
  *
- * Starts the capture proxy, drives genuine `claude -p` across several models,
+ * Starts the capture proxy, drives genuine non-interactive `claude -p` across
+ * several models,
  * then distills the wire values this extension needs into:
- *   - captures/fingerprint-<version>.json  — machine-readable, the SAME shape
- *     `src/constants.ts` reads (version + anthropic-beta), ready to apply; and
+ *   - captures/fingerprint-<version>.json  — machine-readable distilled capture
+ *     (version + per-model beta, max-token and budget-thinking profiles), ready
+ *     to review or apply; and
  *   - captures/fingerprint-report.md       — human-readable diff vs the current
  *     defaults, telling you exactly what (if anything) changed.
  *
@@ -26,8 +28,9 @@
  */
 
 import { spawn } from "node:child_process";
-import { existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
-import net from "node:net";
+import { randomBytes } from "node:crypto";
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
+import http from "node:http";
 import { homedir } from "node:os";
 import { delimiter, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -35,8 +38,28 @@ import { fileURLToPath } from "node:url";
 // beta set are single-sourced from the extension itself (run via `tsx`, see the
 // `capture:fingerprint` script). Re-deriving them here is what lets the script and
 // the extension drift apart.
-import { DEFAULT_ANTHROPIC_BETA } from "../src/constants.ts";
+import {
+	CLAUDE_AGENT_SDK_IDENTITY,
+	DEFAULT_ANTHROPIC_BETA,
+	DEFAULT_CC_ENTRYPOINT,
+	DEFAULT_PRINT_THINKING_DISPLAY,
+} from "../src/constants.ts";
 import { getStateDir } from "../src/fingerprint.ts";
+import {
+	assertConsistentFingerprintCandidate,
+	assertNoCanonicalModelDrift,
+	assertNonInteractiveCaptureProfile,
+	assertRequestedCapturesComplete,
+	buildModelBeta,
+	buildModelBudgetThinking,
+	buildModelMaxTokens,
+	computeBetaDeviations,
+	DEFAULT_CAPTURE_MODELS,
+	isCaptureProxyHealthResponse,
+	isRequestedMainCapture,
+	parseCaptureProfile,
+	selectFingerprintBaseline,
+} from "./fingerprint-baseline.ts";
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const ROOT = resolve(HERE, "..");
@@ -44,6 +67,7 @@ const CAPTURE_DIR = join(ROOT, "captures");
 const RAW_DIR = join(CAPTURE_DIR, "fp-raw");
 const PORT = Number(process.env.PI_CAPTURE_PORT || 8129);
 const PROXY = join(HERE, "capture-proxy.mjs");
+const PROXY_HEALTH_PATH = "/__pi_claude_capture_health";
 
 const args = process.argv.slice(2);
 const APPLY = args.includes("--apply");
@@ -51,9 +75,14 @@ const APPLY = args.includes("--apply");
 // `claude` again. Lets the report/fingerprint logic be iterated without spending
 // subscription calls, and recovers a run that captured cleanly but failed later.
 const REUSE = args.includes("--reuse");
+// Capture moving family aliases (so the next flagship is seen on rollover) plus
+// every currently exposed id. Aliases alone can derive a common base, but cannot
+// safely refresh `modelBeta`: applying a new-version base through old built-in
+// per-model deltas would manufacture uncaptured sets for the remaining models.
+const DEFAULT_MODELS = DEFAULT_CAPTURE_MODELS.join(",");
 const modelsArg = (() => {
 	const i = args.indexOf("--models");
-	return i >= 0 && args[i + 1] ? args[i + 1] : "opus,sonnet,haiku,fable";
+	return i >= 0 && args[i + 1] ? args[i + 1] : DEFAULT_MODELS;
 })();
 const MODELS = modelsArg.split(",").map((m) => m.trim()).filter(Boolean);
 if (MODELS.length === 0 || MODELS.some((model) => !/^[a-zA-Z0-9][a-zA-Z0-9._:-]*$/.test(model))) {
@@ -64,6 +93,27 @@ if (MODELS.length === 0 || MODELS.some((model) => !/^[a-zA-Z0-9][a-zA-Z0-9._:-]*
 const ONE_M_BETA = "context-1m-2025-08-07";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const CLAUDE_PROMPT = "reply with the single word ok";
+
+function firstUserMessageText(body) {
+	const message = body?.messages?.find?.((item) => item?.role === "user");
+	if (typeof message?.content === "string") return message.content;
+	if (!Array.isArray(message?.content)) return undefined;
+	// Claude prepends hook/system-reminder text blocks; the actual `-p` probe is
+	// the final user text block.
+	for (let i = message.content.length - 1; i >= 0; i--) {
+		const block = message.content[i];
+		if (block?.type === "text" && typeof block.text === "string") return block.text;
+	}
+	return undefined;
+}
+
+function readRawCapture(path) {
+	try {
+		return JSON.parse(readFileSync(path, "utf8"));
+	} catch {
+		return null;
+	}
+}
 
 function resolveClaudeExecutable() {
 	const override = process.env.PI_CLAUDE_NATIVE_CLAUDE_BIN?.trim();
@@ -80,22 +130,93 @@ function resolveClaudeExecutable() {
 	return process.platform === "win32" ? "claude.exe" : "claude";
 }
 
-function waitForPort(port, timeoutMs = 8000) {
+function probeCaptureProxy(port, expectedNonce, timeoutMs = 500) {
+	return new Promise((resolveP) => {
+		let settled = false;
+		const finish = (healthy) => {
+			if (settled) return;
+			settled = true;
+			resolveP(healthy);
+		};
+		const request = http.get(
+			{
+				host: "127.0.0.1",
+				port,
+				path: PROXY_HEALTH_PATH,
+				headers: { accept: "application/json" },
+			},
+			(response) => {
+				const chunks = [];
+				let bytes = 0;
+				response.on("data", (chunk) => {
+					bytes += chunk.length;
+					if (bytes > 4096) {
+						response.destroy();
+						finish(false);
+						return;
+					}
+					chunks.push(chunk);
+				});
+				response.on("end", () => {
+					finish(isCaptureProxyHealthResponse(response.statusCode, Buffer.concat(chunks).toString("utf8"), expectedNonce));
+				});
+				response.on("error", () => finish(false));
+			},
+		);
+		request.setTimeout(timeoutMs, () => request.destroy(new Error("capture proxy health check timed out")));
+		request.on("error", () => finish(false));
+	});
+}
+
+function waitForOwnedProxy(child, port, expectedNonce, timeoutMs = 8000) {
 	return new Promise((resolveP, rejectP) => {
 		const deadline = Date.now() + timeoutMs;
-		const tick = () => {
-			const sock = net.connect(port, "127.0.0.1");
-			sock.on("connect", () => {
-				sock.end();
-				resolveP();
-			});
-			sock.on("error", () => {
-				sock.destroy();
-				if (Date.now() > deadline) rejectP(new Error(`proxy did not open :${port}`));
-				else setTimeout(tick, 120);
-			});
+		let retryTimer;
+		let settled = false;
+		const cleanup = () => {
+			if (retryTimer) clearTimeout(retryTimer);
+			child.off("exit", onExit);
+			child.off("error", onError);
 		};
-		tick();
+		const succeed = () => {
+			if (settled) return;
+			settled = true;
+			cleanup();
+			resolveP();
+		};
+		const fail = (error) => {
+			if (settled) return;
+			settled = true;
+			cleanup();
+			rejectP(error);
+		};
+		const onExit = (code, signal) => {
+			fail(new Error(`capture proxy exited before authenticated readiness (code=${code ?? "null"}, signal=${signal ?? "none"})`));
+		};
+		const onError = (error) => fail(new Error(`capture proxy failed to start: ${error.message}`));
+		const tick = async () => {
+			if (settled) return;
+			if (child.exitCode !== null || child.signalCode !== null) {
+				onExit(child.exitCode, child.signalCode);
+				return;
+			}
+			const healthy = await probeCaptureProxy(port, expectedNonce);
+			if (settled) return;
+			if (healthy) {
+				if (child.exitCode !== null || child.signalCode !== null) onExit(child.exitCode, child.signalCode);
+				else succeed();
+				return;
+			}
+			if (Date.now() >= deadline) {
+				fail(new Error(`spawned capture proxy did not prove ownership of 127.0.0.1:${port}`));
+				return;
+			}
+			retryTimer = setTimeout(() => void tick(), 120);
+		};
+
+		child.once("exit", onExit);
+		child.once("error", onError);
+		void tick();
 	});
 }
 
@@ -139,11 +260,32 @@ function betaList(value) {
 
 /** Which alias triggered each raw capture — persisted so `--reuse` keeps it. */
 const OWNERS_PATH = join(RAW_DIR, "owners.json");
+const RUN_MANIFEST_PATH = join(RAW_DIR, "run-manifest.json");
+
+function readRunManifest() {
+	try {
+		const value = JSON.parse(readFileSync(RUN_MANIFEST_PATH, "utf8"));
+		if (
+			value?.schemaVersion !== 1 ||
+			value?.prompt !== CLAUDE_PROMPT ||
+			!Array.isArray(value.requestedModels) ||
+			value.requestedModels.length === 0 ||
+			value.requestedModels.some((model) => typeof model !== "string" || !model) ||
+			!Array.isArray(value.runs) ||
+			value.runs.length !== value.requestedModels.length ||
+			value.requestedModels.some((model) => !value.runs.some((run) => run?.model === model))
+		) return null;
+		return value;
+	} catch {
+		return null;
+	}
+}
 
 async function main() {
 	mkdirSync(RAW_DIR, { recursive: true });
 	const captureOwner = new Map();
 	const runResults = [];
+	let runManifest = null;
 
 	if (REUSE) {
 		console.log("> --reuse: re-distilling from existing captures in captures/fp-raw/");
@@ -154,32 +296,43 @@ async function main() {
 		} catch {
 			console.warn("! no owners.json — base-set selection falls back to matching by wire model name");
 		}
+		runManifest = readRunManifest();
+		if (runManifest) {
+			runResults.push(...runManifest.runs);
+			assertRequestedCapturesComplete(runResults);
+		} else if (APPLY) {
+			throw new Error("--reuse --apply requires a complete run-manifest.json; run a fresh capture first");
+		} else {
+			console.warn("! no run-manifest.json — completeness cannot be proven; --apply is disabled for this legacy reuse");
+		}
 	} else {
 		await captureFromClaude(captureOwner, runResults);
 	}
 
-	await distill(captureOwner, runResults);
+	await distill(captureOwner, runResults, runManifest);
 }
 
 async function captureFromClaude(captureOwner, runResults) {
-	// Clear stale raw captures so we only read this run's.
-	for (const f of readdirSync(RAW_DIR)) {
-		if (/^req-fp-\d+\.json$/.test(f)) {
-			try {
-				unlinkSync(join(RAW_DIR, f));
-			} catch {
-				/* ignore */
-			}
-		}
-	}
-
 	console.log(`> starting capture proxy on :${PORT}`);
+	const healthNonce = randomBytes(32).toString("hex");
 	const proxy = spawn(process.execPath, [PROXY], {
-		env: { ...process.env, PI_CAPTURE_PORT: String(PORT), PI_CAPTURE_DIR: RAW_DIR, PI_CAPTURE_LABEL: "fp" },
+		env: {
+			...process.env,
+			PI_CAPTURE_PORT: String(PORT),
+			PI_CAPTURE_DIR: RAW_DIR,
+			PI_CAPTURE_LABEL: "fp",
+			PI_CAPTURE_HEALTH_NONCE: healthNonce,
+		},
 		stdio: "ignore",
 	});
 	try {
-		await waitForPort(PORT);
+		await waitForOwnedProxy(proxy, PORT, healthNonce);
+		// Only retire the last reusable evidence after the newly-spawned proxy has
+		// proved ownership of the port. Fail closed on a deletion error: mixing an
+		// old raw request/owners sidecar into this run is worse than aborting.
+		for (const f of readdirSync(RAW_DIR)) {
+			if (/^req-fp-\d+\.json$/.test(f) || f === "owners.json" || f === "run-manifest.json") unlinkSync(join(RAW_DIR, f));
+		}
 		const baseUrl = `http://127.0.0.1:${PORT}`;
 		for (const model of MODELS) {
 			console.log(`> capturing claude --model ${model} ...`);
@@ -188,7 +341,13 @@ async function captureFromClaude(captureOwner, runResults) {
 			await sleep(300);
 			const files = readdirSync(RAW_DIR).filter((f) => /^req-fp-\d+\.json$/.test(f) && !before.has(f));
 			for (const file of files) captureOwner.set(file, model);
-			runResults.push({ model, ...result, captures: files.length });
+			const mainModels = files
+				.map((file) => readRawCapture(join(RAW_DIR, file)))
+				.filter((rec) =>
+					isRequestedMainCapture(model, rec?.body?.model || "", firstUserMessageText(rec?.body), CLAUDE_PROMPT),
+				)
+				.map((rec) => rec.body.model);
+			runResults.push({ model, ...result, captures: files.length, mainCaptures: mainModels.length, wireModels: mainModels });
 		}
 	} finally {
 		proxy.kill();
@@ -198,30 +357,76 @@ async function captureFromClaude(captureOwner, runResults) {
 	// Persist the file→alias map so `--reuse` can pick the same base set.
 	try {
 		writeFileSync(OWNERS_PATH, JSON.stringify(Object.fromEntries(captureOwner), null, 2), "utf8");
+		writeFileSync(RUN_MANIFEST_PATH, JSON.stringify({
+			schemaVersion: 1,
+			prompt: CLAUDE_PROMPT,
+			requestedModels: MODELS,
+			runs: runResults.map((run) => ({
+				model: run.model,
+				captures: run.captures,
+				mainCaptures: run.mainCaptures,
+				wireModels: run.wireModels,
+				code: run.code,
+				signal: run.signal,
+				timedOut: run.timedOut,
+				error: run.error?.message,
+			})),
+		}, null, 2), "utf8");
 	} catch {
-		// best-effort; --reuse just falls back to name matching
+		// Best-effort for report-only reuse. `--reuse --apply` refuses missing state.
 	}
 }
 
-async function distill(captureOwner, runResults) {
+async function distill(captureOwner, runResults, runManifest) {
+	// A failed auxiliary model must make the whole live capture non-publishable.
+	// Gate before writing the report/fingerprint or touching active user state.
+	// `--reuse` has no run results and validates the persisted captures below.
+	if (!REUSE) assertRequestedCapturesComplete(runResults);
+
 	// Collect the largest capture per wire-model.
 	const byModel = new Map();
+	const captureTimes = [];
 	for (const f of readdirSync(RAW_DIR)) {
 		if (!/^req-fp-\d+\.json$/.test(f)) continue;
-		let rec;
-		try {
-			rec = JSON.parse(readFileSync(join(RAW_DIR, f), "utf8"));
-		} catch {
-			continue;
-		}
+		const capturePath = join(RAW_DIR, f);
+		const rec = readRawCapture(capturePath);
 		if (!rec?.body?.model) continue;
+		const owner = captureOwner.get(f);
+		const firstUserText = firstUserMessageText(rec.body);
+		if (firstUserText !== CLAUDE_PROMPT) continue;
+		if (owner && !isRequestedMainCapture(owner, rec.body.model, firstUserText, CLAUDE_PROMPT)) continue;
+		captureTimes.push(statSync(capturePath).mtimeMs);
+		const h = rec.headers || {};
+		const ua = h["user-agent"] || "";
+		const sys0 = (rec.body.system && rec.body.system[0] && rec.body.system[0].text) || "";
+		const profile = parseCaptureProfile(rec.body.model, ua, sys0);
+		const beta = betaList(h["anthropic-beta"]);
+		const observation = {
+			wireModel: rec.body.model,
+			userAgent: ua,
+			version: profile.version,
+			entrypoint: profile.entrypoint,
+			effort: rec.body.output_config?.effort ?? null,
+			maxTokens: rec.body.max_tokens,
+			thinkingType: rec.body.thinking?.type ?? null,
+			budgetTokens: rec.body.thinking?.budget_tokens ?? null,
+			identity: rec.body.system?.[1]?.text ?? null,
+			thinkingDisplay: rec.body.thinking?.display ?? null,
+			hasCch: / cch=[0-9a-f]{5};/.test(sys0),
+			has1mBeta: beta.includes(ONE_M_BETA),
+			beta,
+			triggeredBy: owner ? [owner] : [],
+		};
 		const size = JSON.stringify(rec.body).length;
 		const prev = byModel.get(rec.body.model);
 		const triggeredBy = new Set(prev?.triggeredBy || []);
-		const owner = captureOwner.get(f);
 		if (owner) triggeredBy.add(owner);
-		if (!prev || size > prev.size) byModel.set(rec.body.model, { rec, size, triggeredBy });
-		else prev.triggeredBy = triggeredBy;
+		if (prev) assertConsistentFingerprintCandidate(prev.observation, observation);
+		if (!prev || size > prev.size) byModel.set(rec.body.model, { rec, size, triggeredBy, observation });
+		else {
+			prev.triggeredBy = triggeredBy;
+			prev.observation.triggeredBy = [...triggeredBy];
+		}
 	}
 
 	if (byModel.size === 0) {
@@ -229,71 +434,63 @@ async function distill(captureOwner, runResults) {
 		process.exit(1);
 	}
 
-	const perModel = {};
-	let version;
-	for (const [wireModel, { rec, triggeredBy }] of byModel) {
-		const h = rec.headers || {};
-		const ua = h["user-agent"] || "";
-		const ver = (ua.match(/claude-cli\/(\d+\.\d+\.\d+)/) || [])[1];
-		const sys0 = (rec.body.system && rec.body.system[0] && rec.body.system[0].text) || "";
-		const billing = (sys0.match(/cc_version=(\d+\.\d+\.\d+)\.[0-9a-f]{3}; cc_entrypoint=([\w-]+);/) || []);
-		const beta = betaList(h["anthropic-beta"]);
-		const detectedVersion = ver || billing[1];
-		perModel[wireModel] = {
-			wireModel,
-			userAgent: ua,
-			version: detectedVersion,
-			entrypoint: billing[2] || null,
-			effort: rec.body.output_config?.effort ?? null,
-			hasCch: / cch=[0-9a-f]{5};/.test(sys0),
-			has1mBeta: beta.includes(ONE_M_BETA),
-			beta,
-			triggeredBy: [...triggeredBy],
-		};
-		if (detectedVersion && !version) version = detectedVersion;
+	if (REUSE && runManifest) {
+		const observedRuns = runManifest.requestedModels.map((model) => ({
+			model,
+			captures: 0,
+			mainCaptures: [...byModel.values()].filter(({ observation }) =>
+				observation.triggeredBy.includes(model) &&
+				isRequestedMainCapture(model, observation.wireModel, CLAUDE_PROMPT, CLAUDE_PROMPT),
+			).length,
+		}));
+		assertRequestedCapturesComplete(observedRuns);
 	}
 
-	// The provider default is the adaptive normal-turn set, and ONLY Opus or Sonnet
-	// may define it. Haiku omits three effort-only flags (a subset), while Fable 5.1
-	// ADDS `per-turn-control-2026-07-01` (a superset) — promoting either to the
-	// global base would send a model-specific flag to every model, and Anthropic
-	// 400s on an unexpected beta. A fable/haiku-only run therefore cannot produce a
-	// fingerprint.
-	// Prefer the capture triggered by the BARE alias (`--model opus` / `sonnet`):
-	// that is the current generation's adaptive normal turn, which is what the
-	// provider default must mirror. Falling back to "any opus with effort" could
-	// otherwise pick an explicitly-requested older id (claude-opus-4-6, …) and
-	// silently redefine the base set from a previous generation.
-	const candidates = Object.values(perModel);
-	const byAlias = (alias) => candidates.find((p) => p.triggeredBy.includes(alias) && p.effort);
-	const base =
-		byAlias("opus") ||
-		byAlias("sonnet") ||
-		candidates.find((p) => /opus/.test(p.wireModel) && p.effort) ||
-		candidates.find((p) => /sonnet/.test(p.wireModel) && p.effort);
-	if (!base) {
-		console.error("! no Opus/Sonnet adaptive-effort capture recorded — include opus or sonnet in --models");
-		console.error("  (Haiku sends a subset and Fable a superset; neither can define the global base set.)");
-		process.exit(1);
+	const perModel = {};
+	let version;
+	for (const [wireModel, { observation, triggeredBy }] of byModel) {
+		observation.triggeredBy = [...triggeredBy];
+		perModel[wireModel] = observation;
+		if (observation.version && !version) version = observation.version;
 	}
-	const fingerprintBeta = base.beta.filter((b) => b !== ONE_M_BETA);
+
+	// The global fallback is the ordered INTERSECTION of current Opus and Sonnet
+	// adaptive normal turns. Claude 2.1.266 proved that the two can diverge (Opus
+	// gained a model-specific flag while Sonnet did not), so selecting either one
+	// wholesale can promote a flag to models that never sent it. The selector
+	// prefers captures owned by the bare aliases and also supports comprehensive
+	// explicit-id runs by choosing each family's unique newest generation. Missing
+	// or ambiguous dual baselines are refused.
+	const candidates = Object.values(perModel);
+	assertNoCanonicalModelDrift(candidates);
+	assertNonInteractiveCaptureProfile(candidates, {
+		entrypoint: DEFAULT_CC_ENTRYPOINT,
+		identity: CLAUDE_AGENT_SDK_IDENTITY,
+		thinkingDisplay: DEFAULT_PRINT_THINKING_DISPLAY,
+	});
+	const baseline = selectFingerprintBaseline(candidates);
+	const fingerprintBeta = baseline.beta;
+	version = baseline.opus.version;
 
 	// Per-model sets are stored VERBATIM (order included — genuine Haiku does not
 	// order its flags like the base). The extension prefers these over its built-in
 	// deltas, so re-capturing is all a NEW model needs: no code change.
-	const modelBeta = {};
-	for (const p of candidates) {
-		const flags = p.beta.filter((b) => b !== ONE_M_BETA);
-		if (flags.length > 0) modelBeta[p.wireModel] = flags.join(",");
-	}
+	const modelBeta = buildModelBeta(candidates);
+	const modelMaxTokens = buildModelMaxTokens(candidates);
+	const modelBudgetThinking = buildModelBudgetThinking(candidates);
 
 	const fingerprint = {
-		capturedAt: new Date().toISOString(),
+		// On --reuse, `new Date()` would falsely date old wire evidence as a fresh
+		// capture. The newest raw-request mtime is the closest durable provenance the
+		// proxy records and is equally valid on a just-completed live run.
+		capturedAt: new Date(Math.max(...captureTimes)).toISOString(),
 		version: version || null,
-		entrypoint: base.entrypoint || null,
-		userAgent: base.userAgent || null,
+		entrypoint: baseline.opus.entrypoint || null,
+		userAgent: baseline.opus.userAgent || null,
 		anthropicBeta: fingerprintBeta.join(","),
 		modelBeta,
+		modelMaxTokens,
+		modelBudgetThinking,
 	};
 
 	// Diff vs the current hardcoded default.
@@ -304,17 +501,7 @@ async function distill(captureOwner, runResults) {
 	// Per-model deviations from the BASE set. Reporting only the base diff used to
 	// print a confident "No change" on a run whose own table showed Fable sending
 	// an extra flag — the drift was captured, displayed, and then thrown away.
-	const deviations = candidates
-		.map((p) => {
-			const flags = p.beta.filter((b) => b !== ONE_M_BETA);
-			return {
-				wireModel: p.wireModel,
-				adds: flags.filter((b) => !fingerprintBeta.includes(b)),
-				drops: fingerprintBeta.filter((b) => !flags.includes(b)),
-				reordered: flags.length === fingerprintBeta.length && flags.join(",") !== fingerprintBeta.join(","),
-			};
-		})
-		.filter((d) => d.adds.length > 0 || d.drops.length > 0 || d.reordered);
+	const deviations = computeBetaDeviations(candidates, fingerprintBeta);
 
 	const applyDest = join(getStateDir(), "fingerprint.json");
 	let removedLegacy = null;
@@ -322,11 +509,18 @@ async function distill(captureOwner, runResults) {
 	const outJson = join(CAPTURE_DIR, `fingerprint-${version || "unknown"}.json`);
 	writeFileSync(outJson, `${JSON.stringify(fingerprint, null, 2)}\n`, "utf8");
 
+	const requestedModels = [...new Set(captureOwner.values())];
+	const captureProvenance = requestedModels.length > 0
+		? `requested models: ${requestedModels.join(", ")}`
+		: REUSE
+			? "requested models unknown (owners.json unavailable)"
+			: `requested models: ${MODELS.join(", ")}`;
 	const report = [
 		`# Claude Code fingerprint — ${version || "unknown version"}`,
 		``,
-		`Captured ${fingerprint.capturedAt} from \`claude -p\` requested models: ${MODELS.join(", ")}.`,
-		`Observed wire requests: ${[...byModel.keys()].join(", ")}. Auxiliary requests are retained and attributed below.`,
+		`Captured ${fingerprint.capturedAt} from \`claude -p\`; ${captureProvenance}.`,
+		`Observed matching main requests: ${[...byModel.keys()].join(", ")}. Auxiliary traffic was excluded.`,
+		`Baseline: ordered intersection of \`${baseline.opus.wireModel}\` (Opus) and \`${baseline.sonnet.wireModel}\` (Sonnet).`,
 		``,
 		`## Values for \`src/constants.ts\``,
 		``,
@@ -335,6 +529,7 @@ async function distill(captureOwner, runResults) {
 		"```",
 		fingerprintBeta.join(",") || "(none captured)",
 		"```",
+		`- **modelMaxTokens / modelBudgetThinking**: exact captured request ceilings and legacy thinking profiles.`,
 		``,
 		`## Diff vs current \`DEFAULT_ANTHROPIC_BETA\` (${current.length} flags)`,
 		``,
@@ -358,16 +553,17 @@ async function distill(captureOwner, runResults) {
 		``,
 		`## Per model (wire)`,
 		``,
-		"| wire model | triggered by | version | entrypoint | cch | effort | context-1m | beta flags |",
-		"|------------|--------------|---------|------------|-----|--------|------------|------------|",
+		"| wire model | triggered by | version | entrypoint | cch | thinking | effort | max_tokens | context-1m | beta flags |",
+		"|------------|--------------|---------|------------|-----|----------|--------|------------|------------|------------|",
 		...[...byModel.keys()].map((m) => {
 			const p = perModel[m];
-			return `| \`${m}\` | ${p.triggeredBy.map((v) => `\`${v}\``).join(", ") || "?"} | ${p.version || "?"} | ${p.entrypoint || "?"} | ${p.hasCch ? "yes" : "no"} | ${p.effort || "—"} | ${p.has1mBeta ? "yes" : "no"} | ${p.beta.length} |`;
+			const thinking = p.thinkingType === "enabled" ? `enabled/${p.budgetTokens}` : p.thinkingType || "—";
+			return `| \`${m}\` | ${p.triggeredBy.map((v) => `\`${v}\``).join(", ") || "?"} | ${p.version || "?"} | ${p.entrypoint || "?"} | ${p.hasCch ? "yes" : "no"} | ${thinking} | ${p.effort || "—"} | ${modelMaxTokens[m]} | ${p.has1mBeta ? "yes" : "no"} | ${p.beta.length} |`;
 		}),
 		``,
 		`## Capture runs`,
 		``,
-		...runResults.map((r) => `- \`${r.model}\`: ${r.captures} request(s), ${r.timedOut ? "timed out" : r.error ? `spawn error: ${r.error.message}` : `exit ${r.code}${r.signal ? ` (${r.signal})` : ""}`}`),
+		...runResults.map((r) => `- \`${r.model}\`: ${r.captures} request(s), ${r.mainCaptures} matching main request(s), ${r.timedOut ? "timed out" : r.error ? `spawn error: ${typeof r.error === "string" ? r.error : r.error.message}` : `exit ${r.code}${r.signal ? ` (${r.signal})` : ""}`}`),
 		``,
 		`Machine fingerprint written to \`${outJson}\`.`,
 		APPLY ? `Applied to \`${applyDest}\` — the extension will auto-adopt it.` : `Run again with \`--apply\` to install it for the extension to auto-adopt.`,
@@ -396,10 +592,6 @@ async function distill(captureOwner, runResults) {
 	console.log(`✓ wrote ${outMd}`);
 	if (APPLY) console.log(`✓ applied to ${applyDest}`);
 	if (removedLegacy) console.log(`✓ removed legacy ${removedLegacy}`);
-	if (runResults.some((r) => r.captures === 0)) {
-		console.error("! one or more requested model runs produced no capture");
-		process.exitCode = 1;
-	}
 }
 
 main().catch((err) => {

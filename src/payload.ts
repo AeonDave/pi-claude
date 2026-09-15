@@ -8,7 +8,8 @@
  *   system = [ { "You are Claude Code, Anthropic's official CLI for Claude." },
  *              { <pi system prompt> } ]
  *
- * We turn it into the genuine Claude Code layout:
+ * We turn it into the genuine mode-specific layout (the identity shown here is
+ * the interactive form; print/json/rpc use the Claude Agent SDK sentence):
  *
  *   system = [ { x-anthropic-billing-header: ... },
  *              { "You are Claude Code..." },
@@ -20,6 +21,10 @@
 import { type BillingMessage, buildBillingHeaderValue } from "./billing-header.ts";
 
 const BILLING_PREFIX = "x-anthropic-billing-header:";
+const KNOWN_CLAUDE_IDENTITIES = new Set([
+	"You are Claude Code, Anthropic's official CLI for Claude.",
+	"You are a Claude agent, built on Anthropic's Claude Agent SDK.",
+]);
 
 interface SystemTextBlock {
 	type: "text";
@@ -156,6 +161,49 @@ export function applyMetadata(payload: unknown, userId: string | undefined): unk
 }
 
 /**
+ * Clamp `max_tokens` to the cap observed on genuine Claude Code for this model.
+ * Pi's catalog describes the API's larger absolute ceiling, so without this
+ * request-only transform Pi emits 128K/64K where Claude Code 2.1.266 emits
+ * 64K/32K. A deliberately smaller caller value is preserved. Pure/idempotent.
+ */
+export function applyClaudeCodeMaxTokens(payload: unknown, capturedCap: number | undefined): unknown {
+	if (!payload || typeof payload !== "object") return payload;
+	if (capturedCap === undefined || !Number.isSafeInteger(capturedCap) || capturedCap <= 0) return payload;
+	const typed = payload as AnthropicPayload;
+	// Never clamp below a budget the caller already committed to: Anthropic requires
+	// `budget_tokens < max_tokens`, and Pi sizes the budget against ITS max_tokens
+	// (`min(budget, max_tokens - 1024)`) before we ever see the payload. Lowering the
+	// cap underneath a large user-chosen budget therefore turns a working request into
+	// a hard 400. Genuine Claude Code never emits that pair either, so leaving the
+	// payload untouched is both the safe and the faithful answer.
+	const thinking = typed.thinking as { type?: unknown; budget_tokens?: unknown } | undefined;
+	if (thinking?.type === "enabled" && typeof thinking.budget_tokens === "number" && thinking.budget_tokens >= capturedCap) {
+		return payload;
+	}
+	const current = typed.max_tokens;
+	if (typeof current === "number" && current > 0 && current <= capturedCap) return payload;
+	return { ...typed, max_tokens: capturedCap };
+}
+
+/**
+ * Align Pi's built-in Claude identity with the genuine profile for this mode.
+ * Only the two exact first-party identities are replaceable; arbitrary system
+ * text is never rewritten. Pure and idempotent.
+ */
+export function applyClaudeCodeIdentity(payload: unknown, identity: string): unknown {
+	if (!payload || typeof payload !== "object" || !KNOWN_CLAUDE_IDENTITIES.has(identity)) return payload;
+	const typed = payload as AnthropicPayload;
+	const blocks = toSystemBlocks(typed.system);
+	let changed = false;
+	const next = blocks.map((block) => {
+		if (!isSystemTextBlock(block) || !KNOWN_CLAUDE_IDENTITIES.has(block.text) || block.text === identity) return block;
+		changed = true;
+		return { ...block, text: identity };
+	});
+	return changed ? { ...typed, system: next } : payload;
+}
+
+/**
  * Inject the `context_management` body field that genuine Claude Code 2.1.241+
  * sends alongside the `context-management-2025-06-27` beta flag. Tells the API to
  * clear thinking blocks from prior turns while keeping all content. Idempotent:
@@ -184,11 +232,12 @@ export function applyDiagnostics(payload: unknown): unknown {
 }
 
 /**
- * Claude Code requests redacted thinking (`display: "omitted"`) for adaptive and
- * budget modes. Pi's Anthropic path defaults to `summarized`; align this provider
- * after serialization without affecting disabled thinking. Pure and idempotent.
+ * Claude Code uses `display: "updates"` interactively and `display: "omitted"`
+ * in `-p`/SDK mode for both adaptive and budget thinking. Pi's Anthropic path
+ * defaults to `summarized`; align it after serialization without affecting
+ * disabled thinking. Pure and idempotent.
  */
-export function applyClaudeCodeThinkingDisplay(payload: unknown): unknown {
+export function applyClaudeCodeThinkingDisplay(payload: unknown, display: "updates" | "omitted" = "omitted"): unknown {
 	if (!payload || typeof payload !== "object") return payload;
 	const typed = payload as AnthropicPayload;
 	const thinking = typed.thinking;
@@ -197,6 +246,45 @@ export function applyClaudeCodeThinkingDisplay(payload: unknown): unknown {
 	if (type !== "adaptive" && type !== "enabled") {
 		return payload;
 	}
-	if ((thinking as { display?: unknown }).display === "omitted") return payload;
-	return { ...typed, thinking: { ...thinking, display: "omitted" } };
+	if ((thinking as { display?: unknown }).display === display) return payload;
+	return { ...typed, thinking: { ...thinking, display } };
+}
+
+export interface BudgetThinkingProfile {
+	budgetTokens: number;
+	effort?: "low" | "medium" | "high" | "xhigh" | "max";
+}
+
+/** Align the exact budget-thinking shape captured for older Claude models. */
+export function applyClaudeCodeBudgetThinkingProfile(
+	payload: unknown,
+	profile: BudgetThinkingProfile | undefined,
+): unknown {
+	if (!payload || typeof payload !== "object" || !profile) return payload;
+	if (!Number.isSafeInteger(profile.budgetTokens) || profile.budgetTokens <= 0) return payload;
+	const typed = payload as AnthropicPayload;
+	const thinking = typed.thinking;
+	if (!thinking || typeof thinking !== "object" || (thinking as { type?: unknown }).type !== "enabled") return payload;
+	const currentBudget = (thinking as { budget_tokens?: unknown }).budget_tokens;
+	// The real capture corresponds to Pi's `high` budget (16,384 before this
+	// alignment). Preserve explicit minimal/low/medium choices instead of silently
+	// escalating the user's reasoning budget.
+	if (currentBudget !== 16_384 && currentBudget !== profile.budgetTokens) return payload;
+	// A caller may deliberately request a smaller response. Never raise the
+	// thinking budget above that request's max_tokens (Anthropic rejects it).
+	if (typeof typed.max_tokens === "number" && typed.max_tokens <= profile.budgetTokens) return payload;
+
+	let changed = currentBudget !== profile.budgetTokens;
+	const nextThinking = changed ? { ...thinking, budget_tokens: profile.budgetTokens } : thinking;
+	let nextOutput = typed.output_config;
+	if (profile.effort) {
+		const output = typed.output_config && typeof typed.output_config === "object"
+			? typed.output_config as Record<string, unknown>
+			: {};
+		if (output.effort !== profile.effort) {
+			nextOutput = { ...output, effort: profile.effort };
+			changed = true;
+		}
+	}
+	return changed ? { ...typed, thinking: nextThinking, ...(profile.effort ? { output_config: nextOutput } : {}) } : payload;
 }

@@ -2,6 +2,9 @@ import assert from "node:assert/strict";
 import { test } from "node:test";
 import {
 	applyBillingHeader,
+	applyClaudeCodeBudgetThinkingProfile,
+	applyClaudeCodeIdentity,
+	applyClaudeCodeMaxTokens,
 	applyClaudeCodeThinkingDisplay,
 	applyContextManagement,
 	applyDiagnostics,
@@ -139,6 +142,66 @@ test("applyMetadata sets metadata.user_id and is idempotent / skips when absent"
 	assert.equal(applyMetadata(p, undefined), p);
 });
 
+test("Claude Code max_tokens clamps Pi's catalog ceiling but preserves smaller values", () => {
+	const payload = { model: "claude-opus-5", max_tokens: 128_000, messages: [] };
+	const result = applyClaudeCodeMaxTokens(payload, 64_000) as { max_tokens: number };
+	assert.equal(result.max_tokens, 64_000);
+	assert.equal(payload.max_tokens, 128_000, "input is not mutated");
+	assert.equal(applyClaudeCodeMaxTokens(result, 64_000), result, "idempotent at the captured cap");
+
+	const smaller = { max_tokens: 8_192 };
+	assert.equal(applyClaudeCodeMaxTokens(smaller, 64_000), smaller, "explicit smaller caps survive");
+	assert.deepEqual(applyClaudeCodeMaxTokens({}, 32_000), { max_tokens: 32_000 });
+	assert.equal(applyClaudeCodeMaxTokens(payload, undefined), payload, "unknown models remain untouched");
+	assert.equal(applyClaudeCodeMaxTokens(undefined, 64_000), undefined);
+});
+
+test("Claude identity alignment rewrites only exact first-party identities and is idempotent", () => {
+	const codeIdentity = "You are Claude Code, Anthropic's official CLI for Claude.";
+	const sdkIdentity = "You are a Claude agent, built on Anthropic's Claude Agent SDK.";
+	const nearMatch = `${codeIdentity} `;
+	const payload = {
+		system: [
+			{ type: "text", text: codeIdentity, cache_control: { type: "ephemeral" } },
+			{ type: "text", text: nearMatch },
+			{ type: "text", text: "custom system prompt" },
+			{ type: "image", source: "untouched" },
+		],
+		messages: [],
+	};
+
+	const sdk = applyClaudeCodeIdentity(payload, sdkIdentity) as typeof payload;
+	assert.notEqual(sdk, payload);
+	assert.equal(payload.system[0].text, codeIdentity, "input is not mutated");
+	assert.deepEqual(sdk.system, [
+		{ type: "text", text: sdkIdentity, cache_control: { type: "ephemeral" } },
+		{ type: "text", text: nearMatch },
+		{ type: "text", text: "custom system prompt" },
+		{ type: "image", source: "untouched" },
+	]);
+	assert.equal(applyClaudeCodeIdentity(sdk, sdkIdentity), sdk, "same target is idempotent");
+
+	const code = applyClaudeCodeIdentity(sdk, codeIdentity) as typeof payload;
+	assert.equal(code.system[0].text, codeIdentity, "both genuine identities are replaceable");
+	assert.equal(applyClaudeCodeIdentity(code, codeIdentity), code);
+	assert.equal(applyClaudeCodeIdentity(payload, "custom system prompt"), payload, "arbitrary targets are rejected");
+	const unrelated = { system: [{ type: "text", text: "You are Claude Code-ish." }] };
+	assert.equal(applyClaudeCodeIdentity(unrelated, sdkIdentity), unrelated, "near-matching source text is untouched");
+});
+
+test("interactive thinking uses display updates for adaptive and budget modes", () => {
+	for (const thinking of [
+		{ type: "adaptive", display: "summarized" },
+		{ type: "enabled", display: "summarized", budget_tokens: 1024 },
+	]) {
+		const payload = { thinking, messages: [] };
+		const result = applyClaudeCodeThinkingDisplay(payload, "updates") as typeof payload;
+		assert.equal(result.thinking.display, "updates");
+		assert.equal(thinking.display, "summarized", "input is not mutated");
+		assert.equal(applyClaudeCodeThinkingDisplay(result, "updates"), result, "interactive alignment is idempotent");
+	}
+});
+
 test("adaptive thinking uses Claude Code's omitted display without mutating the payload", () => {
 	const payload = { thinking: { type: "adaptive", display: "summarized" }, messages: [] };
 	const result = applyClaudeCodeThinkingDisplay(payload) as { thinking: { type: string; display: string } };
@@ -157,6 +220,66 @@ test("budget thinking also uses Claude Code's omitted display", () => {
 	const malformed = { thinking: "adaptive" };
 	assert.equal(applyClaudeCodeThinkingDisplay(malformed), malformed);
 	assert.equal(applyClaudeCodeThinkingDisplay(undefined), undefined);
+});
+
+test("budget-thinking profiles align budget and Opus 4.5 effort without mutation", () => {
+	const payload = {
+		thinking: { type: "enabled", display: "updates", budget_tokens: 16_384 },
+		output_config: { effort: "max", preserve: true },
+		messages: [],
+	};
+	const result = applyClaudeCodeBudgetThinkingProfile(payload, {
+		budgetTokens: 31_999,
+		effort: "high",
+	}) as typeof payload;
+
+	assert.deepEqual(result.thinking, { type: "enabled", display: "updates", budget_tokens: 31_999 });
+	assert.deepEqual(result.output_config, { effort: "high", preserve: true });
+	assert.deepEqual(payload.thinking, { type: "enabled", display: "updates", budget_tokens: 16_384 });
+	assert.deepEqual(payload.output_config, { effort: "max", preserve: true });
+	assert.equal(
+		applyClaudeCodeBudgetThinkingProfile(result, { budgetTokens: 31_999, effort: "high" }),
+		result,
+		"an aligned request is returned by reference",
+	);
+});
+
+test("budget-thinking profiles leave adaptive thinking and missing profiles unchanged", () => {
+	const adaptive = { thinking: { type: "adaptive" }, output_config: { effort: "xhigh" } };
+	const budget = { thinking: { type: "enabled", budget_tokens: 32_000 } };
+
+	assert.equal(
+		applyClaudeCodeBudgetThinkingProfile(adaptive, { budgetTokens: 31_999, effort: "high" }),
+		adaptive,
+	);
+	assert.equal(applyClaudeCodeBudgetThinkingProfile(budget, undefined), budget);
+});
+
+test("a budget-thinking profile is a no-op when caller max_tokens cannot fit its budget", () => {
+	for (const maxTokens of [31_999, 8_192]) {
+		const payload = {
+			max_tokens: maxTokens,
+			thinking: { type: "enabled", budget_tokens: 1_024 },
+			output_config: { effort: "max" },
+		};
+		assert.equal(
+			applyClaudeCodeBudgetThinkingProfile(payload, { budgetTokens: 31_999, effort: "high" }),
+			payload,
+			`max_tokens=${maxTokens} remains untouched`,
+		);
+	}
+});
+
+test("a budget-thinking profile preserves an explicit lower reasoning level", () => {
+	const payload = {
+		max_tokens: 32_000,
+		thinking: { type: "enabled", budget_tokens: 8_192 },
+		output_config: { effort: "medium" },
+	};
+	assert.equal(
+		applyClaudeCodeBudgetThinkingProfile(payload, { budgetTokens: 31_999, effort: "high" }),
+		payload,
+	);
 });
 
 test("applyContextManagement injects the field and is idempotent", () => {
@@ -178,4 +301,36 @@ test("applyDiagnostics injects the field and is idempotent", () => {
 	assert.equal(applyDiagnostics(result), result);
 	// non-object passthrough
 	assert.equal(applyDiagnostics(undefined), undefined);
+});
+
+test("applyClaudeCodeMaxTokens never clamps below an already-committed thinking budget", () => {
+	// Regression: the clamp looked only at max_tokens. Anthropic requires
+	// budget_tokens < max_tokens, and Pi sizes the budget against ITS max_tokens
+	// before this hook runs, so lowering the cap underneath a large user-chosen
+	// budget turned a working request into a hard 400.
+	const withBudget = (maxTokens: number, budget: number) => ({
+		model: "claude-sonnet-4-5",
+		max_tokens: maxTokens,
+		thinking: { type: "enabled", budget_tokens: budget },
+	});
+
+	// budget (40000) exceeds the captured cap (32000) → leave the payload alone.
+	const risky = withBudget(64_000, 40_000);
+	assert.equal(applyClaudeCodeMaxTokens(risky, 32_000), risky, "returns the original reference, untouched");
+
+	// budget exactly equal to the cap is just as invalid.
+	const equal = withBudget(64_000, 32_000);
+	assert.equal(applyClaudeCodeMaxTokens(equal, 32_000), equal);
+
+	// A budget that still fits is clamped as before, and stays valid.
+	const fine = applyClaudeCodeMaxTokens(withBudget(64_000, 16_384), 32_000) as {
+		max_tokens: number;
+		thinking: { budget_tokens: number };
+	};
+	assert.equal(fine.max_tokens, 32_000);
+	assert.ok(fine.thinking.budget_tokens < fine.max_tokens, "budget_tokens must stay below max_tokens");
+
+	// Adaptive thinking carries no budget and is unaffected.
+	const adaptive = { model: "claude-opus-5", max_tokens: 128_000, thinking: { type: "adaptive" } };
+	assert.equal((applyClaudeCodeMaxTokens(adaptive, 64_000) as { max_tokens: number }).max_tokens, 64_000);
 });

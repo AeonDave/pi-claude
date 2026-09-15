@@ -23,9 +23,23 @@ test("stripDateSuffix removes only a trailing 8-digit date", () => {
 // A realistic `/v1/models` page: dated ids, a new family, plus noise to drop.
 const V1_MODELS = {
 	data: [
-		{ id: "claude-sonnet-5-20260630", max_input_tokens: 1000000, max_tokens: 64000, capabilities: { thinking: { supported: true } } },
+		{
+			id: "claude-sonnet-5-20260630",
+			max_input_tokens: 1000000,
+			max_tokens: 64000,
+			capabilities: {
+				thinking: { supported: true, types: { enabled: { supported: false }, adaptive: { supported: true } } },
+			},
+		},
 		{ id: "claude-opus-4-1-20250805", max_input_tokens: 200000, max_tokens: 32000 },
-		{ id: "claude-mythos-5-20260615", max_input_tokens: 500000, max_tokens: 32000, capabilities: { thinking: { supported: true } } },
+		{
+			id: "claude-mythos-5-20260615",
+			max_input_tokens: 500000,
+			max_tokens: 32000,
+			capabilities: {
+				thinking: { supported: true, types: { enabled: { supported: false }, adaptive: { supported: true } } },
+			},
+		},
 		{ id: "claude-3-5-sonnet-20241022" }, // legacy 3.x → dropped
 		{ id: "claude-sonnet-5-latest" }, // non-numeric alias → dropped
 		{ id: "claude-opus-4-20250514" }, // strips to claude-opus-4 (legacy bare) → dropped
@@ -185,10 +199,11 @@ test("a >200K window is only trusted when the model is known to be adaptive", ()
 	});
 	assert.equal(budget1m.catalog.contextWindow, 200000, "clamped: its 1M needs a beta we do not send");
 
-	// An entry that simply does not state the thinking types tells us nothing and
-	// must not be clamped (older caches, partial responses).
+	// An entry that simply does not state the thinking types tells us nothing, so
+	// it must be clamped conservatively. Trusting an unproven 1M window would make
+	// Pi skip compaction even though this provider never sends the context-1m beta.
 	const [unknown] = normalizeModelsResponse({
 		data: [{ id: "claude-mythos-9", max_input_tokens: 1000000, capabilities: { thinking: { supported: true } } }],
 	});
-	assert.equal(unknown.catalog.contextWindow, 1000000);
+	assert.equal(unknown.catalog.contextWindow, 200000, "clamped until adaptive support is positively stated");
 });

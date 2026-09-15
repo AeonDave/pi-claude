@@ -102,6 +102,8 @@ test("golden: reproduces the suffix genuine claude 2.1.261 put on the wire", () 
 	assert.equal(computeVersionSuffix("reply with the single word ok", "2.1.261"), "547");
 	assert.equal(computeVersionSuffix("read the hello file", "2.1.261"), "384");
 	assert.equal(computeVersionSuffix("hi", "2.1.261"), "6af");
+	// Re-captured after the 2.1.266 update: same algorithm, new version input.
+	assert.equal(computeVersionSuffix("reply with the single word ok", "2.1.266"), "9d8");
 });
 
 test("cc_prompt_id matches the genuine 2.1.261 shape and gate", () => {

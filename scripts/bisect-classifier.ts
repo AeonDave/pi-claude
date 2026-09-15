@@ -39,8 +39,11 @@ import { type BillingMessage, buildBillingHeaderValue } from "../src/billing-hea
 import {
 	ANTHROPIC_BASE_URL,
 	getAnthropicBetaForModel,
+	getAgentDir,
 	getClaudeCodeEntrypoint,
+	getClaudeCodeIdentity,
 	getClaudeCodeVersion,
+	getUserAgent,
 	PROVIDER_ID,
 } from "../src/constants.ts";
 
@@ -65,7 +68,7 @@ const specs = argv.filter((a, i) => !a.startsWith("--") && argv[i - 1] !== "--du
 
 let TOKEN: string | undefined;
 function loadToken(): string {
-	const path = join(homedir(), ".pi", "agent", "auth.json");
+	const path = join(getAgentDir(), "auth.json");
 	const auth = readJson(path, "run /login → Claude Pro/Max Native first") as Record<string, { access?: string }>;
 	const token = auth[PROVIDER_ID]?.access;
 	if (!token) throw new Error(`no ${PROVIDER_ID} access token in ${path} — run /login first`);
@@ -74,8 +77,8 @@ function loadToken(): string {
 
 const VERSION = getClaudeCodeVersion();
 const ENTRYPOINT = getClaudeCodeEntrypoint();
-// Per-model, not the global base: Haiku drops three flags and Fable 5.1 adds
-// one, and Anthropic 400s on a set the model does not expect.
+// Per-model, not the common base: Haiku drops three flags, while current Opus /
+// Fable ids add one or two. Anthropic 400s on a set the model does not expect.
 const BETA = getAnthropicBetaForModel(MODEL);
 const USER_AGENT = getUserAgent();
 
@@ -148,7 +151,7 @@ async function probe(text: string, label: string): Promise<ProbeResult> {
 		stream: false,
 		system: [
 			{ type: "text", text: billing },
-			{ type: "text", text: "You are Claude Code, Anthropic's official CLI for Claude." },
+			{ type: "text", text: getClaudeCodeIdentity() },
 			{ type: "text", text },
 		],
 		messages,

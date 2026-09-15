@@ -4,12 +4,12 @@
  * without tripping Anthropic's third-party-client checks.
  *
  * Design (see README): the provider reuses Pi's battle-tested
- * `api: "anthropic-messages"` path, which already sends the Claude Code identity,
- * the OAuth/Claude-Code beta headers, Bearer auth, `x-app: cli`, and Claude-Code
- * tool-name canonicalization (with round-trip on the response). On top of that
- * this extension supplies the freshly captured user-agent/beta headers and the
- * body signals Pi omits: billing header, metadata user id, omitted thinking
- * display, and system-prompt classifier sanitization.
+ * `api: "anthropic-messages"` path, which already sends the initial Claude Code
+ * identity, OAuth/Bearer headers, `x-app: cli`, and Claude-Code tool-name
+ * canonicalization (with response round-trip). On top of that this extension
+ * supplies mode-aware identity/user-agent/beta/thinking signals plus the body
+ * fields Pi omits: billing header, metadata user id, the captured request cap,
+ * and system-prompt classifier sanitization.
  *
  * The provider's own OAuth makes it appear under `/login` as "Claude Pro/Max
  * Native" and stores an `sk-ant-oat...` token, which is what flips Pi's built-in
@@ -18,10 +18,11 @@
  * Model list: registered at load from the curated seed + a persisted discovery
  * cache, then refreshed on `session_start` from Pi's built-in `anthropic` catalog
  * (so a newly-shipped Claude appears on its own) plus any
- * `PI_CLAUDE_NATIVE_MODELS` overrides. With `PI_CLAUDE_NATIVE_LIVE_DISCOVERY` set,
- * it also queries Anthropic's live `/v1/models` once per process and persists the
- * result as the cache. `registerProvider` may be called again at runtime and
- * takes effect immediately, with no `/reload`.
+ * `PI_CLAUDE_NATIVE_MODELS` overrides. Unless explicitly disabled with
+ * `PI_CLAUDE_NATIVE_LIVE_DISCOVERY=0`, it also queries Anthropic's live
+ * `/v1/models` once per process and persists the result as the cache.
+ * `registerProvider` may be called again at runtime and takes effect immediately,
+ * with no `/reload`.
  */
 
 import { randomUUID } from "node:crypto";
@@ -31,6 +32,10 @@ import {
 	getAnthropicBetaForModel,
 	getBaseUrl,
 	getClaudeCodeEntrypoint,
+	getClaudeCodeIdentity,
+	getClaudeCodeBudgetThinkingProfileForModel,
+	getClaudeCodeMaxTokensForModel,
+	getClaudeCodeThinkingDisplay,
 	getClaudeCodeVersion,
 	getClaudeCodeVersionInfo,
 	getClaudeUserId,
@@ -52,6 +57,9 @@ import { ALLOWLIST_RE, buildNativeModels, type CatalogEntry, type NativeModel } 
 import { getApiKey, login, refreshToken } from "./oauth.ts";
 import {
 	applyBillingHeader,
+	applyClaudeCodeIdentity,
+	applyClaudeCodeBudgetThinkingProfile,
+	applyClaudeCodeMaxTokens,
 	applyClaudeCodeThinkingDisplay,
 	applyContextManagement,
 	applyDiagnostics,
@@ -103,9 +111,10 @@ export default function claudeProMaxNative(pi: ExtensionAPI) {
 	// first read). Best-effort and idempotent.
 	migrateLegacyState();
 
-	// These override Pi's defaults (merged last in Pi's Anthropic client, so they
-	// win): the genuine external-CLI user-agent, and the exact Claude Code 2.1.261
-	// `anthropic-beta` set. `x-app` restates Pi's own default for robustness.
+	// These provide a safe non-interactive fallback at registration time. The
+	// per-request headers hook below overwrites user-agent and beta from `ctx.mode`
+	// so TUI (`cli`) and print/json/rpc (`sdk-cli`) match their genuine profiles.
+	// `x-app` restates Pi's own default for robustness.
 	// `x-claude-code-session-id` (added in 2.1.241) matches metadata session_id.
 	const headers: Record<string, string> = {
 		"user-agent": getUserAgent(),
@@ -122,7 +131,8 @@ export default function claudeProMaxNative(pi: ExtensionAPI) {
 
 	function registerNative(models: NativeModel[]): void {
 		const registeredModels = models.map((model) => {
-			const modelBeta = getAnthropicBetaForModel(model.id);
+			const forceAdaptiveThinking = (model.compat as { forceAdaptiveThinking?: boolean } | undefined)?.forceAdaptiveThinking;
+			const modelBeta = getAnthropicBetaForModel(model.id, undefined, forceAdaptiveThinking);
 			if (modelBeta === headers["anthropic-beta"]) return model;
 			return {
 				...model,
@@ -184,7 +194,13 @@ export default function claudeProMaxNative(pi: ExtensionAPI) {
 		const extraIds: string[] = [];
 		const add = (id: string, entry: CatalogEntry): void => {
 			if (!allow.test(id)) return;
-			catalog.set(id, { ...catalog.get(id), ...entry });
+			// Later sources win only for facts they actually state. In particular,
+			// Pi's catalog often omits live-only capability fields; spreading explicit
+			// `undefined` used to erase `supportsTemperature: false` and effort maps
+			// learned from `/v1/models`. Preserve boolean false: the Pi catalog's
+			// forceAdaptiveThinking=false below is the budget signal for Sonnet 4.5.
+			const defined = Object.fromEntries(Object.entries(entry).filter(([, value]) => value !== undefined)) as CatalogEntry;
+			catalog.set(id, { ...catalog.get(id), ...defined });
 			if (!extraIds.includes(id)) extraIds.push(id);
 		};
 		for (const m of readCachedModels()) add(m.id, m.catalog);
@@ -227,7 +243,7 @@ export default function claudeProMaxNative(pi: ExtensionAPI) {
 	}
 
 	/**
-	 * Opt-in: query Anthropic's `/v1/models` with the subscription OAuth token,
+	 * On by default: query Anthropic's `/v1/models` with the subscription OAuth token,
 	 * persist it as the local fallback, and re-register. At most once per process,
 	 * never concurrent; any failure degrades silently to cache + seed.
 	 */
@@ -259,23 +275,27 @@ export default function claudeProMaxNative(pi: ExtensionAPI) {
 	pi.on("before_provider_request", (event, ctx) => {
 		if (!isNativeOAuth(ctx)) return;
 		const version = getClaudeCodeVersion();
-		const entrypoint = getClaudeCodeEntrypoint();
+		const entrypoint = getClaudeCodeEntrypoint(ctx.mode);
 		// Strip third-party-harness fingerprints from the system prompt (Anthropic
 		// 400s these as a disguised usage error), then add the genuine Claude Code
 		// thinking display + metadata.user_id, then the billing header. Order is
 		// independent: the cch hashes the first user message, not the system blocks.
 		let next = sanitizeSystemPrompt(event.payload, getSanitizeRules());
-		next = applyClaudeCodeThinkingDisplay(next);
+		next = applyClaudeCodeIdentity(next, getClaudeCodeIdentity(ctx.mode));
+		next = applyClaudeCodeThinkingDisplay(next, getClaudeCodeThinkingDisplay(ctx.mode));
+		const modelId = ctx.model?.id ?? "";
+		next = applyClaudeCodeMaxTokens(next, getClaudeCodeMaxTokensForModel(modelId));
+		next = applyClaudeCodeBudgetThinkingProfile(next, getClaudeCodeBudgetThinkingProfileForModel(modelId));
 		next = applyContextManagement(next);
 		next = applyDiagnostics(next);
 		next = applyMetadata(next, getClaudeUserId());
 		next = applyBillingHeader(next, version, entrypoint, getSessionId());
-		logNativeRequest(next, { model: ctx.model?.id, userAgent: getUserAgent(), version, entrypoint });
+		logNativeRequest(next, { model: ctx.model?.id, userAgent: getUserAgent(ctx.mode), version, entrypoint });
 		return next === event.payload ? undefined : next;
 	});
 
 	// `x-client-request-id`: genuine Claude Code sends a fresh UUID on every request
-	// (verified across the 2.1.261 captures — four requests, four distinct ids). Pi
+	// (re-verified across the 2.1.266 captures). Pi
 	// sets this header on its OpenAI/Codex paths but not on the Anthropic one, so it
 	// is the last header gap for this provider.
 	//
@@ -285,6 +305,9 @@ export default function claudeProMaxNative(pi: ExtensionAPI) {
 	// versions, so nothing breaks there.
 	pi.on("before_provider_headers", (event, ctx) => {
 		if (!isNativeOAuth(ctx)) return;
+		event.headers["user-agent"] = getUserAgent(ctx.mode);
+		const forceAdaptiveThinking = (ctx.model?.compat as { forceAdaptiveThinking?: boolean } | undefined)?.forceAdaptiveThinking;
+		event.headers["anthropic-beta"] = getAnthropicBetaForModel(ctx.model?.id ?? "", ctx.mode, forceAdaptiveThinking);
 		event.headers["x-client-request-id"] = randomUUID();
 	});
 
@@ -322,8 +345,9 @@ export default function claudeProMaxNative(pi: ExtensionAPI) {
 				`  selected model: ${model}`,
 				`  models:         ${nativeModels.length} (${nativeModels.map((m) => m.id).join(", ") || "none"})`,
 				`  cc_version:     ${versionInfo.version} (from ${VERSION_SOURCE_LABEL[versionInfo.source]})`,
-				`  cc_entrypoint:  ${getClaudeCodeEntrypoint()}`,
-				`  user-agent:     ${getUserAgent()}`,
+				`  wire mode:      ${ctx.mode}`,
+				`  cc_entrypoint:  ${getClaudeCodeEntrypoint(ctx.mode)}`,
+				`  user-agent:     ${getUserAgent(ctx.mode)}`,
 				`  live discovery: ${isLiveDiscoveryEnabled() ? "on" : "off"} (cache: ${readCachedModels().length} models)`,
 			];
 			if (collides) {

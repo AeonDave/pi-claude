@@ -3,7 +3,7 @@
   "version": "1.6.0",
   "private": false,
   "type": "module",
-  "description": "Adds a 'Claude Pro/Max Native' subscription provider to Pi's /login that talks to Anthropic exactly like the genuine Claude Code CLI (OAuth, Claude Code identity, beta headers, user-agent, and billing header).",
+  "description": "Adds a Claude Pro/Max Native provider to Pi with mode-aware Claude Code and Agent SDK wire profiles, OAuth, live model discovery, and captured request signals.",
   "keywords": [
     "pi-package",
     "pi-extension",
@@ -32,10 +32,10 @@
     "@earendil-works/pi-coding-agent": ">=0.80.5"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "^0.85.0",
-    "@earendil-works/pi-coding-agent": "^0.85.0",
-    "@types/node": "^22.0.0",
-    "tsx": "^4.19.0",
+    "@earendil-works/pi-ai": "^0.85.1",
+    "@earendil-works/pi-coding-agent": "^0.85.1",
+    "@types/node": "^22.20.1",
+    "tsx": "^4.23.13",
     "typescript": "^5.6.0"
   },
   "pi": {
