@@ -60,8 +60,8 @@ export interface Fingerprint {
 	modelBeta?: Record<string, string>;
 	/**
 	 * Per-model `max_tokens` observed on the genuine request. Anthropic's model
-	 * endpoint/catalog advertises the absolute API ceiling, but Claude Code 2.1.266
-	 * deliberately requests a lower cap (64K or 32K on the captured models).
+	 * endpoint/catalog advertises the absolute API ceiling, but the bundled CLI
+	 * capture deliberately requests a lower cap (64K or 32K on captured models).
 	 */
 	modelMaxTokens?: Record<string, number>;
 	/** Exact legacy budget-thinking body per captured wire id. */

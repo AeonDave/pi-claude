@@ -207,7 +207,7 @@ export function parseModelId(id: string): { family: string; versionLabel: string
  * `xhigh`, `max`, or adaptive-only behavior.
  */
 const ID_OVERRIDES: Record<string, Pick<NativeModel, "compat" | "thinkingLevelMap">> = {
-	// Opus 5 is DISCOVERED (not seeded). Re-captured on claude 2.1.266 —
+	// Opus 5 is DISCOVERED (not seeded). The moving alias was re-captured —
 	// `claude --model opus`
 	// resolves to `claude-opus-5` and sends `output_config.effort: "xhigh"` — so the
 	// higher ceiling is confirmed on the wire, not assumed. Adaptive-only per
@@ -216,7 +216,7 @@ const ID_OVERRIDES: Record<string, Pick<NativeModel, "compat" | "thinkingLevelMa
 		compat: { forceAdaptiveThinking: true, supportsTemperature: false },
 		thinkingLevelMap: { xhigh: "xhigh", max: "max", off: null },
 	},
-	// Sonnet 5 is DISCOVERED (not seeded). Re-captured on claude 2.1.266 —
+	// Sonnet 5 is DISCOVERED (not seeded). The moving alias was re-captured —
 	// `claude --model sonnet` resolves to `claude-sonnet-5` and sends
 	// `output_config.effort: "xhigh"`; the live endpoint also advertises wire max.
 	// Adaptive-ONLY per `/v1/models` (`thinking.types.enabled.supported: false`),

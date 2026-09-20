@@ -10,12 +10,13 @@ evidence together:
 
 ```
 fp-raw/            # npm run capture:fingerprint — one req-fp-<n>.json per model,
-                   # plus owners.json mapping each file to the alias that drove it
+                   # plus owners.json and the completeness run manifest
 mode-interactive/  # hand-run interactive `claude` — the ONLY source for the TUI profile
-mode-batch/        # hand-run `claude -p`
-wire-mode-print/   # Pi's own requests, print profile   (for compare-requests.mjs)
-wire-mode-tui/     # Pi's own requests, interactive profile
 ```
+
+The TUI validator requires every bundled exact id and also includes additional
+clean Claude ids found in the directory, so a new model can be captured before
+the bundled model list is refreshed.
 
 Ad-hoc pairs still use the flat naming:
 
@@ -25,7 +26,7 @@ req-pi-<n>.json       # plugin:  PI_CAPTURE_LABEL=pi     pi -p "say hello"
 ```
 
 `PI_CAPTURE_HEALTH_NONCE` is an optional ownership proof: the orchestrator sets it
-so a `/__capture_health` probe only answers the proxy instance it started, instead
+so a `/__pi_claude_capture_health` probe only answers the proxy instance it started, instead
 of a stale one left listening on the same port.
 
 Then compare the largest matching pair:
@@ -34,7 +35,7 @@ Then compare the largest matching pair:
 node ../scripts/compare-requests.mjs req-claude-1.json req-pi-1.json
 ```
 
-Mode matters on Claude 2.1.266: compare `claude -p` with `pi -p`
+Mode matters: compare `claude -p` with `pi -p`
 (`sdk-cli`/Agent SDK/`thinking.display: omitted`), or interactive `claude` with
 interactive Pi (`cli`/Claude Code/`thinking.display: updates`). Do not mix the
 two profiles. Auxiliary title/diagnostic requests can use Haiku with no tools;

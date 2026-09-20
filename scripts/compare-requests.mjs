@@ -68,24 +68,25 @@ const UUID_RE = new RegExp(`^${UUID_SOURCE}$`, "i");
 // added in v1.6.0. Values differ per client; their shape and lifetime are what
 // matter on a one-request wire comparison.
 const BILLING_RE = new RegExp(
-	`^x-anthropic-billing-header: cc_version=\\d+\\.\\d+\\.\\d+\\.[0-9a-f]{3}; cc_entrypoint=[\\w-]+; cch=[0-9a-f]{5}; cc_prompt_id=${UUID_SOURCE};$`,
+	`^x-anthropic-billing-header: cc_version=\\d+\\.\\d+\\.\\d+\\.[0-9a-f]{3}; cc_entrypoint=[\\w-]+; cch=[0-9a-f]{5}; cc_prompt_id=${UUID_SOURCE}; cc_turn_origin=(?:human|sdk);$`,
 	"i",
 );
 // What a GENUINE capture may look like: `cc_version` + `cc_entrypoint` are always
 // present, the tail is conditional (2.1.233 emits `cch` only when the base URL is
 // first-party — so an unmarked proxy capture legitimately has none — plus
-// `cc_prompt_id` / `cc_workload` / `cc_is_subagent` / `cc_prev_req`). Entrypoints are hyphenated
+// `cc_prompt_id` / `cc_turn_origin` / `cc_workload` / `cc_is_subagent` /
+// `cc_prev_req`). Entrypoints are hyphenated
 // (`sdk-cli`), so `\w+` alone never matched a `claude -p` capture and the two
 // cross-checks below were silently skipped.
 const GENUINE_BILLING_RE =
-	/^x-anthropic-billing-header: cc_version=\d+\.\d+\.\d+\.[0-9a-f]{3}; cc_entrypoint=[\w-]+;(?: cch=[0-9a-f]{5};| cc_prompt_id=[^;]+;| cc_workload=[^;]*;| cc_is_subagent=true;| cc_prev_req=[^;]*;)*$/;
+	/^x-anthropic-billing-header: cc_version=\d+\.\d+\.\d+\.[0-9a-f]{3}; cc_entrypoint=[\w-]+;(?: cch=[0-9a-f]{5};| cc_prompt_id=[^;]+;| cc_turn_origin=[a-z][a-z_]{0,31};| cc_workload=[^;]*;| cc_is_subagent=true;| cc_prev_req=[^;]*;)*$/;
 const KNOWN_IDENTITIES = new Set([
 	"You are Claude Code, Anthropic's official CLI for Claude.",
 	"You are a Claude agent, built on Anthropic's Claude Agent SDK.",
 	"You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK.",
 ]);
 const USER_AGENT_RE = /^claude-cli\/(\d+\.\d+\.\d+) \(external, ([\w-]+)\)$/;
-// Profiles must match the selected genuine capture exactly. Claude 2.1.266 uses
+// Profiles must match the selected genuine capture exactly. Genuine Claude uses
 // `cli` interactively and `sdk-cli` under `-p`; neither is globally "legacy".
 const compatibleProfiles = (claudeProfile, piProfile) => claudeProfile === piProfile;
 
@@ -116,6 +117,8 @@ const piVer = piBilling.match(/cc_version=(\d+\.\d+\.\d+)\./)?.[1];
 const ccVer = claudeBilling.match(/cc_version=(\d+\.\d+\.\d+)\./)?.[1];
 const piPromptId = piBilling.match(/cc_prompt_id=([^;]+);/)?.[1];
 const ccPromptId = claudeBilling.match(/cc_prompt_id=([^;]+);/)?.[1];
+const piTurnOrigin = piBilling.match(/cc_turn_origin=([^;]+);/)?.[1];
+const ccTurnOrigin = claudeBilling.match(/cc_turn_origin=([^;]+);/)?.[1];
 check(
 	"billing cc_prompt_id is UUID-shaped on both clients",
 	UUID_RE.test(piPromptId ?? "") && UUID_RE.test(ccPromptId ?? ""),
@@ -127,6 +130,12 @@ if (genuineBillingOk) {
 	const entrypointCompatible = compatibleProfiles(ccEntry, piEntry);
 	check("billing cc_entrypoint uses compatible client profiles", entrypointCompatible, `claude=${ccEntry} | pi=${piEntry}`);
 	check("billing cc_version base matches genuine", piVer === ccVer, `claude=${ccVer} | pi=${piVer}`);
+	const expectedTurnOrigin = ccEntry === "cli" ? "human" : ccEntry === "sdk-cli" ? "sdk" : undefined;
+	check(
+		"billing cc_turn_origin matches the genuine mode",
+		ccTurnOrigin === expectedTurnOrigin && piTurnOrigin === ccTurnOrigin,
+		`claude=${ccTurnOrigin ?? "missing"} | pi=${piTurnOrigin ?? "missing"} | expected=${expectedTurnOrigin ?? "unknown"}`,
+	);
 }
 
 // --- Headers ----------------------------------------------------------------
@@ -145,7 +154,7 @@ check(
 	!!claudeUa && !!piUa && claudeUa[1] === ccVer && piUa[1] === piVer && claudeUa[2] === ccEntry && piUa[2] === piEntry,
 	`claude ua=${claudeUa?.[1]}/${claudeUa?.[2]}, billing=${ccVer}/${ccEntry} | pi ua=${piUa?.[1]}/${piUa?.[2]}, billing=${piVer}/${piEntry}`,
 );
-for (const key of ["x-app", "anthropic-beta"]) {
+for (const key of ["x-app", "x-claude-code-request-class", "anthropic-beta"]) {
 	check(`header "${key}" matches genuine`, header(pi, key) === header(claude, key), `claude=${header(claude, key)} | pi=${header(pi, key)}`);
 }
 for (const key of ["x-client-request-id", "x-claude-code-session-id"]) {

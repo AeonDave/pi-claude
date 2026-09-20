@@ -1,7 +1,16 @@
 import assert from "node:assert/strict";
 import { createHash } from "node:crypto";
 import { test } from "node:test";
-import { buildBillingHeaderValue, computeCch, computeVersionSuffix, extractCurrentPromptText, extractFirstUserMessageText, type BillingMessage } from "../src/billing-header.ts";
+import { BUNDLED_CC_VERSION } from "../src/constants.ts";
+import {
+	buildBillingHeaderValue,
+	computeCch,
+	computeVersionSuffix,
+	extractCurrentPromptText,
+	extractFirstUserMessageText,
+	turnOriginForEntrypoint,
+	type BillingMessage,
+} from "../src/billing-header.ts";
 
 const sha256 = (value: string) => createHash("sha256").update(value).digest("hex");
 
@@ -104,21 +113,30 @@ test("golden: reproduces the suffix genuine claude 2.1.261 put on the wire", () 
 	assert.equal(computeVersionSuffix("hi", "2.1.261"), "6af");
 	// Re-captured after the 2.1.266 update: same algorithm, new version input.
 	assert.equal(computeVersionSuffix("reply with the single word ok", "2.1.266"), "9d8");
+	// Re-captured on every 2.1.278 print and TUI request.
+	assert.equal(computeVersionSuffix("reply with the single word ok", "2.1.278"), "02b");
 });
 
-test("cc_prompt_id matches the genuine 2.1.261 shape and gate", () => {
+test("cc_prompt_id and cc_turn_origin match the bundled capture shape and mode", () => {
 	// Genuine appends ` cc_prompt_id=<uuid>;` after cch on every first-party turn,
 	// gated on this exact regex (lifted from claude 2.1.261).
 	const GENUINE_PROMPT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 	const messages = [{ role: "user", content: "hello" }];
-	const value = buildBillingHeaderValue(messages, "2.1.261", "sdk-cli", "session-a");
+	const value = buildBillingHeaderValue(messages, BUNDLED_CC_VERSION, "sdk-cli", "session-a");
 	const id = value.match(/cc_prompt_id=([^;]+);/)?.[1];
 	assert.ok(id, "the segment is present when a session id is supplied");
 	assert.match(id, GENUINE_PROMPT_ID);
-	assert.match(value, /^x-anthropic-billing-header: cc_version=2\.1\.261\.[0-9a-f]{3}; cc_entrypoint=sdk-cli; cch=[0-9a-f]{5}; cc_prompt_id=[^;]+;$/);
+	assert.match(value, /^x-anthropic-billing-header: cc_version=\d+\.\d+\.\d+\.[0-9a-f]{3}; cc_entrypoint=sdk-cli; cch=[0-9a-f]{5}; cc_prompt_id=[^;]+; cc_turn_origin=sdk;$/);
+	assert.equal(value.match(/cc_version=(\d+\.\d+\.\d+)\./)?.[1], BUNDLED_CC_VERSION);
+	assert.match(buildBillingHeaderValue(messages, BUNDLED_CC_VERSION, "cli", "session-a"), / cc_turn_origin=human;$/);
+	assert.equal(turnOriginForEntrypoint("cli"), "human");
+	assert.equal(turnOriginForEntrypoint("sdk-cli"), "sdk");
+	assert.equal(turnOriginForEntrypoint("custom"), undefined);
 
-	// Without a session id the segment is omitted entirely (it is optional).
-	assert.ok(!buildBillingHeaderValue(messages, "2.1.261", "sdk-cli").includes("cc_prompt_id"));
+	// Without a session id both prompt-lifetime segments are omitted.
+	const unscoped = buildBillingHeaderValue(messages, BUNDLED_CC_VERSION, "sdk-cli");
+	assert.ok(!unscoped.includes("cc_prompt_id"));
+	assert.ok(!unscoped.includes("cc_turn_origin"));
 });
 
 test("cc_prompt_id is stable across a tool loop and changes on a new prompt", () => {

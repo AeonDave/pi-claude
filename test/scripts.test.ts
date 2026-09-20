@@ -14,6 +14,8 @@ const OFFICIAL_CLI_IDENTITY = "You are Claude Code, Anthropic's official CLI for
 const AGENT_SDK_IDENTITY = "You are a Claude agent, built on Anthropic's Claude Agent SDK.";
 const APPENDED_SDK_IDENTITY =
 	"You are Claude Code, Anthropic's official CLI for Claude, running within the Claude Agent SDK.";
+const FIXTURE_VERSION = "9.8.7";
+const MISMATCH_VERSION = "9.8.8";
 
 async function reservePort(): Promise<number> {
 	const server = createServer();
@@ -58,10 +60,14 @@ async function waitForHttp(port: number, path: string): Promise<{ status: number
 function request(
 	billing: string,
 	profile = "cli",
-	version = "2.1.233",
+	version = FIXTURE_VERSION,
 	identity = OFFICIAL_CLI_IDENTITY,
 ) {
 	const sessionId = randomUUID();
+	const normalizedBilling =
+		billing.includes("cc_prompt_id=") && !billing.includes("cc_turn_origin=")
+			? `${billing} cc_turn_origin=${profile === "sdk-cli" ? "sdk" : "human"};`
+			: billing;
 	return {
 		method: "POST",
 		url: "https://api.anthropic.com/v1/messages?beta=true",
@@ -72,13 +78,14 @@ function request(
 			"anthropic-beta": "claude-code-20250219,oauth-2025-04-20",
 			"x-client-request-id": randomUUID(),
 			"x-claude-code-session-id": sessionId,
+			"x-claude-code-request-class": "main",
 		},
 		body: {
 			model: "claude-opus-5",
 			max_tokens: 64_000,
 			stream: true,
 			system: [
-				{ type: "text", text: billing },
+				{ type: "text", text: normalizedBilling },
 				{ type: "text", text: identity },
 			],
 			tools: [{ name: "Read" }] as Array<{ name: string }>,
@@ -111,14 +118,14 @@ function compare(claude: unknown, pi: unknown) {
 }
 
 test("compare REJECTS a cli provider profile against an sdk-cli capture", () => {
-	// `cli` is valid for an interactive 2.1.266 capture, but this reference is an
+	// `cli` is valid for an interactive capture, but this reference is an
 	// `sdk-cli` noninteractive capture. Cross-mode profile pairs must fail loudly.
 	const claude = request(
-		"x-anthropic-billing-header: cc_version=2.1.233.abc; cc_entrypoint=sdk-cli; cc_prompt_id=123e4567-e89b-12d3-a456-426614174000;",
+		`x-anthropic-billing-header: cc_version=${FIXTURE_VERSION}.abc; cc_entrypoint=sdk-cli; cc_prompt_id=123e4567-e89b-12d3-a456-426614174000;`,
 		"sdk-cli",
 	);
 	const pi = request(
-		"x-anthropic-billing-header: cc_version=2.1.233.def; cc_entrypoint=cli; cch=12345; cc_prompt_id=123e4567-e89b-42d3-a456-426614174001;",
+		`x-anthropic-billing-header: cc_version=${FIXTURE_VERSION}.def; cc_entrypoint=cli; cch=12345; cc_prompt_id=123e4567-e89b-42d3-a456-426614174001;`,
 	);
 	const result = compare(claude, pi);
 	assert.notEqual(result.status, 0, "a cli-profile provider must not pass as equivalent");
@@ -127,17 +134,17 @@ test("compare REJECTS a cli provider profile against an sdk-cli capture", () => 
 
 test("compare accepts a matching sdk-cli pair on both sides", () => {
 	const billing = (suffix: string, extra: string) =>
-		`x-anthropic-billing-header: cc_version=2.1.233.${suffix}; cc_entrypoint=sdk-cli;${extra}`;
+		`x-anthropic-billing-header: cc_version=${FIXTURE_VERSION}.${suffix}; cc_entrypoint=sdk-cli;${extra}`;
 	const claude = request(
 		billing("abc", " cc_prompt_id=123e4567-e89b-12d3-a456-426614174000;"),
 		"sdk-cli",
-		"2.1.233",
+		FIXTURE_VERSION,
 		AGENT_SDK_IDENTITY,
 	);
 	const pi = request(
 		billing("def", " cch=12345; cc_prompt_id=123e4567-e89b-42d3-a456-426614174001;"),
 		"sdk-cli",
-		"2.1.233",
+		FIXTURE_VERSION,
 		AGENT_SDK_IDENTITY,
 	);
 	const result = compare(claude, pi);
@@ -146,17 +153,17 @@ test("compare accepts a matching sdk-cli pair on both sides", () => {
 
 test("compare accepts different URL origins when pathname and search match, but rejects route drift", () => {
 	const billing = (suffix: string, promptId: string) =>
-		`x-anthropic-billing-header: cc_version=2.1.266.${suffix}; cc_entrypoint=sdk-cli; cch=12345; cc_prompt_id=${promptId};`;
+		`x-anthropic-billing-header: cc_version=${FIXTURE_VERSION}.${suffix}; cc_entrypoint=sdk-cli; cch=12345; cc_prompt_id=${promptId};`;
 	const claude = request(
 		billing("abc", "123e4567-e89b-42d3-a456-426614174000"),
 		"sdk-cli",
-		"2.1.266",
+		FIXTURE_VERSION,
 		AGENT_SDK_IDENTITY,
 	);
 	const pi = request(
 		billing("def", "123e4567-e89b-42d3-a456-426614174001"),
 		"sdk-cli",
-		"2.1.266",
+		FIXTURE_VERSION,
 		AGENT_SDK_IDENTITY,
 	);
 	pi.url = "http://127.0.0.1:8118/v1/messages?beta=true";
@@ -170,11 +177,11 @@ test("compare accepts different URL origins when pathname and search match, but 
 
 test("compare requires POST on both captures and rejects missing or different methods", () => {
 	const billing = (suffix: string, promptId: string) =>
-		`x-anthropic-billing-header: cc_version=2.1.266.${suffix}; cc_entrypoint=sdk-cli; cch=12345; cc_prompt_id=${promptId};`;
+		`x-anthropic-billing-header: cc_version=${FIXTURE_VERSION}.${suffix}; cc_entrypoint=sdk-cli; cch=12345; cc_prompt_id=${promptId};`;
 	const genuine = () =>
-		request(billing("abc", "123e4567-e89b-42d3-a456-426614174000"), "sdk-cli", "2.1.266", AGENT_SDK_IDENTITY);
+		request(billing("abc", "123e4567-e89b-42d3-a456-426614174000"), "sdk-cli", FIXTURE_VERSION, AGENT_SDK_IDENTITY);
 	const native = () =>
-		request(billing("def", "123e4567-e89b-42d3-a456-426614174001"), "sdk-cli", "2.1.266", AGENT_SDK_IDENTITY);
+		request(billing("def", "123e4567-e89b-42d3-a456-426614174001"), "sdk-cli", FIXTURE_VERSION, AGENT_SDK_IDENTITY);
 
 	const piGet = native();
 	piGet.method = "GET";
@@ -191,17 +198,17 @@ test("compare requires POST on both captures and rejects missing or different me
 
 test("compare requires the exact known system identity from the genuine capture", () => {
 	const billing = (suffix: string, promptId: string) =>
-		`x-anthropic-billing-header: cc_version=2.1.266.${suffix}; cc_entrypoint=sdk-cli; cch=12345; cc_prompt_id=${promptId};`;
+		`x-anthropic-billing-header: cc_version=${FIXTURE_VERSION}.${suffix}; cc_entrypoint=sdk-cli; cch=12345; cc_prompt_id=${promptId};`;
 	const claude = request(
 		billing("abc", "123e4567-e89b-42d3-a456-426614174000"),
 		"sdk-cli",
-		"2.1.266",
+		FIXTURE_VERSION,
 		AGENT_SDK_IDENTITY,
 	);
 	const pi = request(
 		billing("def", "123e4567-e89b-42d3-a456-426614174001"),
 		"sdk-cli",
-		"2.1.266",
+		FIXTURE_VERSION,
 		OFFICIAL_CLI_IDENTITY,
 	);
 	const result = compare(claude, pi);
@@ -217,17 +224,17 @@ test("compare requires the exact known system identity from the genuine capture"
 
 test("compare recognizes the noninteractive append-system-prompt identity when both captures match", () => {
 	const billing = (suffix: string, promptId: string) =>
-		`x-anthropic-billing-header: cc_version=2.1.266.${suffix}; cc_entrypoint=sdk-cli; cch=12345; cc_prompt_id=${promptId};`;
+		`x-anthropic-billing-header: cc_version=${FIXTURE_VERSION}.${suffix}; cc_entrypoint=sdk-cli; cch=12345; cc_prompt_id=${promptId};`;
 	const claude = request(
 		billing("abc", "123e4567-e89b-42d3-a456-426614174000"),
 		"sdk-cli",
-		"2.1.266",
+		FIXTURE_VERSION,
 		APPENDED_SDK_IDENTITY,
 	);
 	const pi = request(
 		billing("def", "123e4567-e89b-42d3-a456-426614174001"),
 		"sdk-cli",
-		"2.1.266",
+		FIXTURE_VERSION,
 		APPENDED_SDK_IDENTITY,
 	);
 	const result = compare(claude, pi);
@@ -236,9 +243,9 @@ test("compare recognizes the noninteractive append-system-prompt identity when b
 
 test("compare accepts matching TUI thinking updates but rejects cross-mode display drift", () => {
 	const billing = (suffix: string, promptId: string) =>
-		`x-anthropic-billing-header: cc_version=2.1.266.${suffix}; cc_entrypoint=cli; cch=12345; cc_prompt_id=${promptId};`;
-	const claude = request(billing("abc", "123e4567-e89b-42d3-a456-426614174000"), "cli", "2.1.266");
-	const pi = request(billing("def", "123e4567-e89b-42d3-a456-426614174001"), "cli", "2.1.266");
+		`x-anthropic-billing-header: cc_version=${FIXTURE_VERSION}.${suffix}; cc_entrypoint=cli; cch=12345; cc_prompt_id=${promptId};`;
+	const claude = request(billing("abc", "123e4567-e89b-42d3-a456-426614174000"), "cli", FIXTURE_VERSION);
+	const pi = request(billing("def", "123e4567-e89b-42d3-a456-426614174001"), "cli", FIXTURE_VERSION);
 	claude.body.thinking.display = "updates";
 	pi.body.thinking.display = "updates";
 	assert.equal(compare(claude, pi).status, 0, "matching interactive display mode must pass");
@@ -251,17 +258,17 @@ test("compare accepts matching TUI thinking updates but rejects cross-mode displ
 
 test("compare rejects an empty Pi tool list when genuine advertises tools", () => {
 	const billing = (suffix: string, promptId: string) =>
-		`x-anthropic-billing-header: cc_version=2.1.266.${suffix}; cc_entrypoint=sdk-cli; cch=12345; cc_prompt_id=${promptId};`;
+		`x-anthropic-billing-header: cc_version=${FIXTURE_VERSION}.${suffix}; cc_entrypoint=sdk-cli; cch=12345; cc_prompt_id=${promptId};`;
 	const claude = request(
 		billing("abc", "123e4567-e89b-42d3-a456-426614174000"),
 		"sdk-cli",
-		"2.1.266",
+		FIXTURE_VERSION,
 		AGENT_SDK_IDENTITY,
 	);
 	const pi = request(
 		billing("def", "123e4567-e89b-42d3-a456-426614174001"),
 		"sdk-cli",
-		"2.1.266",
+		FIXTURE_VERSION,
 		AGENT_SDK_IDENTITY,
 	);
 	pi.body.tools = [];
@@ -277,9 +284,9 @@ test("compare rejects an empty Pi tool list when genuine advertises tools", () =
 
 test("compare accepts output_config absent on both budget-model requests", () => {
 	const billing = (suffix: string, promptId: string) =>
-		`x-anthropic-billing-header: cc_version=2.1.266.${suffix}; cc_entrypoint=sdk-cli; cch=12345; cc_prompt_id=${promptId};`;
-	const claude = request(billing("abc", "123e4567-e89b-42d3-a456-426614174000"), "sdk-cli", "2.1.266");
-	const pi = request(billing("def", "123e4567-e89b-42d3-a456-426614174001"), "sdk-cli", "2.1.266");
+		`x-anthropic-billing-header: cc_version=${FIXTURE_VERSION}.${suffix}; cc_entrypoint=sdk-cli; cch=12345; cc_prompt_id=${promptId};`;
+	const claude = request(billing("abc", "123e4567-e89b-42d3-a456-426614174000"), "sdk-cli", FIXTURE_VERSION);
+	const pi = request(billing("def", "123e4567-e89b-42d3-a456-426614174001"), "sdk-cli", FIXTURE_VERSION);
 	delete (claude.body as Partial<typeof claude.body>).output_config;
 	delete (pi.body as Partial<typeof pi.body>).output_config;
 
@@ -289,9 +296,9 @@ test("compare accepts output_config absent on both budget-model requests", () =>
 
 test("compare rejects max_tokens drift from the genuine request", () => {
 	const billing = (suffix: string, promptId: string) =>
-		`x-anthropic-billing-header: cc_version=2.1.266.${suffix}; cc_entrypoint=sdk-cli; cch=12345; cc_prompt_id=${promptId};`;
-	const claude = request(billing("abc", "123e4567-e89b-42d3-a456-426614174000"), "sdk-cli", "2.1.266");
-	const pi = request(billing("def", "123e4567-e89b-42d3-a456-426614174001"), "sdk-cli", "2.1.266");
+		`x-anthropic-billing-header: cc_version=${FIXTURE_VERSION}.${suffix}; cc_entrypoint=sdk-cli; cch=12345; cc_prompt_id=${promptId};`;
+	const claude = request(billing("abc", "123e4567-e89b-42d3-a456-426614174000"), "sdk-cli", FIXTURE_VERSION);
+	const pi = request(billing("def", "123e4567-e89b-42d3-a456-426614174001"), "sdk-cli", FIXTURE_VERSION);
 	pi.body.max_tokens = 128_000;
 
 	const result = compare(claude, pi);
@@ -301,9 +308,9 @@ test("compare rejects max_tokens drift from the genuine request", () => {
 
 test("compare rejects a wire-model mismatch even when beta and controls match", () => {
 	const billing = (suffix: string, promptId: string) =>
-		`x-anthropic-billing-header: cc_version=2.1.266.${suffix}; cc_entrypoint=sdk-cli; cch=12345; cc_prompt_id=${promptId};`;
-	const claude = request(billing("abc", "123e4567-e89b-42d3-a456-426614174000"), "sdk-cli", "2.1.266");
-	const pi = request(billing("def", "123e4567-e89b-42d3-a456-426614174001"), "sdk-cli", "2.1.266");
+		`x-anthropic-billing-header: cc_version=${FIXTURE_VERSION}.${suffix}; cc_entrypoint=sdk-cli; cch=12345; cc_prompt_id=${promptId};`;
+	const claude = request(billing("abc", "123e4567-e89b-42d3-a456-426614174000"), "sdk-cli", FIXTURE_VERSION);
+	const pi = request(billing("def", "123e4567-e89b-42d3-a456-426614174001"), "sdk-cli", FIXTURE_VERSION);
 	pi.body.model = "claude-sonnet-5";
 
 	const result = compare(claude, pi);
@@ -313,14 +320,14 @@ test("compare rejects a wire-model mismatch even when beta and controls match", 
 
 test("compare rejects a Pi billing header that regresses by omitting cc_prompt_id", () => {
 	const claude = request(
-		"x-anthropic-billing-header: cc_version=2.1.261.abc; cc_entrypoint=sdk-cli; cch=abcde; cc_prompt_id=123e4567-e89b-42d3-a456-426614174000;",
+		`x-anthropic-billing-header: cc_version=${FIXTURE_VERSION}.abc; cc_entrypoint=sdk-cli; cch=abcde; cc_prompt_id=123e4567-e89b-42d3-a456-426614174000;`,
 		"sdk-cli",
-		"2.1.261",
+		FIXTURE_VERSION,
 	);
 	const pi = request(
-		"x-anthropic-billing-header: cc_version=2.1.261.def; cc_entrypoint=sdk-cli; cch=12345;",
+		`x-anthropic-billing-header: cc_version=${FIXTURE_VERSION}.def; cc_entrypoint=sdk-cli; cch=12345;`,
 		"sdk-cli",
-		"2.1.261",
+		FIXTURE_VERSION,
 	);
 	const result = compare(claude, pi);
 	assert.equal(result.status, 1, result.stdout + result.stderr);
@@ -328,9 +335,9 @@ test("compare rejects a Pi billing header that regresses by omitting cc_prompt_i
 });
 
 test("compare rejects an unrelated user-agent profile", () => {
-	const claude = request("x-anthropic-billing-header: cc_version=2.1.233.abc; cc_entrypoint=sdk-cli;", "other");
+	const claude = request(`x-anthropic-billing-header: cc_version=${FIXTURE_VERSION}.abc; cc_entrypoint=sdk-cli;`, "other");
 	const pi = request(
-		"x-anthropic-billing-header: cc_version=2.1.233.def; cc_entrypoint=cli; cch=12345; cc_prompt_id=123e4567-e89b-42d3-a456-426614174001;",
+		`x-anthropic-billing-header: cc_version=${FIXTURE_VERSION}.def; cc_entrypoint=cli; cch=12345; cc_prompt_id=123e4567-e89b-42d3-a456-426614174001;`,
 	);
 	const result = compare(claude, pi);
 	assert.equal(result.status, 1, result.stdout + result.stderr);
@@ -338,11 +345,11 @@ test("compare rejects an unrelated user-agent profile", () => {
 });
 
 test("compare rejects matching user-agents that disagree with both billing versions", () => {
-	const claude = request("x-anthropic-billing-header: cc_version=2.1.233.abc; cc_entrypoint=sdk-cli;", "sdk-cli", "2.1.234");
+	const claude = request(`x-anthropic-billing-header: cc_version=${FIXTURE_VERSION}.abc; cc_entrypoint=sdk-cli;`, "sdk-cli", MISMATCH_VERSION);
 	const pi = request(
-		"x-anthropic-billing-header: cc_version=2.1.233.def; cc_entrypoint=cli; cch=12345; cc_prompt_id=123e4567-e89b-42d3-a456-426614174001;",
+		`x-anthropic-billing-header: cc_version=${FIXTURE_VERSION}.def; cc_entrypoint=cli; cch=12345; cc_prompt_id=123e4567-e89b-42d3-a456-426614174001;`,
 		"cli",
-		"2.1.234",
+		MISMATCH_VERSION,
 	);
 	const result = compare(claude, pi);
 	assert.equal(result.status, 1, result.stdout + result.stderr);
@@ -352,7 +359,7 @@ test("compare rejects matching user-agents that disagree with both billing versi
 test("compare reports a malformed genuine billing header instead of silently skipping it", () => {
 	const claude = request("not a billing header");
 	const pi = request(
-		"x-anthropic-billing-header: cc_version=2.1.233.def; cc_entrypoint=cli; cch=12345; cc_prompt_id=123e4567-e89b-42d3-a456-426614174001;",
+		`x-anthropic-billing-header: cc_version=${FIXTURE_VERSION}.def; cc_entrypoint=cli; cch=12345; cc_prompt_id=123e4567-e89b-42d3-a456-426614174001;`,
 	);
 	const result = compare(claude, pi);
 	assert.equal(result.status, 1, result.stdout + result.stderr);
@@ -361,10 +368,22 @@ test("compare reports a malformed genuine billing header instead of silently ski
 
 test("compare rejects missing or drifted first-party headers and body controls", () => {
 	const billing = (suffix: string, promptId: string) =>
-		`x-anthropic-billing-header: cc_version=2.1.261.${suffix}; cc_entrypoint=sdk-cli; cch=12345; cc_prompt_id=${promptId};`;
-	const genuine = () => request(billing("abc", "123e4567-e89b-42d3-a456-426614174000"), "sdk-cli", "2.1.261");
-	const native = () => request(billing("def", "123e4567-e89b-42d3-a456-426614174001"), "sdk-cli", "2.1.261");
+		`x-anthropic-billing-header: cc_version=${FIXTURE_VERSION}.${suffix}; cc_entrypoint=sdk-cli; cch=12345; cc_prompt_id=${promptId};`;
+	const genuine = () => request(billing("abc", "123e4567-e89b-42d3-a456-426614174000"), "sdk-cli", FIXTURE_VERSION);
+	const native = () => request(billing("def", "123e4567-e89b-42d3-a456-426614174001"), "sdk-cli", FIXTURE_VERSION);
 	const cases: Array<[string, (value: ReturnType<typeof request>) => void, RegExp]> = [
+		[
+			"request class",
+			(value) => ((value.headers as Record<string, string>)["x-claude-code-request-class"] = "auxiliary"),
+			/x-claude-code-request-class.*matches genuine/,
+		],
+		[
+			"turn origin",
+			(value) => {
+				value.body.system[0].text = value.body.system[0].text.replace("cc_turn_origin=sdk;", "cc_turn_origin=human;");
+			},
+			/cc_turn_origin matches the genuine mode/,
+		],
 		[
 			"client request id",
 			(value) => ((value.headers as Record<string, string>)["x-client-request-id"] = "not-a-uuid"),

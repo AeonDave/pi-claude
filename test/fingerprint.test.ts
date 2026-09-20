@@ -27,9 +27,20 @@ async function reload(): Promise<typeof import("../src/constants.ts")> {
 	return await import("../src/constants.ts");
 }
 
+async function bundledVersion(): Promise<string> {
+	return (await import("../src/constants.ts")).BUNDLED_CC_VERSION;
+}
+
+function nextPatchVersion(version: string): string {
+	const parts = version.split(".").map(Number);
+	assert.equal(parts.length, 3, `expected semver-like bundled version, got ${version}`);
+	assert.ok(parts.every(Number.isInteger), `expected numeric bundled version, got ${version}`);
+	parts[2] += 1;
+	return parts.join(".");
+}
+
 test("fingerprint coercion keeps only valid per-model budget-thinking profiles", () => {
 	const fingerprint = coerceFingerprint({
-		version: "2.1.267",
 		modelBudgetThinking: {
 			"claude-opus-4-5": { budgetTokens: 31_999, effort: "high" },
 			"claude-sonnet-4-5": { budgetTokens: 31_999 },
@@ -52,9 +63,10 @@ test("a captured per-model beta set is used verbatim, preserving the genuine fla
 	// produce the base's order, so a captured set has to win outright. This is
 	// what lets a re-capture make a NEW model exact with no code change.
 	const haiku = "oauth-2025-04-20,interleaved-thinking-2025-05-14,claude-code-20250219";
+	const currentVersion = await bundledVersion();
 	const constants = await withFingerprint(
 		JSON.stringify({
-			version: "2.1.266",
+			version: currentVersion,
 			anthropicBeta: "a,b,c",
 			modelBeta: { "claude-haiku-4-5": haiku },
 			modelMaxTokens: { "claude-haiku-4-5": 31_337 },
@@ -67,8 +79,9 @@ test("a captured per-model beta set is used verbatim, preserving the genuine fla
 });
 
 test("an explicit env override outranks a captured per-model set", async () => {
+	const currentVersion = await bundledVersion();
 	const constants = await withFingerprint(
-		JSON.stringify({ version: "2.1.266", anthropicBeta: "a,b", modelBeta: { "claude-opus-5": "captured" } }),
+		JSON.stringify({ version: currentVersion, anthropicBeta: "a,b", modelBeta: { "claude-opus-5": "captured" } }),
 	);
 	const previous = process.env.PI_CLAUDE_NATIVE_ANTHROPIC_BETA;
 	process.env.PI_CLAUDE_NATIVE_ANTHROPIC_BETA = "pinned-by-user";
@@ -94,12 +107,13 @@ test("a hand-edited fingerprint with wrong types degrades instead of crashing th
 	process.env.USERPROFILE = home;
 	delete process.env.PI_CLAUDE_NATIVE_CC_VERSION;
 	try {
+		const currentVersion = await bundledVersion();
 		const constants = await withFingerprint(
 			'{"version": 2.1261, "anthropicBeta": ["a","b"], "entrypoint": 7, "modelBeta": "nope", "modelMaxTokens": {"claude-opus-5": "64000"}}',
 		);
 		assert.deepEqual(
 			constants.getClaudeCodeVersionInfo(),
-			{ version: "2.1.266", source: "default" },
+			{ version: currentVersion, source: "default" },
 			"falls back past the invalid pin without consulting host state",
 		);
 		assert.equal(constants.getClaudeCodeEntrypoint(), "sdk-cli");
@@ -148,9 +162,10 @@ test("a captured dated wire id also matches the clean alias the provider registe
 	// `claude-haiku-4-5`. Without matching both spellings the captured set — and the
 	// genuine flag ORDER it exists to preserve — would never reach the wire.
 	const genuine = "oauth-2025-04-20,interleaved-thinking-2025-05-14,claude-code-20250219";
+	const currentVersion = await bundledVersion();
 	const constants = await withFingerprint(
 		JSON.stringify({
-			version: "2.1.266",
+			version: currentVersion,
 			anthropicBeta: "a,b",
 			modelBeta: { "claude-haiku-4-5-20251001": genuine },
 			modelMaxTokens: { "claude-haiku-4-5-20251001": 31_999 },
@@ -180,7 +195,7 @@ test("a fingerprint older than the bundled capture cannot mask newer per-model d
 	assert.ok(constants.getAnthropicBetaForModel("claude-opus-5").includes("mid-conversation-tool-changes-2026-07-01"));
 	assert.equal(constants.getClaudeCodeEntrypoint(), "sdk-cli");
 	assert.equal(constants.getClaudeCodeMaxTokensForModel("claude-opus-5"), 64_000);
-	assert.ok(constants.compareVersions(constants.getClaudeCodeVersion(), "2.1.266") >= 0);
+	assert.ok(constants.compareVersions(constants.getClaudeCodeVersion(), await bundledVersion()) >= 0);
 });
 
 test("a versionless fingerprint cannot bypass the bundled freshness floor", async () => {
@@ -201,8 +216,9 @@ test("a newer partial fingerprint never composes its common beta with older bund
 	const midConversation = "mid-conversation-system-2026-04-07";
 	const advanced = "advanced-tool-use-2025-11-20";
 	const effort = "effort-2025-11-24";
+	const binding = "thinking-binding-controls-2026-08-01";
 	const displayUpdates = "thinking-display-updates-2026-08-18";
-	const futureBase = ["future-common-a", midConversation, advanced, effort, "future-common-z"];
+	const futureBase = ["future-common-a", midConversation, advanced, effort, binding, "future-common-z"];
 	const saved = {
 		fingerprint: process.env.PI_CLAUDE_NATIVE_FINGERPRINT,
 		beta: process.env.PI_CLAUDE_NATIVE_ANTHROPIC_BETA,
@@ -211,9 +227,10 @@ test("a newer partial fingerprint never composes its common beta with older bund
 	delete process.env.PI_CLAUDE_NATIVE_ANTHROPIC_BETA;
 	delete process.env.PI_CLAUDE_NATIVE_CC_ENTRYPOINT;
 	try {
+		const futureVersion = nextPatchVersion(await bundledVersion());
 		const constants = await withFingerprint(
 			JSON.stringify({
-				version: "2.1.267",
+				version: futureVersion,
 				anthropicBeta: futureBase.join(","),
 				modelBeta: {
 					"claude-opus-5": [...futureBase, "future-opus-only"].join(","),
@@ -221,12 +238,12 @@ test("a newer partial fingerprint never composes its common beta with older bund
 				},
 			}),
 		);
-		const expectedTui = ["future-common-a", midConversation, advanced, effort, displayUpdates, "future-common-z"];
+		const expectedTui = ["future-common-a", midConversation, advanced, effort, binding, displayUpdates, "future-common-z"];
 		for (const id of ["claude-opus-4-7", "claude-fable-5"]) {
 			assert.deepEqual(
 				constants.getAnthropicBetaForModel(id, "print").split(","),
 				futureBase,
-				`${id}: no 2.1.266 model delta is composed with a 2.1.267 base`,
+				`${id}: no bundled model delta is composed with a ${futureVersion} base`,
 			);
 			const tui = constants.getAnthropicBetaForModel(id, "tui").split(",");
 			assert.deepEqual(tui, expectedTui, `${id}: TUI adds only its mode-wide signal`);
@@ -253,9 +270,10 @@ test("a newer fingerprint with only modelBeta does not apply bundled deltas to a
 	};
 	delete process.env.PI_CLAUDE_NATIVE_ANTHROPIC_BETA;
 	try {
+		const futureVersion = nextPatchVersion(await bundledVersion());
 		const constants = await withFingerprint(
 			JSON.stringify({
-				version: "2.1.267",
+				version: futureVersion,
 				modelBeta: { "claude-opus-5": "future-opus-only" },
 			}),
 		);
@@ -263,7 +281,7 @@ test("a newer fingerprint with only modelBeta does not apply bundled deltas to a
 		assert.equal(
 			constants.getAnthropicBetaForModel("claude-opus-4-7", "print"),
 			constants.DEFAULT_ANTHROPIC_BETA,
-			"the omitted id keeps the common fallback instead of inheriting its 2.1.266 removal",
+			"the omitted id keeps the common fallback instead of inheriting a bundled removal",
 		);
 	} finally {
 		if (saved.fingerprint === undefined) delete process.env.PI_CLAUDE_NATIVE_FINGERPRINT;
@@ -277,9 +295,10 @@ test("a newer fingerprint with only modelBeta does not apply bundled deltas to a
 test("a newer fingerprint uses captured budget thinking but never fills an omitted profile from bundled data", async () => {
 	const savedFingerprint = process.env.PI_CLAUDE_NATIVE_FINGERPRINT;
 	try {
+		const futureVersion = nextPatchVersion(await bundledVersion());
 		const constants = await withFingerprint(
 			JSON.stringify({
-				version: "2.1.267",
+				version: futureVersion,
 				modelBudgetThinking: {
 					"claude-opus-4-5": { budgetTokens: 30_123, effort: "xhigh" },
 				},
@@ -292,7 +311,7 @@ test("a newer fingerprint uses captured budget thinking but never fills an omitt
 		assert.equal(
 			constants.getClaudeCodeBudgetThinkingProfileForModel("claude-sonnet-4-5"),
 			undefined,
-			"an omitted 2.1.267 id cannot inherit its bundled 2.1.266 profile",
+			`an omitted ${futureVersion} id cannot inherit its bundled ${await bundledVersion()} profile`,
 		);
 	} finally {
 		if (savedFingerprint === undefined) delete process.env.PI_CLAUDE_NATIVE_FINGERPRINT;
@@ -304,9 +323,10 @@ test("a newer fingerprint uses captured budget thinking but never fills an omitt
 test("a newer partial fingerprint leaves uncaptured max_tokens alone but applies an explicit captured cap", async () => {
 	const savedFingerprint = process.env.PI_CLAUDE_NATIVE_FINGERPRINT;
 	try {
+		const futureVersion = nextPatchVersion(await bundledVersion());
 		const constants = await withFingerprint(
 			JSON.stringify({
-				version: "2.1.267",
+				version: futureVersion,
 				anthropicBeta: "future-common",
 				modelMaxTokens: { "claude-opus-5": 63_001 },
 			}),
@@ -315,7 +335,11 @@ test("a newer partial fingerprint leaves uncaptured max_tokens alone but applies
 
 		const uncaptured = { model: "claude-fable-5", max_tokens: 128_000, messages: [] };
 		const missingCap = constants.getClaudeCodeMaxTokensForModel(uncaptured.model);
-		assert.equal(missingCap, undefined, "a 2.1.267 fingerprint cannot inherit a bundled 2.1.266 cap");
+		assert.equal(
+			missingCap,
+			undefined,
+			`${futureVersion} fingerprint cannot inherit a bundled ${await bundledVersion()} cap`,
+		);
 		assert.equal(applyClaudeCodeMaxTokens(uncaptured, missingCap), uncaptured, "the serialized payload remains untouched");
 
 		const captured = { model: "claude-opus-5", max_tokens: 128_000, messages: [] };
@@ -339,8 +363,9 @@ test("state lives under Pi's agent dir, and a pre-1.5.0 loose file is MOVED ther
 	const home = mkdtempSync(join(tmpdir(), "claude-native-home-"));
 	const agentDir = join(home, ".pi", "agent");
 	const legacy = join(home, ".pi", "claude-native-fingerprint.json");
+	const currentVersion = await bundledVersion();
 	mkdirSync(join(home, ".pi"), { recursive: true });
-	writeFileSync(legacy, JSON.stringify({ version: "2.1.266", anthropicBeta: "from-legacy" }), "utf8");
+	writeFileSync(legacy, JSON.stringify({ version: currentVersion, anthropicBeta: "from-legacy" }), "utf8");
 
 	const saved = {
 		HOME: process.env.HOME,
@@ -387,16 +412,17 @@ test("migration never overwrites a file already at the current path", async () =
 	const home = mkdtempSync(join(tmpdir(), "claude-native-keep-"));
 	const agentDir = join(home, ".pi", "agent");
 	const stateDir = join(agentDir, "claude-native");
+	const currentVersion = await bundledVersion();
 	mkdirSync(join(home, ".pi"), { recursive: true });
 	mkdirSync(stateDir, { recursive: true });
 	writeFileSync(
 		join(home, ".pi", "claude-native-fingerprint.json"),
-		JSON.stringify({ version: "2.1.266", anthropicBeta: "old" }),
+		JSON.stringify({ version: currentVersion, anthropicBeta: "old" }),
 		"utf8",
 	);
 	writeFileSync(
 		join(stateDir, "fingerprint.json"),
-		JSON.stringify({ version: "2.1.266", anthropicBeta: "current" }),
+		JSON.stringify({ version: currentVersion, anthropicBeta: "current" }),
 		"utf8",
 	);
 

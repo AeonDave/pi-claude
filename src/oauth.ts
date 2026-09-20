@@ -14,11 +14,87 @@ import {
 	CLIENT_ID,
 	OAUTH_SCOPES,
 	PROVIDER_NAME,
+	PROVIDER_ID,
 	REDIRECT_URI,
 	TOKEN_URL,
 	TOKEN_USER_AGENT,
 } from "./constants.ts";
 import { generatePKCE } from "./pkce.ts";
+
+const TOKEN_REQUEST_TIMEOUT_MS = 30_000;
+const TOKEN_EXPIRY_SAFETY_MS = 5 * 60 * 1000;
+
+/** OAuth error codes that are safe and useful to expose in a diagnostic. */
+const SAFE_OAUTH_ERROR_CODES = new Set([
+	"invalid_request",
+	"invalid_client",
+	"invalid_grant",
+	"unauthorized_client",
+	"unsupported_grant_type",
+	"invalid_scope",
+	"temporarily_unavailable",
+	"server_error",
+]);
+
+type TokenOperation = "login" | "refresh";
+
+function nonEmptyString(value: unknown): value is string {
+	return typeof value === "string" && value.trim().length > 0;
+}
+
+function safeOAuthErrorCode(value: unknown): string | undefined {
+	return typeof value === "string" && SAFE_OAUTH_ERROR_CODES.has(value) ? value : undefined;
+}
+
+function operationLabel(operation: TokenOperation): string {
+	return operation === "refresh" ? "refresh" : "authorization";
+}
+
+function tokenFailure(operation: TokenOperation, status: number, code?: string): Error {
+	const label = operationLabel(operation);
+	if (code === "invalid_grant") {
+		if (operation === "refresh") {
+			return new Error(
+				`Anthropic OAuth refresh failed (HTTP ${status}, invalid_grant): the refresh token is expired or revoked; run \`/login ${PROVIDER_ID}\` (${PROVIDER_NAME}) again.`,
+			);
+		}
+		return new Error(
+			`Anthropic OAuth authorization failed (HTTP ${status}, invalid_grant): the authorization code is expired or already used; run \`/login ${PROVIDER_ID}\` (${PROVIDER_NAME}) again.`,
+		);
+	}
+
+	const reason =
+		code === "temporarily_unavailable" || code === "server_error"
+			? "temporarily unavailable; try again later"
+			: status === 429
+				? "rate limited; try again later"
+				: status >= 500
+					? "server error; try again later"
+					: "request rejected";
+	const detail = code ? `, ${code}` : "";
+	return new Error(`Anthropic OAuth ${label} failed (HTTP ${status}${detail}): ${reason}.`);
+}
+
+function invalidTokenResponse(operation: TokenOperation, reason: string): Error {
+	return new Error(`Anthropic OAuth ${operationLabel(operation)} returned an invalid token response: ${reason}.`);
+}
+
+function requestSignal(signal?: AbortSignal): { signal: AbortSignal; cleanup: () => void } {
+	const controller = new AbortController();
+	const timeout = setTimeout(() => controller.abort(), TOKEN_REQUEST_TIMEOUT_MS);
+	const onAbort = (): void => controller.abort(signal?.reason);
+	if (signal) {
+		if (signal.aborted) onAbort();
+		else signal.addEventListener("abort", onAbort, { once: true });
+	}
+	return {
+		signal: controller.signal,
+		cleanup: () => {
+			clearTimeout(timeout);
+			signal?.removeEventListener("abort", onAbort);
+		},
+	};
+}
 
 /** Accept a raw `code#state`, a bare code, a query string, or a full redirect URL. */
 function parseAuthorizationInput(input: string): { code?: string; state?: string } {
@@ -47,36 +123,64 @@ function parseAuthorizationInput(input: string): { code?: string; state?: string
 	return { code: value };
 }
 
-async function tokenRequest(body: Record<string, string>): Promise<OAuthCredentials> {
-	const response = await fetch(TOKEN_URL, {
-		method: "POST",
-		headers: {
-			"Content-Type": "application/json",
-			Accept: "application/json, text/plain, */*",
-			"User-Agent": TOKEN_USER_AGENT,
-		},
-		body: JSON.stringify(body),
-		signal: AbortSignal.timeout(30_000),
-	});
-
-	const text = await response.text();
-	if (!response.ok) {
-		throw new Error(`Anthropic token request failed (HTTP ${response.status}): ${text}`);
-	}
-
-	let data: { access_token: string; refresh_token: string; expires_in: number };
+async function tokenRequest(
+	body: Record<string, string>,
+	operation: TokenOperation,
+	fallbackRefresh?: string,
+	signal?: AbortSignal,
+): Promise<OAuthCredentials> {
+	const request = requestSignal(signal);
+	let response: Response;
+	let text: string;
 	try {
-		data = JSON.parse(text) as typeof data;
-	} catch {
-		throw new Error(`Anthropic token response was not valid JSON: ${text}`);
+		response = await fetch(TOKEN_URL, {
+			method: "POST",
+			headers: {
+				"Content-Type": "application/json",
+				Accept: "application/json, text/plain, */*",
+				"User-Agent": TOKEN_USER_AGENT,
+			},
+			body: JSON.stringify(body),
+			signal: request.signal,
+		});
+		text = await response.text();
+	} finally {
+		request.cleanup();
 	}
 
-	return {
-		refresh: data.refresh_token,
-		access: data.access_token,
-		// 5-minute safety margin before expiry, matching Pi's built-in flow.
-		expires: Date.now() + data.expires_in * 1000 - 5 * 60 * 1000,
-	};
+	let data: Record<string, unknown> | undefined;
+	try {
+		const parsed: unknown = JSON.parse(text);
+		if (parsed && typeof parsed === "object" && !Array.isArray(parsed)) data = parsed as Record<string, unknown>;
+	} catch {
+		// The response body is deliberately omitted from errors; token endpoints can
+		// return arbitrary text and diagnostics must never echo response contents.
+	}
+
+	const code = safeOAuthErrorCode(data?.error);
+	if (!response.ok || data?.error !== undefined) throw tokenFailure(operation, response.status, code);
+	if (!data) throw invalidTokenResponse(operation, "body is not valid JSON");
+
+	const access = data.access_token;
+	const refreshValue = data.refresh_token;
+	const refresh = refreshValue === undefined ? fallbackRefresh : refreshValue;
+	if (!nonEmptyString(access)) throw invalidTokenResponse(operation, "missing access token");
+	if (!nonEmptyString(refresh)) throw invalidTokenResponse(operation, "missing refresh token");
+
+	const expiresIn = data.expires_in;
+	const ttlMs = typeof expiresIn === "number" && Number.isFinite(expiresIn) ? expiresIn * 1000 : Number.NaN;
+	if (!Number.isFinite(ttlMs) || ttlMs <= 0) throw invalidTokenResponse(operation, "expires_in must be a finite positive number");
+
+	const now = Date.now();
+	// Keep the margin bounded for short-lived tokens: Pi must receive a future
+	// expiry or it will immediately attempt another refresh.
+	const safetyMargin = Math.min(TOKEN_EXPIRY_SAFETY_MS, ttlMs / 10);
+	const expires = now + ttlMs - safetyMargin;
+	if (!Number.isFinite(expires) || expires <= now || !Number.isFinite(new Date(expires).getTime())) {
+		throw invalidTokenResponse(operation, "computed expiry is not usable");
+	}
+
+	return { refresh, access, expires };
 }
 
 export async function login(callbacks: OAuthLoginCallbacks): Promise<OAuthCredentials> {
@@ -110,15 +214,18 @@ export async function login(callbacks: OAuthLoginCallbacks): Promise<OAuthCreden
 		state: state ?? verifier,
 		redirect_uri: REDIRECT_URI,
 		code_verifier: verifier,
-	});
+	}, "login", undefined, callbacks.signal);
 }
 
-export async function refreshToken(credentials: OAuthCredentials): Promise<OAuthCredentials> {
+export async function refreshToken(credentials: OAuthCredentials, signal?: AbortSignal): Promise<OAuthCredentials> {
+	if (!credentials || !nonEmptyString(credentials.refresh)) {
+		throw new Error("Anthropic OAuth refresh token is missing; run `/login` for Claude Pro/Max Native again.");
+	}
 	return tokenRequest({
 		grant_type: "refresh_token",
 		client_id: CLIENT_ID,
 		refresh_token: credentials.refresh,
-	});
+	}, "refresh", credentials.refresh, signal);
 }
 
 export function getApiKey(credentials: OAuthCredentials): string {

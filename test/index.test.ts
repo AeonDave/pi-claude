@@ -73,7 +73,7 @@ test("session refresh re-registers when catalog fields change without an id/wind
 		claudeProMaxNative(pi as never);
 		const initial = registrations[0] as { models: Array<{ id: string; headers?: Record<string, string> }> };
 		const haikuBeta = initial.models.find((model) => model.id === "claude-haiku-4-5")?.headers?.["anthropic-beta"];
-		assert.equal(haikuBeta?.split(",").length, 10, "Haiku uses the captured non-effort beta set");
+		assert.equal(haikuBeta?.split(",").length, 11, "Haiku uses the captured non-effort beta set");
 		assert.ok(!haikuBeta?.includes("afk-mode-2026-01-31"));
 
 		let catalog = [fableModel()];
@@ -273,7 +273,9 @@ test("request and header hooks emit coherent TUI and print Claude profiles", () 
 		assert.match(tui.headers["user-agent"] ?? "", /^claude-cli\/[0-9]+\.[0-9]+\.[0-9]+ \(external, cli\)$/);
 		assert.equal(tui.headers["anthropic-beta"], getAnthropicBetaForModel("claude-opus-5", "tui"));
 		assert.ok(tui.headers["anthropic-beta"].includes("thinking-display-updates-2026-08-18"));
-		assert.ok(tui.headers["anthropic-beta"].includes("fallback-credit-2026-06-01"));
+		assert.equal(tui.headers["anthropic-beta"].includes("fallback-credit-2026-06-01"), false);
+		assert.match(tui.transformed.system[0]?.text ?? "", / cc_turn_origin=human;$/);
+		assert.equal(tui.headers["x-claude-code-request-class"], "main");
 
 		const print = applyProfile("print", CLAUDE_CODE_IDENTITY);
 		assert.match(print.transformed.system[0]?.text ?? "", /cc_entrypoint=sdk-cli;/);
@@ -283,6 +285,8 @@ test("request and header hooks emit coherent TUI and print Claude profiles", () 
 		assert.equal(print.headers["anthropic-beta"], getAnthropicBetaForModel("claude-opus-5", "print"));
 		assert.equal(print.headers["anthropic-beta"].includes("thinking-display-updates-2026-08-18"), false);
 		assert.equal(print.headers["anthropic-beta"].includes("fallback-credit-2026-06-01"), false);
+		assert.match(print.transformed.system[0]?.text ?? "", / cc_turn_origin=sdk;$/);
+		assert.equal(print.headers["x-claude-code-request-class"], "main");
 	} finally {
 		for (const [name, value] of saved) {
 			if (value === undefined) delete process.env[name];
@@ -309,6 +313,7 @@ test("x-client-request-id is set per request, in place, and only for this provid
 	hook({ type: "before_provider_headers", headers }, nativeCtx);
 	const first = headers["x-client-request-id"];
 	assert.match(first, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
+	assert.equal(headers["x-claude-code-request-class"], "main");
 
 	// Genuine Claude Code sends a FRESH id on every request.
 	const second: Record<string, string> = {};

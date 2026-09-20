@@ -1,3 +1,5 @@
+import { parseModelId } from "../src/models.ts";
+
 export interface FingerprintCandidate {
 	wireModel: string;
 	userAgent: string;
@@ -10,9 +12,30 @@ export interface FingerprintCandidate {
 	hasCch?: boolean;
 	identity?: unknown;
 	thinkingDisplay?: unknown;
+	toolsCount?: number;
+	requestClass?: unknown;
+	turnOrigin?: unknown;
 	has1mBeta: boolean;
 	beta: string[];
 	triggeredBy: string[];
+}
+
+export interface TuiThinkingProfile {
+	type: string | null;
+	display: string | null;
+	budgetTokens: number | null;
+	effort: string | null;
+}
+
+export interface TuiFingerprint {
+	capturedAt: string;
+	mode: "tui";
+	version: string;
+	entrypoint: "cli";
+	userAgent: string;
+	modelBeta: Record<string, string>;
+	modelMaxTokens: Record<string, number>;
+	modelThinking: Record<string, TuiThinkingProfile>;
 }
 
 export interface FingerprintBaseline {
@@ -57,7 +80,43 @@ export const DEFAULT_CAPTURE_MODELS = [
 	"claude-haiku-4-5",
 ] as const;
 
+/** Exact clean ids currently exposed by the provider; aliases are not enough for a TUI overlay. */
+export const DEFAULT_TUI_CAPTURE_MODELS = DEFAULT_CAPTURE_MODELS.filter(
+	(model): model is Extract<typeof DEFAULT_CAPTURE_MODELS[number], `claude-${string}`> => model.startsWith("claude-"),
+);
+
 const CONTEXT_1M_BETA = "context-1m-2025-08-07";
+
+/** Read the current prompt from a hand-captured interactive turn with history. */
+export function lastUserMessageText(body: unknown): string | undefined {
+	if (!body || typeof body !== "object" || !Array.isArray((body as { messages?: unknown }).messages)) return undefined;
+	const messages = (body as { messages: unknown[] }).messages;
+	let message: Record<string, unknown> | undefined;
+	for (let i = messages.length - 1; i >= 0; i--) {
+		const candidate = messages[i];
+		if (candidate && typeof candidate === "object" && (candidate as { role?: unknown }).role === "user") {
+			message = candidate as Record<string, unknown>;
+			break;
+		}
+	}
+	if (!message) return undefined;
+	if (typeof message.content === "string") return message.content;
+	if (!Array.isArray(message.content)) return undefined;
+	for (let i = message.content.length - 1; i >= 0; i--) {
+		const block = message.content[i];
+		if (block && typeof block === "object" && (block as { type?: unknown }).type === "text" && typeof (block as { text?: unknown }).text === "string") {
+			return (block as { text: string }).text;
+		}
+	}
+	return undefined;
+}
+
+/** Select raw interactive turns by their probe only; profile drift must reach the strict validator. */
+export function isRequestedTuiCapture(body: unknown, expectedPrompt: string): boolean {
+	if (!body || typeof body !== "object") return false;
+	const model = (body as { model?: unknown }).model;
+	return typeof model === "string" && model.length > 0 && lastUserMessageText(body) === expectedPrompt;
+}
 
 /** Validate the private readiness proof returned by the just-spawned capture proxy. */
 export function isCaptureProxyHealthResponse(
@@ -120,6 +179,105 @@ export function assertNonInteractiveCaptureProfile(
 	}
 }
 
+/** Validate hand-captured interactive Claude requests before producing a review artifact. */
+export function selectTuiCaptureCandidates(
+	candidates: readonly FingerprintCandidate[],
+	expectedModels: readonly string[] = DEFAULT_TUI_CAPTURE_MODELS,
+): FingerprintCandidate[] {
+	const required = new Set(expectedModels.map(stripDateSuffix));
+	const byModel = new Map<string, FingerprintCandidate>();
+	let version: string | undefined;
+	let userAgent: string | undefined;
+	for (const candidate of candidates) {
+		const model = stripDateSuffix(candidate.wireModel);
+		if (!required.has(model) && !parseModelId(model)) {
+			throw new Error(`unexpected TUI capture model: ${candidate.wireModel}`);
+		}
+		if (!candidate.version || !candidate.userAgent || candidate.entrypoint !== "cli") {
+			throw new Error(`${candidate.wireModel}: expected cli interactive capture profile`);
+		}
+		if (!/^claude-cli\/\d+\.\d+\.\d+ \(external, cli\)$/.test(candidate.userAgent)) {
+			throw new Error(`${candidate.wireModel}: expected external/cli user-agent`);
+		}
+		if (candidate.identity !== "You are Claude Code, Anthropic's official CLI for Claude.") {
+			throw new Error(`${candidate.wireModel}: interactive Claude Code identity mismatch`);
+		}
+		if (candidate.thinkingDisplay !== "updates") {
+			throw new Error(`${candidate.wireModel}: expected thinking.display=updates`);
+		}
+		if (candidate.requestClass !== "main") {
+			throw new Error(`${candidate.wireModel}: expected x-claude-code-request-class=main`);
+		}
+		if (candidate.turnOrigin !== "human") {
+			throw new Error(`${candidate.wireModel}: expected cc_turn_origin=human`);
+		}
+		if (candidate.toolsCount === undefined || !Number.isSafeInteger(candidate.toolsCount) || candidate.toolsCount <= 0) {
+			throw new Error(`${candidate.wireModel}: main TUI capture must contain tools`);
+		}
+		if (candidate.hasCch !== true) throw new Error(`${candidate.wireModel}: first-party cch marker is missing`);
+		if (candidate.beta.length === 0) throw new Error(`${candidate.wireModel}: anthropic-beta is empty`);
+		if (new Set(candidate.beta).size !== candidate.beta.length) {
+			throw new Error(`${candidate.wireModel}: anthropic-beta contains duplicate flags`);
+		}
+		if (candidate.has1mBeta || candidate.beta.includes(CONTEXT_1M_BETA)) {
+			throw new Error(`${candidate.wireModel}: TUI capture unexpectedly contains ${CONTEXT_1M_BETA}`);
+		}
+		if (typeof candidate.maxTokens !== "number" || !Number.isSafeInteger(candidate.maxTokens) || candidate.maxTokens <= 0) {
+			throw new Error(`${candidate.wireModel}: max_tokens must be a positive integer`);
+		}
+		if (candidate.effort !== null && candidate.effort !== undefined) {
+			if (typeof candidate.effort !== "string" || !["low", "medium", "high", "xhigh", "max"].includes(candidate.effort)) {
+				throw new Error(`${candidate.wireModel}: output_config.effort is invalid`);
+			}
+		}
+		if (candidate.thinkingType === "enabled" && (!Number.isSafeInteger(candidate.budgetTokens) || (candidate.budgetTokens as number) <= 0)) {
+			throw new Error(`${candidate.wireModel}: thinking.budget_tokens must be a positive integer`);
+		}
+		if (version === undefined) version = candidate.version;
+		else if (candidate.version !== version) throw new Error(`${candidate.wireModel}: TUI capture version differs from ${version}`);
+		if (userAgent === undefined) userAgent = candidate.userAgent;
+		else if (candidate.userAgent !== userAgent) throw new Error(`${candidate.wireModel}: TUI user-agent differs from the selected profile`);
+		const previous = byModel.get(model);
+		if (previous) assertConsistentFingerprintCandidate(previous, candidate);
+		else byModel.set(model, candidate);
+	}
+	const missing = [...required].filter((model) => !byModel.has(model));
+	if (missing.length > 0) throw new Error(`missing TUI capture(s): ${missing.join(", ")}`);
+	const additional = [...byModel.keys()].filter((model) => !required.has(model)).sort((a, b) => a.localeCompare(b));
+	return [...required, ...additional].map((model) => byModel.get(model)!);
+}
+
+/** Build a review-only TUI artifact. It is intentionally not the runtime fingerprint schema. */
+export function buildTuiFingerprint(candidates: readonly FingerprintCandidate[], capturedAt: string): TuiFingerprint {
+	if (candidates.length === 0 || !candidates[0].version || !candidates[0].userAgent) {
+		throw new Error("cannot build TUI fingerprint without captured candidates");
+	}
+	const modelBeta: Record<string, string> = {};
+	const modelMaxTokens: Record<string, number> = {};
+	const modelThinking: Record<string, TuiThinkingProfile> = {};
+	for (const candidate of candidates) {
+		const model = stripDateSuffix(candidate.wireModel);
+		modelBeta[model] = candidate.beta.join(",");
+		modelMaxTokens[model] = candidate.maxTokens as number;
+		modelThinking[model] = {
+			type: typeof candidate.thinkingType === "string" ? candidate.thinkingType : null,
+			display: typeof candidate.thinkingDisplay === "string" ? candidate.thinkingDisplay : null,
+			budgetTokens: typeof candidate.budgetTokens === "number" ? candidate.budgetTokens : null,
+			effort: typeof candidate.effort === "string" ? candidate.effort : null,
+		};
+	}
+	return {
+		capturedAt,
+		mode: "tui",
+		version: candidates[0].version,
+		entrypoint: "cli",
+		userAgent: candidates[0].userAgent,
+		modelBeta,
+		modelMaxTokens,
+		modelThinking,
+	};
+}
+
 /** Distinguish the requested normal turn from title/auxiliary traffic. */
 export function isRequestedMainCapture(
 	requestedModel: string,
@@ -175,6 +333,8 @@ export function assertConsistentFingerprintCandidate(
 		["thinking.budget_tokens", previous.budgetTokens, current.budgetTokens],
 		["system identity", previous.identity, current.identity],
 		["thinking.display", previous.thinkingDisplay, current.thinkingDisplay],
+		["request class", previous.requestClass, current.requestClass],
+		["turn origin", previous.turnOrigin, current.turnOrigin],
 	];
 	for (const [field, before, after] of fields) {
 		if (JSON.stringify(before) !== JSON.stringify(after)) {

@@ -53,11 +53,16 @@ import {
 	buildModelBeta,
 	buildModelBudgetThinking,
 	buildModelMaxTokens,
+	buildTuiFingerprint,
 	computeBetaDeviations,
 	DEFAULT_CAPTURE_MODELS,
+	DEFAULT_TUI_CAPTURE_MODELS,
 	isCaptureProxyHealthResponse,
 	isRequestedMainCapture,
+	isRequestedTuiCapture,
+	lastUserMessageText,
 	parseCaptureProfile,
+	selectTuiCaptureCandidates,
 	selectFingerprintBaseline,
 } from "./fingerprint-baseline.ts";
 
@@ -71,6 +76,28 @@ const PROXY_HEALTH_PATH = "/__pi_claude_capture_health";
 
 const args = process.argv.slice(2);
 const APPLY = args.includes("--apply");
+const modeIndex = args.indexOf("--mode");
+if (modeIndex >= 0 && (!args[modeIndex + 1] || args[modeIndex + 1].startsWith("--"))) {
+	console.error("! --mode requires a value (batch or tui)");
+	process.exit(2);
+}
+const MODE = modeIndex >= 0 && args[modeIndex + 1] ? args[modeIndex + 1] : "batch";
+if (MODE !== "batch" && MODE !== "tui") {
+	console.error("! --mode must be batch or tui");
+	process.exit(2);
+}
+const captureDirIndex = args.indexOf("--capture-dir");
+if (captureDirIndex >= 0 && (!args[captureDirIndex + 1] || args[captureDirIndex + 1].startsWith("--"))) {
+	console.error("! --capture-dir requires a directory value");
+	process.exit(2);
+}
+const captureDirArg = captureDirIndex >= 0 && args[captureDirIndex + 1] ? args[captureDirIndex + 1] : "captures/mode-interactive";
+const TUI_MODE = MODE === "tui";
+const TUI_CAPTURE_DIR = TUI_MODE ? resolve(ROOT, captureDirArg) : null;
+if (TUI_MODE && APPLY) {
+	console.error("! --apply is not supported with --mode tui; the TUI artifact is review-only and is not the runtime fingerprint schema");
+	process.exit(2);
+}
 // Re-distill from the raw captures already in captures/fp-raw/ instead of driving
 // `claude` again. Lets the report/fingerprint logic be iterated without spending
 // subscription calls, and recovers a run that captured cleanly but failed later.
@@ -93,6 +120,10 @@ if (MODELS.length === 0 || MODELS.some((model) => !/^[a-zA-Z0-9][a-zA-Z0-9._:-]*
 const ONE_M_BETA = "context-1m-2025-08-07";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const CLAUDE_PROMPT = "reply with the single word ok";
+
+function stripDateSuffix(modelId) {
+	return modelId.replace(/-\d{8}$/, "");
+}
 
 function firstUserMessageText(body) {
 	const message = body?.messages?.find?.((item) => item?.role === "user");
@@ -258,6 +289,37 @@ function betaList(value) {
 	return (value || "").split(",").map((s) => s.trim()).filter(Boolean);
 }
 
+function readTuiCandidate(path) {
+	const record = readRawCapture(path);
+	if (!isRequestedTuiCapture(record?.body, CLAUDE_PROMPT)) return null;
+	const body = record.body;
+	const headers = record.headers || {};
+	const system = Array.isArray(body.system) ? body.system : [];
+	const systemHeader = typeof system[0]?.text === "string" ? system[0].text : "";
+	const userAgent = typeof headers["user-agent"] === "string" ? headers["user-agent"] : "";
+	const profile = parseCaptureProfile(body.model, userAgent, systemHeader);
+	const beta = betaList(headers["anthropic-beta"]);
+	return {
+		wireModel: body.model,
+		userAgent,
+		version: profile.version,
+		entrypoint: profile.entrypoint,
+		effort: body.output_config?.effort ?? null,
+		maxTokens: body.max_tokens,
+		thinkingType: body.thinking?.type ?? null,
+		budgetTokens: body.thinking?.budget_tokens ?? null,
+		identity: system[1]?.text ?? null,
+		thinkingDisplay: body.thinking?.display ?? null,
+		toolsCount: Array.isArray(body.tools) ? body.tools.length : 0,
+		requestClass: headers["x-claude-code-request-class"] ?? null,
+		turnOrigin: /cc_turn_origin=([^;]+);/.exec(systemHeader)?.[1] ?? null,
+		hasCch: / cch=[0-9a-f]{5};/.test(systemHeader),
+		has1mBeta: beta.includes(ONE_M_BETA),
+		beta,
+		triggeredBy: [],
+	};
+}
+
 /** Which alias triggered each raw capture — persisted so `--reuse` keeps it. */
 const OWNERS_PATH = join(RAW_DIR, "owners.json");
 const RUN_MANIFEST_PATH = join(RAW_DIR, "run-manifest.json");
@@ -281,7 +343,7 @@ function readRunManifest() {
 	}
 }
 
-async function main() {
+async function runNonInteractiveCapture() {
 	mkdirSync(RAW_DIR, { recursive: true });
 	const captureOwner = new Map();
 	const runResults = [];
@@ -422,7 +484,10 @@ async function distill(captureOwner, runResults, runManifest) {
 		const triggeredBy = new Set(prev?.triggeredBy || []);
 		if (owner) triggeredBy.add(owner);
 		if (prev) assertConsistentFingerprintCandidate(prev.observation, observation);
-		if (!prev || size > prev.size) byModel.set(rec.body.model, { rec, size, triggeredBy, observation });
+		if (!prev || size > prev.size) {
+			observation.triggeredBy = [...triggeredBy];
+			byModel.set(rec.body.model, { rec, size, triggeredBy, observation });
+		}
 		else {
 			prev.triggeredBy = triggeredBy;
 			prev.observation.triggeredBy = [...triggeredBy];
@@ -524,7 +589,7 @@ async function distill(captureOwner, runResults, runManifest) {
 		``,
 		`## Values for \`src/constants.ts\``,
 		``,
-		`- **version** (\`DEFAULT_CC_VERSION\`, user-agent, billing cc_version): \`${version || "?"}\``,
+		`- **version** (\`BUNDLED_CC_VERSION\`, user-agent, billing cc_version): \`${version || "?"}\``,
 		`- **anthropic-beta** (\`DEFAULT_ANTHROPIC_BETA\`, normal-turn, no context-1m):`,
 		"```",
 		fingerprintBeta.join(",") || "(none captured)",
@@ -592,6 +657,64 @@ async function distill(captureOwner, runResults, runManifest) {
 	console.log(`✓ wrote ${outMd}`);
 	if (APPLY) console.log(`✓ applied to ${applyDest}`);
 	if (removedLegacy) console.log(`✓ removed legacy ${removedLegacy}`);
+}
+
+function distillTui(captureDir) {
+	if (!existsSync(captureDir)) throw new Error(`TUI capture directory does not exist: ${captureDir}`);
+	const captureFiles = readdirSync(captureDir)
+		.filter((file) => /^req-.*\.json$/.test(file))
+		.sort()
+	.map((file) => join(captureDir, file));
+	const candidates = [];
+	const captureTimes = [];
+	for (const file of captureFiles) {
+		const candidate = readTuiCandidate(file);
+		if (!candidate) continue;
+		candidates.push(candidate);
+		captureTimes.push(statSync(file).mtimeMs);
+	}
+	if (candidates.length === 0) {
+		throw new Error(`no matching TUI captures in ${captureDir}; expected a model and current prompt "${CLAUDE_PROMPT}"`);
+	}
+	const selected = selectTuiCaptureCandidates(candidates);
+	const additionalCount = selected.length - DEFAULT_TUI_CAPTURE_MODELS.length;
+	const capturedAt = new Date(Math.max(...captureTimes)).toISOString();
+	const fingerprint = buildTuiFingerprint(selected, capturedAt);
+	const outJson = join(CAPTURE_DIR, `fingerprint-tui-${fingerprint.version}.json`);
+	const outReport = join(CAPTURE_DIR, "fingerprint-tui-report.md");
+	writeFileSync(outJson, `${JSON.stringify(fingerprint, null, 2)}\n`, "utf8");
+	const report = [
+		`# Claude Code TUI fingerprint — ${fingerprint.version}`,
+		"",
+		`Captured from hand-driven requests in \`${captureDir}\` using prompt \`${CLAUDE_PROMPT}\`.`,
+		`Required bundled exact ids: ${DEFAULT_TUI_CAPTURE_MODELS.length}; all were observed with one consistent profile.${additionalCount > 0 ? ` Additional clean ids observed: ${additionalCount}.` : ""}`,
+		"This is a review-only artifact. `--apply` is intentionally rejected because the runtime fingerprint schema is non-interactive.",
+		"",
+		"## Per model",
+		"",
+		"| wire model | max_tokens | thinking | effort | beta flags |",
+		"|------------|------------:|----------|--------|------------|",
+		...selected.map((candidate) => {
+			const model = stripDateSuffix(candidate.wireModel);
+			const thinking = fingerprint.modelThinking[model];
+			return `| \`${model}\` | ${fingerprint.modelMaxTokens[model]} | \`${JSON.stringify(thinking)}\` | \`${thinking.effort ?? "—"}\` | \`${fingerprint.modelBeta[model]}\` |`;
+		}),
+		"",
+		`Machine artifact written to \`${outJson}\`.`,
+		`No runtime state was changed.`,
+	].join("\n");
+	writeFileSync(outReport, report, "utf8");
+	console.log(`\n${report}`);
+	console.log(`✓ wrote ${outJson}`);
+	console.log(`✓ wrote ${outReport}`);
+}
+
+async function main() {
+	if (TUI_MODE) {
+		distillTui(TUI_CAPTURE_DIR);
+		return;
+	}
+	await runNonInteractiveCapture();
 }
 
 main().catch((err) => {

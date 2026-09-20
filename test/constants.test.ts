@@ -11,6 +11,7 @@ process.env.PI_CLAUDE_NATIVE_FINGERPRINT = join(tmpdir(), `claude-native-absent-
 const {
 	CLAUDE_AGENT_SDK_IDENTITY,
 	CLAUDE_CODE_IDENTITY,
+	BUNDLED_CC_VERSION,
 	DEFAULT_ANTHROPIC_BETA,
 	DEFAULT_BUDGET_THINKING_PROFILES,
 	DEFAULT_MODEL_MAX_TOKENS,
@@ -28,6 +29,14 @@ const {
 	resolveClaudeCodeVersion,
 } = await import("../src/constants.ts");
 
+function nextPatch(version: string): string {
+	const parts = version.split(".").map(Number);
+	assert.equal(parts.length, 3);
+	assert.ok(parts.every(Number.isInteger));
+	parts[2] += 1;
+	return parts.join(".");
+}
+
 function withEnvCleared(names: readonly string[], run: () => void): void {
 	const saved = new Map(names.map((name) => [name, process.env[name]]));
 	for (const name of names) delete process.env[name];
@@ -41,7 +50,7 @@ function withEnvCleared(names: readonly string[], run: () => void): void {
 	}
 }
 
-test("default beta set matches the Claude Code 2.1.266 Opus/Sonnet common capture", () => {
+test("default beta set matches the bundled Opus/Sonnet common capture", () => {
 	assert.deepEqual(DEFAULT_ANTHROPIC_BETA.split(","), [
 		"claude-code-20250219",
 		"oauth-2025-04-20",
@@ -53,6 +62,7 @@ test("default beta set matches the Claude Code 2.1.266 Opus/Sonnet common captur
 		"advisor-tool-2026-03-01",
 		"advanced-tool-use-2025-11-20",
 		"effort-2025-11-24",
+		"thinking-binding-controls-2026-08-01",
 		"afk-mode-2026-01-31",
 		"extended-cache-ttl-2025-04-11",
 		"cache-diagnosis-2026-04-07",
@@ -63,7 +73,7 @@ test("default beta set matches the Claude Code 2.1.266 Opus/Sonnet common captur
 		DEFAULT_ANTHROPIC_BETA.split(",").filter(
 			(flag) => !["mid-conversation-system-2026-04-07", "effort-2025-11-24", "afk-mode-2026-01-31"].includes(flag),
 		),
-		"Haiku's 2.1.266 capture omits mid-conversation-system, effort, and afk-mode",
+		"the bundled Haiku capture omits mid-conversation-system, effort, and afk-mode",
 	);
 });
 
@@ -116,7 +126,7 @@ test("an explicit beta override remains verbatim on Haiku", () => {
 	}
 });
 
-test("2.1.266 per-model additions match all eleven captured models exactly", () => {
+test("bundled per-model additions match all eleven captured models exactly", () => {
 	const toolChanges = "mid-conversation-tool-changes-2026-07-01";
 	const perTurn = "per-turn-control-2026-07-01";
 	const midConvo = "mid-conversation-system-2026-04-07";
@@ -126,7 +136,7 @@ test("2.1.266 per-model additions match all eleven captured models exactly", () 
 	// Fable 5.1 is the only two-addition chain. The anchors lock the captured
 	// order: mid-conversation-system → per-turn-control → tool-changes → advisor.
 	const fable = getAnthropicBetaForModel("claude-fable-5-1").split(",");
-	assert.equal(fable.length, 15);
+	assert.equal(fable.length, 16);
 	assert.deepEqual(fable.slice(6, 10), [midConvo, perTurn, toolChanges, advisor]);
 	assert.deepEqual(
 		fable.filter((flag) => flag !== perTurn && flag !== toolChanges),
@@ -135,21 +145,21 @@ test("2.1.266 per-model additions match all eleven captured models exactly", () 
 	);
 
 	// The new tool-change flag is exact-id scoped. These are the only other three
-	// 2.1.266 captures carrying it, always directly after mid-conversation-system.
+	// bundled captures carrying it, always directly after mid-conversation-system.
 	for (const id of ["claude-opus-5", "claude-fable-5", "claude-opus-4-8"]) {
 		const flags = getAnthropicBetaForModel(id).split(",");
-		assert.equal(flags.length, 14, id);
+		assert.equal(flags.length, 15, id);
 		assert.deepEqual(flags.slice(6, 9), [midConvo, toolChanges, advisor], id);
 		assert.deepEqual(flags.filter((flag) => flag !== toolChanges), base, id);
 	}
 
 	// Every remaining captured model keeps the already-known set.
-	assert.equal(getAnthropicBetaForModel("claude-sonnet-5").split(",").length, 13);
-	assert.equal(getAnthropicBetaForModel("claude-haiku-4-5").split(",").length, 10);
-	assert.equal(getAnthropicBetaForModel("claude-sonnet-4-5").split(",").length, 10);
-	assert.equal(getAnthropicBetaForModel("claude-opus-4-5").split(",").length, 11);
+	assert.equal(getAnthropicBetaForModel("claude-sonnet-5").split(",").length, 14);
+	assert.equal(getAnthropicBetaForModel("claude-haiku-4-5").split(",").length, 11);
+	assert.equal(getAnthropicBetaForModel("claude-sonnet-4-5").split(",").length, 11);
+	assert.equal(getAnthropicBetaForModel("claude-opus-4-5").split(",").length, 12);
 	for (const id of ["claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6"]) {
-		assert.equal(getAnthropicBetaForModel(id).split(",").length, 12, id);
+		assert.equal(getAnthropicBetaForModel(id).split(",").length, 13, id);
 	}
 	assert.deepEqual(
 		Object.entries(MODEL_BETA_DELTAS)
@@ -175,7 +185,7 @@ test("TUI beta headers preserve the exact captured order for all eleven models",
 		const advisor = "advisor-tool-2026-03-01";
 		const advanced = "advanced-tool-use-2025-11-20";
 		const effort = "effort-2025-11-24";
-		const fallbackCredit = "fallback-credit-2026-06-01";
+		const thinkingBinding = "thinking-binding-controls-2026-08-01";
 		const displayUpdates = "thinking-display-updates-2026-08-18";
 		const afk = "afk-mode-2026-01-31";
 		const cacheTtl = "extended-cache-ttl-2025-04-11";
@@ -184,48 +194,48 @@ test("TUI beta headers preserve the exact captured order for all eleven models",
 		const expected: Record<string, readonly string[]> = {
 			"claude-opus-5": [
 				cc, oauth, interleaved, tokenCount, context, cacheScope, midConversation, toolChanges,
-				advisor, advanced, effort, fallbackCredit, displayUpdates, afk, cacheTtl, cacheDiagnosis,
+				advisor, advanced, effort, thinkingBinding, displayUpdates, afk, cacheTtl, cacheDiagnosis,
 			],
 			"claude-sonnet-5": [
 				cc, oauth, interleaved, tokenCount, context, cacheScope, midConversation, advisor,
-				advanced, effort, displayUpdates, afk, cacheTtl, cacheDiagnosis,
+				advanced, effort, thinkingBinding, displayUpdates, afk, cacheTtl, cacheDiagnosis,
 			],
 			"claude-fable-5-1": [
 				cc, oauth, interleaved, tokenCount, context, cacheScope, midConversation, perTurn,
-				toolChanges, advisor, advanced, effort, fallbackCredit, displayUpdates, afk, cacheTtl, cacheDiagnosis,
+				toolChanges, advisor, advanced, effort, thinkingBinding, displayUpdates, afk, cacheTtl, cacheDiagnosis,
 			],
 			"claude-fable-5": [
 				cc, oauth, interleaved, tokenCount, context, cacheScope, midConversation, toolChanges,
-				advisor, advanced, effort, fallbackCredit, displayUpdates, afk, cacheTtl, cacheDiagnosis,
+				advisor, advanced, effort, thinkingBinding, displayUpdates, afk, cacheTtl, cacheDiagnosis,
 			],
 			"claude-opus-4-8": [
 				cc, oauth, interleaved, tokenCount, context, cacheScope, midConversation, toolChanges,
-				advisor, advanced, effort, displayUpdates, afk, cacheTtl, cacheDiagnosis,
+				advisor, advanced, effort, thinkingBinding, displayUpdates, afk, cacheTtl, cacheDiagnosis,
 			],
 			"claude-opus-4-7": [
 				cc, oauth, interleaved, tokenCount, context, cacheScope, advisor, advanced,
-				effort, displayUpdates, afk, cacheTtl, cacheDiagnosis,
+				effort, thinkingBinding, displayUpdates, afk, cacheTtl, cacheDiagnosis,
 			],
 			"claude-opus-4-6": [
 				cc, oauth, interleaved, tokenCount, context, cacheScope, advisor, advanced,
-				effort, displayUpdates, afk, cacheTtl, cacheDiagnosis,
+				effort, thinkingBinding, displayUpdates, afk, cacheTtl, cacheDiagnosis,
 			],
 			"claude-sonnet-4-6": [
 				cc, oauth, interleaved, tokenCount, context, cacheScope, advisor, advanced,
-				effort, displayUpdates, afk, cacheTtl, cacheDiagnosis,
+				effort, thinkingBinding, displayUpdates, afk, cacheTtl, cacheDiagnosis,
 			],
 			"claude-opus-4-5": [
 				cc, oauth, interleaved, tokenCount, context, cacheScope, advisor, advanced,
-				effort, displayUpdates, cacheTtl, cacheDiagnosis,
+				effort, thinkingBinding, displayUpdates, cacheTtl, cacheDiagnosis,
 			],
 			"claude-sonnet-4-5": [
 				cc, oauth, interleaved, tokenCount, context, cacheScope, advisor, advanced,
-				displayUpdates, cacheTtl, cacheDiagnosis,
+				thinkingBinding, displayUpdates, cacheTtl, cacheDiagnosis,
 			],
 			// Haiku's wire order is genuinely different: claude-code is sixth.
 			"claude-haiku-4-5": [
 				oauth, interleaved, tokenCount, context, cacheScope, cc, advisor, advanced,
-				displayUpdates, cacheTtl, cacheDiagnosis,
+				thinkingBinding, displayUpdates, cacheTtl, cacheDiagnosis,
 			],
 		};
 
@@ -234,11 +244,9 @@ test("TUI beta headers preserve the exact captured order for all eleven models",
 			assert.deepEqual(getAnthropicBetaForModel(id, "tui").split(","), flags, id);
 			assert.equal(flags.filter((flag) => flag === displayUpdates).length, 1, `${id}: one mode-wide signal`);
 		}
-		assert.deepEqual(
-			Object.entries(expected).filter(([, flags]) => flags.includes(fallbackCredit)).map(([id]) => id).sort(),
-			["claude-fable-5", "claude-fable-5-1", "claude-opus-5"],
-			"fallback-credit is exact-model scoped",
-		);
+		for (const [id, flags] of Object.entries(expected)) {
+			assert.equal(flags.includes("fallback-credit-2026-06-01"), false, `${id}: stale fallback-credit must be absent`);
+		}
 	});
 });
 
@@ -246,13 +254,13 @@ test("an unknown TUI family receives only the mode-wide beta signal", () => {
 	withEnvCleared(["PI_CLAUDE_NATIVE_ANTHROPIC_BETA", "PI_CLAUDE_NATIVE_CC_ENTRYPOINT"], () => {
 		const id = "claude-mythos-6";
 		const displayUpdates = "thinking-display-updates-2026-08-18";
-		const fallbackCredit = "fallback-credit-2026-06-01";
+		const thinkingBinding = "thinking-binding-controls-2026-08-01";
 		const nonInteractive = getAnthropicBetaForModel(id, "print").split(",");
 		const interactive = getAnthropicBetaForModel(id, "tui").split(",");
 		assert.deepEqual(interactive.filter((flag) => flag !== displayUpdates), nonInteractive);
 		assert.equal(interactive.filter((flag) => flag === displayUpdates).length, 1);
-		assert.equal(interactive.includes(fallbackCredit), false, "captured exact-id exceptions never spread to a new family");
-		assert.equal(interactive.indexOf(displayUpdates), interactive.indexOf("effort-2025-11-24") + 1);
+		assert.equal(interactive.includes("fallback-credit-2026-06-01"), false, "stale fallback-credit is absent");
+		assert.equal(interactive.indexOf(displayUpdates), interactive.indexOf(thinkingBinding) + 1);
 	});
 });
 
@@ -279,7 +287,7 @@ test("an unknown discovered budget model gets the non-effort base while adaptive
 	});
 });
 
-test("2.1.266 request max_tokens matches all eleven genuine captures", () => {
+test("bundled request max_tokens matches all eleven genuine captures", () => {
 	const expected = {
 		"claude-opus-5": 64_000,
 		"claude-sonnet-5": 64_000,
@@ -298,9 +306,10 @@ test("2.1.266 request max_tokens matches all eleven genuine captures", () => {
 		assert.equal(getClaudeCodeMaxTokensForModel(id), cap, id);
 	}
 	assert.equal(getClaudeCodeMaxTokensForModel("claude-mythos-6"), undefined, "unknown ids are never guessed");
+	assert.equal(getClaudeCodeMaxTokensForModel("claude-fable-5-2"), undefined, "an uncaptured future Fable cap is not extrapolated");
 });
 
-test("2.1.266 budget-thinking profiles are limited to the three captured exact ids", () => {
+test("bundled budget-thinking profiles are limited to the three captured exact ids", () => {
 	const expected = {
 		"claude-opus-4-5": { budgetTokens: 31_999, effort: "high" },
 		"claude-sonnet-4-5": { budgetTokens: 31_999 },
@@ -345,13 +354,14 @@ test("a stale fingerprint never pins a version older than the installed claude",
 	});
 	// The bundled capture is also a floor. A stale on-disk fingerprint must not
 	// downgrade a newer extension on a machine without Claude installed.
-	assert.deepEqual(resolveClaudeCodeVersion({ pinned: "2.1.261", installed: null, fallback: "2.1.266" }), {
-		version: "2.1.266",
+	assert.deepEqual(resolveClaudeCodeVersion({ pinned: "0.0.1", installed: null }), {
+		version: BUNDLED_CC_VERSION,
 		source: "default",
 	});
 	// A fingerprint NEWER than the install still wins — it is a real capture.
-	assert.deepEqual(resolveClaudeCodeVersion({ pinned: "2.1.270", installed: "2.1.261" }), {
-		version: "2.1.270",
+	const future = nextPatch(BUNDLED_CC_VERSION);
+	assert.deepEqual(resolveClaudeCodeVersion({ pinned: future, installed: "2.1.261" }), {
+		version: future,
 		source: "fingerprint",
 	});
 	// An explicit env pin is honoured verbatim, in either direction.

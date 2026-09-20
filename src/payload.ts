@@ -163,7 +163,7 @@ export function applyMetadata(payload: unknown, userId: string | undefined): unk
 /**
  * Clamp `max_tokens` to the cap observed on genuine Claude Code for this model.
  * Pi's catalog describes the API's larger absolute ceiling, so without this
- * request-only transform Pi emits 128K/64K where Claude Code 2.1.266 emits
+ * request-only transform Pi emits 128K/64K where the bundled CLI capture emits
  * 64K/32K. A deliberately smaller caller value is preserved. Pure/idempotent.
  */
 export function applyClaudeCodeMaxTokens(payload: unknown, capturedCap: number | undefined): unknown {
@@ -204,23 +204,67 @@ export function applyClaudeCodeIdentity(payload: unknown, identity: string): unk
 }
 
 /**
- * Inject the `context_management` body field that genuine Claude Code 2.1.241+
- * sends alongside the `context-management-2025-06-27` beta flag. Tells the API to
- * clear thinking blocks from prior turns while keeping all content. Idempotent:
- * returns the original reference when the field is already present.
+ * Align the `context_management` body field that the captured Claude Code profile
+ * sends alongside the `context-management-2025-06-27` beta flag. Enabled or
+ * adaptive thinking gets the clear-thinking edit; disabled or omitted thinking
+ * must not carry it. Existing unrelated edits are preserved. Pure and
+ * idempotent: returns the original reference when no edit is needed.
  */
 export function applyContextManagement(payload: unknown): unknown {
 	if (!payload || typeof payload !== "object") return payload;
 	const typed = payload as AnthropicPayload;
-	if (typed.context_management !== undefined) return payload;
+	const thinking = typed.thinking;
+	const thinkingType = thinking && typeof thinking === "object"
+		? (thinking as { type?: unknown }).type
+		: undefined;
+	const thinkingEnabled = thinkingType === "adaptive" || thinkingType === "enabled";
+
+	// `clear_thinking_20251015` is rejected when thinking is disabled (or when
+	// Pi omitted the field for `--thinking off`). Do not add it to such requests,
+	// and remove only that incompatible edit if an earlier transform supplied it.
+	if (!thinkingEnabled) {
+		const contextManagement = typed.context_management;
+		if (!contextManagement || typeof contextManagement !== "object") return payload;
+		const edits = (contextManagement as { edits?: unknown }).edits;
+		if (!Array.isArray(edits)) return payload;
+		const compatibleEdits = edits.filter((edit) =>
+			!edit || typeof edit !== "object" || (edit as { type?: unknown }).type !== "clear_thinking_20251015",
+		);
+		if (compatibleEdits.length === edits.length) return payload;
+		return {
+			...typed,
+			context_management: { ...(contextManagement as Record<string, unknown>), edits: compatibleEdits },
+		};
+	}
+
+	const clearThinkingEdit = { type: "clear_thinking_20251015", keep: "all" };
+	if (typed.context_management !== undefined) {
+		const contextManagement = typed.context_management;
+		if (!contextManagement || typeof contextManagement !== "object") return payload;
+		const edits = (contextManagement as { edits?: unknown }).edits;
+		if (edits === undefined) {
+			return {
+				...typed,
+				context_management: { ...(contextManagement as Record<string, unknown>), edits: [clearThinkingEdit] },
+			};
+		}
+		if (!Array.isArray(edits)) return payload;
+		if (edits.some((edit) => edit && typeof edit === "object" && (edit as { type?: unknown }).type === clearThinkingEdit.type)) {
+			return payload;
+		}
+		return {
+			...typed,
+			context_management: { ...(contextManagement as Record<string, unknown>), edits: [...edits, clearThinkingEdit] },
+		};
+	}
 	return {
 		...typed,
-		context_management: { edits: [{ type: "clear_thinking_20251015", keep: "all" }] },
+		context_management: { edits: [clearThinkingEdit] },
 	};
 }
 
 /**
- * Inject the `diagnostics` body field that genuine Claude Code 2.1.241+ sends.
+ * Inject the `diagnostics` body field that the captured Claude Code profile sends.
  * On the first turn `previous_message_id` is `null`; tracking across turns is
  * outside our scope (the API accepts `null` gracefully). Idempotent.
  */

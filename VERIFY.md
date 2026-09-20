@@ -6,11 +6,12 @@ Claude Code CLI, and how to **prove it on the wire** for yourself.
 ## TL;DR fidelity table
 
 What Anthropic's subscription backend actually keys on — and where each piece
-comes from. Verified against genuine `claude` **2.1.266** wire captures and the
+comes from. Verified against the current genuine `claude` wire captures and the
 installed `@earendil-works/pi-ai` / `pi-coding-agent` (not just docs).
 
-The reference must match the Pi runtime mode. Claude 2.1.266 does **not** use one
-profile for both:
+The reference must match the Pi runtime mode. The current capture does **not** use one
+profile for both. The capture completed on 2026-09-20 with 15/15 non-interactive
+requests (11 exact ids plus moving aliases) and 11/11 TUI models:
 
 | Pi mode | Genuine capture | Entrypoint / UA profile | `system[1]` | `thinking.display` |
 |---------|-----------------|-------------------------|-------------|--------------------|
@@ -20,11 +21,13 @@ profile for both:
 | Signal | Genuine Claude Code | This plugin | Source |
 |--------|--------------------|-------------|--------|
 | `authorization: Bearer sk-ant-oat…` | ✅ | ✅ | Pi built-in (triggered by our OAuth token) |
-| `anthropic-beta` (2.1.266 normal turns, no `context-1m`) | mode- and model-specific | same captured profile | **plugin** (non-interactive fingerprint + captured TUI overlay) |
-| `context-1m-2025-08-07` advertised | absent from the captured 2.1.266 native-1M normal turns | not by default | **plugin** (curated families are natively 1M; add it verbatim only for a beta-gated plan/model that genuinely requires it) |
+| `anthropic-beta` (normal turns, no `context-1m`) | mode- and model-specific | same captured profile | **plugin** (non-interactive fingerprint + validated TUI dumps) |
+| `context-1m-2025-08-07` advertised | absent from the current native-1M normal turns | not by default | **plugin** (curated families are natively 1M; add it verbatim only for a beta-gated plan/model that genuinely requires it) |
 | `user-agent` version/profile | `external, cli` or `external, sdk-cli` | matches `ctx.mode` | **plugin** (`before_provider_headers`) |
 | `x-app: cli` | ✅ | ✅ | Pi built-in (plugin restates it) |
+| `x-claude-code-request-class: main` | ✅ in both modes | ✅ | **plugin** (`before_provider_headers`) |
 | `system[0]` = `x-anthropic-billing-header: …` | ✅ | ✅ | **plugin** (`before_provider_request`) |
+| billing `cc_turn_origin=sdk` / `human` | `sdk-cli` / `cli` respectively | same mode-specific value | **plugin** (`before_provider_request`) |
 | `cc_prompt_id=<uuid>;` trailing the billing header | ✅ | ✅ | **plugin** (derived per prompt — see below) |
 | `x-client-request-id` | fresh UUID per request | fresh UUID per request | **plugin** (`before_provider_headers`, Pi >= 0.80.5) |
 | `x-stainless-*` SDK telemetry, `anthropic-dangerous-direct-browser-access` | ✅ | ✅ | Pi built-in (its Anthropic SDK) |
@@ -33,14 +36,36 @@ profile for both:
 | Tool names PascalCase (`Read`, `Bash`, …) | ✅ | ✅ | Pi built-in (`toClaudeCodeName`); request capture proves naming/presence, Pi tests cover response mapping |
 | `metadata.user_id` (device/account/session ids) | ✅ | ✅ | **plugin** (read from `~/.claude.json`) |
 | `thinking.display` | `updates` interactively; `omitted` non-interactively | matches `ctx.mode` | **plugin** (`before_provider_request`) |
-| request `max_tokens` | 64K or 32K in every 2.1.266 capture | same captured per-model cap | **plugin** (`before_provider_request`; Pi catalog ceiling is intentionally not rewritten) |
+| request `max_tokens` | 64K or 32K in every current capture | same captured per-model cap | **plugin** (`before_provider_request`; Pi catalog ceiling is intentionally not rewritten) |
 | budget thinking (4.5 models) | `budget_tokens: 31999`; Opus adds effort `high` | same exact profile | **plugin** (`before_provider_request`) |
 | `cc_version` consistent with `user-agent` version | ✅ | ✅ | **plugin** (one source of truth) |
 | System prompt clears the third-party classifier | ✅ | ✅ | **plugin** (`sanitizeSystemPrompt` strips the "Pi documentation" block) |
 
+## OAuth recovery and validation scope
+
+The provider's OAuth code can be validated without contacting Anthropic by
+mocking `fetch` for the token endpoint. That validation should cover the
+authorization-code and refresh-token request bodies, client id, JSON parsing,
+expiry safety margin, and propagation of a mocked `400 invalid_grant` response.
+It must not print or persist real credentials.
+
+Those mocks prove request construction and error handling only. They are not
+evidence that a user's grant is still valid, that browser authorization or
+account reauthentication succeeded, or that Claude subscription access is
+available. For `Refresh token expired`, run `/login` → **Claude Pro/Max Native**
+to obtain a fresh grant, then `/skill-optimizer init` if the optimizer was the
+caller. Claude CLI credentials and Pi's built-in `anthropic` login are separate.
+
+The current bundled wire evidence is Claude Code **2.1.278**, captured on
+2026-09-20. Fable 5.2 was not exposed by the CLI or local cache during that run,
+so it is not seeded and has no invented beta or request-cap profile; the
+family-agnostic parser, live discovery and moving aliases will surface it when
+available. The TUI validator accepts additional clean model ids, so that future
+capture does not require a validator edit first.
+
 ## How the billing header is correct *by construction*
 
-`x-anthropic-billing-header: cc_version=<v>.<suffix>; cc_entrypoint=<e>; cch=<cch>; cc_prompt_id=<uuid>;`
+`x-anthropic-billing-header: cc_version=<v>.<suffix>; cc_entrypoint=<e>; cch=<cch>; cc_prompt_id=<uuid>; cc_turn_origin=<sdk|human>;`
 
 - `suffix = sha256(SALT + chars[4,7,20] of firstUserMessageText + version)[:3]`
   — **verified byte-for-byte** against Claude Code 2.1.261's own implementation
@@ -55,6 +80,8 @@ profile for both:
   **lifetime**: `uuid(sha256(session id + current prompt text))`. Same prompt (and
   its tool_result turns) → same id; new prompt → new id. That also keeps
   `applyBillingHeader` pure and idempotent.
+- `cc_turn_origin` follows the wire profile: `sdk` for `sdk-cli` requests and
+  `human` for interactive `cli` requests.
 - `cch` — **not reproducible, and not validated by Anthropic.** The genuine
   2.1.261 client builds the header with a literal ` cch=00000;` placeholder
   (those are the only two occurrences of `cch=` in the whole 209 MB binary) and
@@ -147,6 +174,7 @@ loop, so you don't hand-compare:
 ```bash
 npm run capture:fingerprint             # capture + report
 npm run capture:fingerprint -- --apply  # + install <agent dir>/claude-native/fingerprint.json
+npm run capture:fingerprint -- --mode tui --capture-dir captures/mode-interactive
 ```
 
 It spins up the capture proxy, marks its URL first-party, drives genuine
@@ -157,8 +185,9 @@ Sonnet baselines, and writes:
 - `captures/fingerprint-<version>.json` — `{ version, entrypoint, userAgent,
   anthropicBeta, modelBeta, modelMaxTokens, modelBudgetThinking }`, the exact shape `src/constants.ts`
   reads.
-  `anthropicBeta` is their ordered intersection; this is deliberately
-  conservative now that 2.1.266 makes Opus and Sonnet normal turns differ.
+  `anthropicBeta` is their ordered intersection; the current common base has
+  14 flags, with `thinking-binding-controls-2026-08-01` immediately after
+  `effort-2025-11-24`. Exact model deltas remain byte-order-sensitive.
   `modelBeta` records each captured model's set **verbatim** (order included),
   and the extension prefers it over its built-in deltas. `modelMaxTokens` records
   the genuine request cap rather than Pi's larger catalog ceiling, while
@@ -187,40 +216,45 @@ The aliases catch a newly-rolled flagship; the full 11-id set is a safety
 property, not just broader coverage. A newer
 common base must not be combined with older exact-id deltas for uncaptured
 models. If a deliberately partial newer fingerprint omits an id, the extension
-uses its captured common base conservatively and does not apply 2.1.266 model
+uses its captured common base conservatively and does not apply older bundled model
 exceptions or request caps to it; Pi's serialized `max_tokens` stays untouched.
 
 `cc_version` is otherwise derived from your installed `claude` automatically;
 the values worth re-capturing on an update are the beta sets and per-model
 request caps — which this does.
 
-The interactive overlay is deliberately separate: all eleven 2.1.266 TUI
-captures added `thinking-display-updates-2026-08-18`, while only Opus 5 and
-Fable 5/5.1 added `fallback-credit-2026-06-01`. The universal mode signal also
-applies to a newly-discovered family so it can be used immediately; the risky
-exceptions remain exact-id only.
+The interactive validator is deliberately separate. Run
+`npm run capture:fingerprint -- --mode tui --capture-dir captures/mode-interactive`
+after manually capturing the TUI with the wire proxy. It validates and distills
+the existing `req-*.json` dumps, requires all bundled exact ids, accepts and
+includes additional clean Claude ids discovered during a rollover, and rejects
+`--apply`; it does not drive a TUI or fake a PTY and writes a review-only
+artifact. In the 2026-09-20 captures, TUI adds
+`thinking-display-updates-2026-08-18` immediately after the binding flag on all
+11 models, and no model sends `fallback-credit-2026-06-01`.
 
 ## Matching the `anthropic-beta` set exactly
 
 For the non-interactive profile, the default is the **ordered common set captured
-from `claude -p` 2.1.266**
-(`src/constants.ts` `DEFAULT_ANTHROPIC_BETA`): 13 flags shared by Opus 5 and Sonnet 5,
+from the current `claude -p` capture**
+(`src/constants.ts` `DEFAULT_ANTHROPIC_BETA`): 14 flags shared by Opus 5 and Sonnet 5,
 including `advanced-tool-use-2025-11-20`, `afk-mode-2026-01-31`, and
-`cache-diagnosis-2026-04-07` (but **not** `context-1m-2025-08-07` — see "The 1M /
+`cache-diagnosis-2026-04-07`, with `thinking-binding-controls-2026-08-01`
+immediately after `effort-2025-11-24` (but **not** `context-1m-2025-08-07` — see "The 1M /
 long-context trap" below). The final set is per-model in BOTH directions:
 
-- **Sonnet 5** emits the common 13.
-- **Opus 5, Opus 4.8 and Fable 5** emit 14: the common set plus
+- **Sonnet 5** emits 14 flags, the common set.
+- **Opus 5, Opus 4.8 and Fable 5** emit 15: the common set plus
   `mid-conversation-tool-changes-2026-07-01`, directly after
   `mid-conversation-system-2026-04-07`.
-- **Haiku 4.5** emitted 10 flags in the same run, omitting
+- **Haiku 4.5** emits 11 flags in the same run, omitting
   `mid-conversation-system-2026-04-07`, `effort-2025-11-24` and
   `afk-mode-2026-01-31` — it *keeps* `advisor-tool`.
-- **Fable 5.1** emits 15. Its captured chain is
+- **Fable 5.1** emits 16. Its captured chain is
   `mid-conversation-system` → `per-turn-control-2026-07-01` →
   `mid-conversation-tool-changes-2026-07-01` → `advisor-tool`.
-- **Opus 4.7/4.6 and Sonnet 4.6** remain at 12, **Opus 4.5** at 11, and
-  **Sonnet 4.5/Haiku 4.5** at 10.
+- **Opus 4.7/4.6 and Sonnet 4.6** remain at 13, **Opus 4.5** at 12, and
+  **Sonnet 4.5/Haiku 4.5** at 11.
 
 Every addition is keyed by exact id. Sending it wider risks a 400.
 
@@ -229,7 +263,7 @@ remains byte-for-byte and is never reduced. The set is **version-specific** and
 Anthropic returns a **400 on unexpected beta values**, so values are captured,
 never guessed.
 
-If your `claude --version` is newer than 2.1.266, re-capture and override:
+If your `claude --version` is newer than the bundled capture, re-capture and override:
 
 1. Capture genuine `claude`'s `anthropic-beta` (Method A above prints it).
 2. Set it verbatim:
@@ -314,7 +348,7 @@ subscription genuinely needs the beta to unlock >200K, add it verbatim via
 
 ## Known, intentional residual differences
 
-The remaining differences are transport/environment details; the 2.1.266 wire
+The remaining differences are transport/environment details; the current wire
 capture confirms that both clients send `/v1/messages?beta=true`.
 
 1. **Some `x-stainless-*` SDK/runtime versions and undici headers** can differ
@@ -322,7 +356,11 @@ capture confirms that both clients send `/v1/messages?beta=true`.
    `x-claude-code-session-id`, `x-client-request-id`, `context_management`,
    `diagnostics`, thinking display and billing `cc_prompt_id` are emitted and
    checked by the comparator.
-2. **`anthropic-beta` sets** are captured from `claude` 2.1.266. If your installed
+   The `clear_thinking_20251015` context edit is emitted only for enabled or
+   adaptive thinking. For off/disabled thinking, an incompatible copy is removed
+   while unrelated context edits remain; tests cover this guard because Anthropic
+   rejects the clear-thinking edit when thinking is not enabled.
+2. **`anthropic-beta` sets** are captured from the bundled `claude` snapshot. If your installed
    version sends a different set, the `compare` script flags it — set
    `PI_CLAUDE_NATIVE_ANTHROPIC_BETA` to your captured value (see "Matching the
    `anthropic-beta` set exactly" above).

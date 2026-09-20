@@ -13,4 +13,4 @@ captures/fp-raw/
 # Distilled fingerprint files contain only version/profile/beta/request-cap
 # metadata — keep them out of the package but they may be committed if desired.
 captures/fingerprint-*.json
-captures/fingerprint-report.md
+captures/fingerprint*-report.md

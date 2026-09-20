@@ -55,7 +55,7 @@ test("seed exposes natively-1M opus/sonnet (clean ids, no -1m alias) and 200K ha
 	}
 });
 
-test("seed thinking levels follow Pi 0.85.1 runtime semantics and the live capability cache", () => {
+test("seed thinking levels follow the installed Pi runtime semantics and live capability cache", () => {
 	const levels = (id: string) => {
 		const model = NATIVE_MODELS.find((candidate) => candidate.id === id);
 		assert.ok(model, `${id} is seeded`);
@@ -113,8 +113,8 @@ test("discovery (A): a new catalog opus id appears as a single native-1M entry",
 	assert.ok(!models.some((m) => m.id === "claude-opus-4-9-1m"), "no -1m alias");
 });
 
-test("discovery: claude-opus-5 keeps the xhigh/max ceiling captured from claude 2.1.266", () => {
-	// Regression: `claude --model opus` resolves to `claude-opus-5` on 2.1.266 and
+test("discovery: claude-opus-5 keeps the captured xhigh/max ceiling", () => {
+	// Regression: the captured `claude --model opus` alias resolves to `claude-opus-5` and
 	// sends `output_config.effort: "xhigh"`. Without the ID_OVERRIDES entry the
 	// conservative opus family default (`xhigh -> max`) would silently downgrade
 	// every request, and temperature would be left enabled on an adaptive-only model.
@@ -189,6 +189,7 @@ test("parseModelId: known families accept major-minor + new bare-major generatio
 	assert.deepEqual(parseModelId("claude-opus-5"), { family: "opus", versionLabel: "5" });
 	// new families: appear on their own (the Q2 goal)
 	assert.deepEqual(parseModelId("claude-fable-5"), { family: "fable", versionLabel: "5" });
+	assert.deepEqual(parseModelId("claude-fable-5-2"), { family: "fable", versionLabel: "5.2" });
 	assert.deepEqual(parseModelId("claude-mythos-1-0"), { family: "mythos", versionLabel: "1.0" });
 	// still rejects dated (3-segment AND 2-segment date) / dotted / 1m-marker / legacy
 	for (const id of [
@@ -233,6 +234,39 @@ test("discovery: Fable 5 auto-appears with the current Pi catalog values", () =>
 	assert.deepEqual(fable?.compat, { forceAdaptiveThinking: true, supportsTemperature: false });
 	// no [1m] alias for an unknown family (the 1M wire trick is curated-only)
 	assert.ok(!models.some((m) => m.id === "claude-fable-5-1m"));
+});
+
+test("discovery: an upcoming Fable 5.2 id appears from catalog capabilities without a seed", () => {
+	const id = "claude-fable-5-2";
+	const models = buildNativeModels({
+		extraIds: [id],
+		catalog: new Map([
+			[
+				id,
+				{
+					cost: FABLE_COST,
+					maxTokens: 128000,
+					contextWindow: 1000000,
+					reasoning: true,
+					input: ["text", "image"],
+					thinkingLevelMap: { xhigh: "xhigh", max: "max", off: null },
+					forceAdaptiveThinking: true,
+					supportsEffort: true,
+					supportsTemperature: false,
+				},
+			],
+		]),
+	});
+	const fable = models.filter((model) => model.id === id);
+	assert.equal(fable.length, 1, "the discovered id is exposed exactly once");
+	assert.equal(fable[0].name, "Claude Fable 5.2");
+	assert.equal(fable[0].contextWindow, 1000000);
+	assert.equal(fable[0].maxTokens, 128000);
+	assert.deepEqual(fable[0].cost, FABLE_COST);
+	assert.deepEqual(fable[0].thinkingLevelMap, { xhigh: "xhigh", max: "max", off: null });
+	assert.deepEqual(fable[0].compat, { forceAdaptiveThinking: true, supportsTemperature: false });
+	assert.ok(!NATIVE_MODELS.some((model) => model.id === id), "future Fable remains discovered rather than seeded");
+	assert.ok(!models.some((model) => model.id === `${id}-1m`));
 });
 
 test("adaptive thinking is per-version: a discovered non-adaptive sonnet drops the family default", () => {

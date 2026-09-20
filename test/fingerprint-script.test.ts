@@ -5,17 +5,26 @@ import {
 	assertNoCanonicalModelDrift,
 	assertNonInteractiveCaptureProfile,
 	assertRequestedCapturesComplete,
+	buildTuiFingerprint,
 	buildModelBeta,
 	buildModelBudgetThinking,
 	buildModelMaxTokens,
 	computeBetaDeviations,
 	DEFAULT_CAPTURE_MODELS,
+	DEFAULT_TUI_CAPTURE_MODELS,
 	isCaptureProxyHealthResponse,
 	isRequestedMainCapture,
+	isRequestedTuiCapture,
+	lastUserMessageText,
 	parseCaptureProfile,
+	selectTuiCaptureCandidates,
 	selectFingerprintBaseline,
 	type FingerprintCandidate,
 } from "../scripts/fingerprint-baseline.ts";
+
+const FIXTURE_VERSION = "9.8.7";
+const OTHER_FIXTURE_VERSION = "9.8.8";
+const userAgentFor = (entrypoint: string) => `claude-cli/${FIXTURE_VERSION} (external, ${entrypoint})`;
 
 function candidate(
 	wireModel: string,
@@ -27,9 +36,9 @@ function candidate(
 		wireModel,
 		beta,
 		triggeredBy,
-		version: "2.1.266",
+		version: FIXTURE_VERSION,
 		entrypoint: "sdk-cli",
-		userAgent: "claude-cli/2.1.266 (external, sdk-cli)",
+		userAgent: userAgentFor("sdk-cli"),
 		effort: "xhigh",
 		maxTokens: 64_000,
 		hasCch: true,
@@ -98,12 +107,36 @@ test("main capture matching requires the probe text and the requested exact id o
 	assert.equal(isRequestedMainCapture("claude-opus-4-8", "claude-opus-4-7", probe, probe), false);
 });
 
+test("lastUserMessageText selects the current interactive prompt after history", () => {
+	assert.equal(lastUserMessageText({
+		messages: [
+			{ role: "user", content: "old prompt" },
+			{ role: "assistant", content: "old response" },
+			{ role: "user", content: [{ type: "text", text: "current prompt" }, { type: "tool_result", content: "ignored" }] },
+		]},), "current prompt");
+	assert.equal(lastUserMessageText({ messages: [{ role: "user", content: "current string" }] }), "current string");
+	assert.equal(lastUserMessageText({ messages: [{ role: "user", content: [{ type: "tool_result" }] }] }), undefined);
+});
+
+test("TUI probe selection forwards profile and tool drift to strict validation", () => {
+	const prompt = "probe";
+	assert.equal(isRequestedTuiCapture({ model: "claude-fable-5-2", messages: [{ role: "user", content: prompt }] }, prompt), true);
+	assert.equal(isRequestedTuiCapture({
+		model: "claude-fable-5-2",
+		messages: [{ role: "user", content: prompt }],
+		tools: [],
+		requestClass: "auxiliary",
+	}, prompt), true, "selection must not hide a malformed matching turn");
+	assert.equal(isRequestedTuiCapture({ model: "claude-fable-5-2", messages: [{ role: "user", content: "other" }] }, prompt), false);
+	assert.equal(isRequestedTuiCapture({ messages: [{ role: "user", content: prompt }] }, prompt), false);
+});
+
 test("capture profiles reject user-agent and billing version or entrypoint mismatches", () => {
-	const userAgent = "claude-cli/2.1.266 (external, sdk-cli)";
-	const billing = "cc_version=2.1.266.abc; cc_entrypoint=sdk-cli;";
+	const userAgent = userAgentFor("sdk-cli");
+	const billing = `cc_version=${FIXTURE_VERSION}.abc; cc_entrypoint=sdk-cli;`;
 
 	assert.deepEqual(parseCaptureProfile("claude-opus-5", userAgent, billing), {
-		version: "2.1.266",
+		version: FIXTURE_VERSION,
 		entrypoint: "sdk-cli",
 	});
 	assert.throws(
@@ -111,16 +144,16 @@ test("capture profiles reject user-agent and billing version or entrypoint misma
 			parseCaptureProfile(
 				"claude-opus-5",
 				userAgent,
-				"cc_version=2.1.267.abc; cc_entrypoint=sdk-cli;",
+				`cc_version=${OTHER_FIXTURE_VERSION}.abc; cc_entrypoint=sdk-cli;`,
 			),
-		/user-agent\/billing version mismatch: 2\.1\.266 vs 2\.1\.267/,
+		new RegExp(`user-agent/billing version mismatch: ${FIXTURE_VERSION.replaceAll(".", "\\.")} vs ${OTHER_FIXTURE_VERSION.replaceAll(".", "\\.")}`),
 	);
 	assert.throws(
 		() =>
 			parseCaptureProfile(
 				"claude-opus-5",
 				userAgent,
-				"cc_version=2.1.266.abc; cc_entrypoint=cli;",
+				`cc_version=${FIXTURE_VERSION}.abc; cc_entrypoint=cli;`,
 			),
 		/user-agent\/billing entrypoint mismatch: sdk-cli vs cli/,
 	);
@@ -169,6 +202,117 @@ test("non-interactive captures require cch, Agent SDK identity and omitted displ
 	assert.doesNotThrow(() => assertNonInteractiveCaptureProfile([opus], expected));
 	assert.throws(() => assertNonInteractiveCaptureProfile([{ ...opus, thinkingDisplay: "updates" }], expected), /thinking\.display mismatch/);
 	assert.throws(() => selectFingerprintBaseline([{ ...opus, hasCch: false }]), /first-party cch marker is missing/);
+});
+
+test("TUI captures require the bundled exact model set and emit overlay fields", () => {
+	const candidates = DEFAULT_TUI_CAPTURE_MODELS.map((model) => candidate(model, ["base", "thinking-display-updates-2026-08-18"], [model], {
+		version: FIXTURE_VERSION,
+		entrypoint: "cli",
+		userAgent: userAgentFor("cli"),
+		identity: "You are Claude Code, Anthropic's official CLI for Claude.",
+		thinkingDisplay: "updates",
+		thinkingType: "adaptive",
+		hasCch: true,
+		toolsCount: 1,
+		requestClass: "main",
+		turnOrigin: "human",
+	}));
+	const selected = selectTuiCaptureCandidates(candidates);
+	const fingerprint = buildTuiFingerprint(selected, "2026-09-20T00:00:00.000Z");
+
+	assert.equal(selected.length, DEFAULT_TUI_CAPTURE_MODELS.length);
+	assert.equal(fingerprint.version, FIXTURE_VERSION);
+	assert.equal(fingerprint.entrypoint, "cli");
+	assert.equal(fingerprint.modelBeta["claude-opus-5"], "base,thinking-display-updates-2026-08-18");
+	assert.equal(fingerprint.modelMaxTokens["claude-opus-5"], 64_000);
+	assert.deepEqual(fingerprint.modelThinking["claude-opus-5"], {
+		type: "adaptive",
+		display: "updates",
+		budgetTokens: null,
+		effort: "xhigh",
+	});
+});
+
+test("TUI capture validation accepts and distills additional clean model ids", () => {
+	const base = DEFAULT_TUI_CAPTURE_MODELS.map((model) => candidate(model, ["base", "thinking-display-updates-2026-08-18"], [model], {
+		version: FIXTURE_VERSION,
+		entrypoint: "cli",
+		userAgent: userAgentFor("cli"),
+		identity: "You are Claude Code, Anthropic's official CLI for Claude.",
+		thinkingDisplay: "updates",
+		thinkingType: "adaptive",
+		hasCch: true,
+		toolsCount: 1,
+		requestClass: "main",
+		turnOrigin: "human",
+	}));
+	const future = candidate("claude-fable-5-2", ["base", "future-exact-flag"], ["claude-fable-5-2"], {
+		version: FIXTURE_VERSION,
+		entrypoint: "cli",
+		userAgent: userAgentFor("cli"),
+		identity: "You are Claude Code, Anthropic's official CLI for Claude.",
+		thinkingDisplay: "updates",
+		thinkingType: "adaptive",
+		hasCch: true,
+		toolsCount: 1,
+		requestClass: "main",
+		turnOrigin: "human",
+	});
+	const selected = selectTuiCaptureCandidates([...base, future]);
+	const fingerprint = buildTuiFingerprint(selected, "2030-01-02T00:00:00.000Z");
+
+	assert.equal(selected.length, DEFAULT_TUI_CAPTURE_MODELS.length + 1);
+	assert.equal(selected.at(-1)?.wireModel, "claude-fable-5-2");
+	assert.equal(fingerprint.modelBeta["claude-fable-5-2"], "base,future-exact-flag");
+	assert.equal(fingerprint.modelMaxTokens["claude-fable-5-2"], 64_000);
+	assert.throws(
+		() => selectTuiCaptureCandidates([...base, { ...future, wireModel: "claude-fable-latest" }]),
+		/unexpected TUI capture model/i,
+	);
+});
+
+test("TUI capture validation rejects a missing id, profile mismatch, duplicate beta, or long-context beta", () => {
+	const base = DEFAULT_TUI_CAPTURE_MODELS.map((model) => candidate(model, ["base", "thinking-display-updates-2026-08-18"], [model], {
+		version: FIXTURE_VERSION,
+		entrypoint: "cli",
+		userAgent: userAgentFor("cli"),
+		identity: "You are Claude Code, Anthropic's official CLI for Claude.",
+		thinkingDisplay: "updates",
+		hasCch: true,
+		toolsCount: 1,
+		requestClass: "main",
+		turnOrigin: "human",
+	}));
+
+	assert.throws(() => selectTuiCaptureCandidates(base.slice(1)), /missing TUI capture/i);
+	assert.throws(() => selectTuiCaptureCandidates([{ ...base[0], entrypoint: "sdk-cli" }, ...base.slice(1)]), /expected cli/i);
+	assert.throws(
+		() => selectTuiCaptureCandidates([...base, { ...base[0], entrypoint: "sdk-cli", userAgent: userAgentFor("sdk-cli") }]),
+		/expected cli/i,
+		"a mixed-mode duplicate cannot be filtered as auxiliary traffic",
+	);
+	assert.throws(() => selectTuiCaptureCandidates([{ ...base[0], requestClass: "title" }, ...base.slice(1)]), /request-class=main/i);
+	assert.throws(() => selectTuiCaptureCandidates([{ ...base[0], turnOrigin: "system" }, ...base.slice(1)]), /turn_origin=human/i);
+	assert.throws(() => selectTuiCaptureCandidates([{ ...base[0], beta: ["base", "base"] }, ...base.slice(1)]), /duplicate flags/i);
+	assert.throws(() => selectTuiCaptureCandidates([{ ...base[0], beta: ["base", "context-1m-2025-08-07"] }, ...base.slice(1)]), /context-1m/i);
+});
+
+test("TUI capture validation rejects inconsistent repeated observations for one id", () => {
+	const candidates = DEFAULT_TUI_CAPTURE_MODELS.map((model) => candidate(model, ["base", "thinking-display-updates-2026-08-18"], [model], {
+		version: FIXTURE_VERSION,
+		entrypoint: "cli",
+		userAgent: userAgentFor("cli"),
+		identity: "You are Claude Code, Anthropic's official CLI for Claude.",
+		thinkingDisplay: "updates",
+		hasCch: true,
+		toolsCount: 1,
+		requestClass: "main",
+		turnOrigin: "human",
+	}));
+	assert.throws(
+		() => selectTuiCaptureCandidates([...candidates, { ...candidates[0], maxTokens: 32_000 }]),
+		/repeated main captures disagree on max_tokens/,
+	);
 });
 
 test("explicit full-id captures select the newest unambiguous Opus and Sonnet generations", () => {

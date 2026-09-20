@@ -38,6 +38,13 @@ test("prepends the billing header as system[0], keeping identity + prompt", () =
 	assert.equal(result.system[2].text, "pi system prompt");
 });
 
+test("a prompt-scoped billing header carries the captured TUI turn origin", () => {
+	const result = applyBillingHeader(basePayload(), VERSION, "cli", "session-a") as {
+		system: Array<{ text: string }>;
+	};
+	assert.match(result.system[0].text, / cc_prompt_id=[0-9a-f-]+; cc_turn_origin=human;$/);
+});
+
 test("does not mutate the original payload", () => {
 	const payload = basePayload();
 	applyBillingHeader(payload, VERSION, ENTRYPOINT);
@@ -282,15 +289,87 @@ test("a budget-thinking profile preserves an explicit lower reasoning level", ()
 	);
 });
 
-test("applyContextManagement injects the field and is idempotent", () => {
-	const payload = { model: "x", messages: [] };
+test("applyContextManagement injects the field for enabled thinking and is idempotent", () => {
+	const payload = { model: "x", thinking: { type: "enabled" }, messages: [] };
 	const result = applyContextManagement(payload) as { context_management: unknown };
 	assert.deepEqual(result.context_management, { edits: [{ type: "clear_thinking_20251015", keep: "all" }] });
+	assert.equal((payload as { context_management?: unknown }).context_management, undefined, "input is not mutated");
+	const adaptive = applyContextManagement({ model: "x", thinking: { type: "adaptive" }, messages: [] }) as {
+		context_management: unknown;
+	};
+	assert.deepEqual(adaptive.context_management, { edits: [{ type: "clear_thinking_20251015", keep: "all" }] });
 	// idempotent — returns same reference
 	assert.equal(applyContextManagement(result), result);
 	// non-object passthrough
 	assert.equal(applyContextManagement(undefined), undefined);
 	assert.equal(applyContextManagement(null), null);
+});
+
+test("applyContextManagement merges the clear edit into an existing valid context policy", () => {
+	const payload = {
+		model: "x",
+		thinking: { type: "adaptive" },
+		context_management: {
+			keep_top_level: true,
+			edits: [{ type: "compact_context_20300101", keep: "recent" }],
+		},
+	};
+	const result = applyContextManagement(payload) as typeof payload;
+	assert.deepEqual(result.context_management, {
+		keep_top_level: true,
+		edits: [
+			{ type: "compact_context_20300101", keep: "recent" },
+			{ type: "clear_thinking_20251015", keep: "all" },
+		],
+	});
+	assert.equal(payload.context_management.edits.length, 1, "input is not mutated");
+	assert.equal(applyContextManagement(result), result, "the merged policy is idempotent");
+
+	const withoutEdits = { thinking: { type: "enabled" }, context_management: { strategy: "custom" } };
+	assert.deepEqual(applyContextManagement(withoutEdits), {
+		thinking: { type: "enabled" },
+		context_management: { strategy: "custom", edits: [{ type: "clear_thinking_20251015", keep: "all" }] },
+	});
+});
+
+test("applyContextManagement does not add the clear-thinking edit when thinking is absent or disabled", () => {
+	for (const payload of [
+		{ model: "x", messages: [] },
+		{ model: "x", thinking: { type: "disabled" }, messages: [] },
+	]) {
+		assert.equal(applyContextManagement(payload), payload);
+		assert.equal("context_management" in payload, false);
+	}
+});
+
+test("applyContextManagement removes only an incompatible clear edit and preserves other edits", () => {
+	const payload = {
+		model: "x",
+		thinking: { type: "disabled" },
+		context_management: {
+			keep_top_level: true,
+			edits: [
+				{ type: "clear_thinking_20251015", keep: "all" },
+				{ type: "compact_context_20260101", keep: "recent" },
+			],
+		},
+	};
+	const result = applyContextManagement(payload) as typeof payload;
+	assert.deepEqual(result.context_management, {
+		keep_top_level: true,
+		edits: [{ type: "compact_context_20260101", keep: "recent" }],
+	});
+	assert.deepEqual(payload.context_management.edits, [
+		{ type: "clear_thinking_20251015", keep: "all" },
+		{ type: "compact_context_20260101", keep: "recent" },
+	]);
+	assert.equal(applyContextManagement(result), result, "idempotent after removing the incompatible edit");
+
+	const absentThinking = {
+		context_management: { edits: [{ type: "clear_thinking_20251015" }] },
+	};
+	const cleaned = applyContextManagement(absentThinking) as typeof absentThinking;
+	assert.deepEqual(cleaned.context_management, { edits: [] });
 });
 
 test("applyDiagnostics injects the field and is idempotent", () => {

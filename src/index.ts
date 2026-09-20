@@ -119,6 +119,7 @@ export default function claudeProMaxNative(pi: ExtensionAPI) {
 	const headers: Record<string, string> = {
 		"user-agent": getUserAgent(),
 		"x-app": "cli",
+		"x-claude-code-request-class": "main",
 		"anthropic-beta": getAnthropicBeta(),
 		"x-claude-code-session-id": getSessionId(),
 	};
@@ -294,8 +295,9 @@ export default function claudeProMaxNative(pi: ExtensionAPI) {
 		return next === event.payload ? undefined : next;
 	});
 
-	// `x-client-request-id`: genuine Claude Code sends a fresh UUID on every request
-	// (re-verified across the 2.1.266 captures). Pi
+	// Genuine Claude Code sends a fresh `x-client-request-id` UUID and labels the
+	// primary turn `x-claude-code-request-class: main` (re-verified across the
+	// bundled print and TUI captures). Pi
 	// sets this header on its OpenAI/Codex paths but not on the Anthropic one, so it
 	// is the last header gap for this provider.
 	//
@@ -308,6 +310,7 @@ export default function claudeProMaxNative(pi: ExtensionAPI) {
 		event.headers["user-agent"] = getUserAgent(ctx.mode);
 		const forceAdaptiveThinking = (ctx.model?.compat as { forceAdaptiveThinking?: boolean } | undefined)?.forceAdaptiveThinking;
 		event.headers["anthropic-beta"] = getAnthropicBetaForModel(ctx.model?.id ?? "", ctx.mode, forceAdaptiveThinking);
+		event.headers["x-claude-code-request-class"] = "main";
 		event.headers["x-client-request-id"] = randomUUID();
 	});
 
