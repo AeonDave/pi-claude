@@ -92,6 +92,65 @@ test("session refresh re-registers when catalog fields change without an id/wind
 	}
 });
 
+test("Opus 5.5 is visible at load with a stale cache, while older discovered generations stay visible", () => {
+	const previous = process.env.PI_CLAUDE_NATIVE_MODELS_CACHE;
+	const dir = mkdtempSync(join(tmpdir(), "claude-native-cold-list-"));
+	const cachePath = join(dir, "models.json");
+	process.env.PI_CLAUDE_NATIVE_MODELS_CACHE = cachePath;
+	writeModelCache(cachePath, [{
+		id: "claude-opus-5",
+		catalog: { contextWindow: 1_000_000, maxTokens: 128_000, forceAdaptiveThinking: true },
+	}]);
+	try {
+		const registrations: Array<{ models: Array<Record<string, unknown>> }> = [];
+		const { pi } = harness((_id, config) => registrations.push(config as never));
+		claudeProMaxNative(pi as never);
+		const models = registrations[0]?.models;
+		assert.ok(models?.some((model) => model.id === "claude-opus-5"), "a new minor must not hide a bare-major generation");
+		const opus55 = models?.find((model) => model.id === "claude-opus-5-5");
+		assert.ok(opus55, "cold listing must include the verified bundled snapshot without session_start");
+		assert.equal(opus55.contextWindow, 1_000_000);
+		assert.equal(opus55.maxTokens, 128_000);
+		assert.deepEqual(opus55.cost, { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 });
+		assert.deepEqual(opus55.compat, { forceAdaptiveThinking: true, supportsTemperature: false });
+		assert.deepEqual(opus55.thinkingLevelMap, { xhigh: "xhigh", max: "max", off: null });
+		assert.equal((opus55.headers as Record<string, string>)["anthropic-beta"].split(",").length, 16);
+	} finally {
+		if (previous === undefined) delete process.env.PI_CLAUDE_NATIVE_MODELS_CACHE;
+		else process.env.PI_CLAUDE_NATIVE_MODELS_CACHE = previous;
+		rmSync(dir, { recursive: true, force: true });
+	}
+});
+
+test("a later catalog price and partial effort map retain Opus 5.5's adaptive-only marker", () => {
+	const previous = process.env.PI_CLAUDE_NATIVE_MODELS_CACHE;
+	process.env.PI_CLAUDE_NATIVE_MODELS_CACHE = join(tmpdir(), `claude-native-missing-${randomUUID()}.json`);
+	try {
+		const registrations: Array<{ models: Array<Record<string, unknown>> }> = [];
+		const { pi, handlers } = harness((_id, config) => registrations.push(config as never));
+		claudeProMaxNative(pi as never);
+		const catalogCost = { input: 3, output: 15, cacheRead: 0.1, cacheWrite: 4 };
+		handlers.get("session_start")?.({}, context(() => [{
+			id: "claude-opus-5-5",
+			provider: "anthropic",
+			cost: catalogCost,
+			maxTokens: 128_000,
+			contextWindow: 1_000_000,
+			reasoning: true,
+			input: ["text", "image"],
+			thinkingLevelMap: { xhigh: "xhigh", max: "max" },
+			compat: {},
+		}]));
+		const opus55 = registrations.at(-1)?.models.find((model) => model.id === "claude-opus-5-5");
+		assert.deepEqual(opus55?.cost, catalogCost);
+		assert.deepEqual(opus55?.thinkingLevelMap, { xhigh: "xhigh", max: "max", off: null });
+		assert.deepEqual(opus55?.compat, { forceAdaptiveThinking: true, supportsTemperature: false });
+	} finally {
+		if (previous === undefined) delete process.env.PI_CLAUDE_NATIVE_MODELS_CACHE;
+		else process.env.PI_CLAUDE_NATIVE_MODELS_CACHE = previous;
+	}
+});
+
 test("a failed provider registration is retried with the same model set", () => {
 	const previous = process.env.PI_CLAUDE_NATIVE_MODELS_CACHE;
 	process.env.PI_CLAUDE_NATIVE_MODELS_CACHE = join(tmpdir(), `claude-native-missing-${randomUUID()}.json`);
@@ -119,7 +178,7 @@ test("a failed provider registration is retried with the same model set", () => 
 	}
 });
 
-test("Pi catalog pricing does not erase live capabilities, while its Sonnet 4.5 budget signal still wins", () => {
+test("Pi catalog pricing preserves live capabilities and Sonnet 4.5's budget signal", () => {
 	const previous = process.env.PI_CLAUDE_NATIVE_MODELS_CACHE;
 	const dir = mkdtempSync(join(tmpdir(), "claude-native-merge-"));
 	const cachePath = join(dir, "models.json");
@@ -142,7 +201,7 @@ test("Pi catalog pricing does not erase live capabilities, while its Sonnet 4.5 
 			catalog: {
 				contextWindow: 1000000,
 				reasoning: true,
-				forceAdaptiveThinking: true,
+				forceAdaptiveThinking: false,
 			},
 		},
 	]);
@@ -192,7 +251,7 @@ test("Pi catalog pricing does not erase live capabilities, while its Sonnet 4.5 
 		assert.deepEqual(
 			sonnet45?.compat,
 			{ forceAdaptiveThinking: false },
-			"Pi's missing adaptive marker is retained as an explicit budget signal",
+			"a live budget signal survives Pi's omitted adaptive marker",
 		);
 		assert.equal(sonnet45?.contextWindow, 200000, "budget Sonnet cannot inherit the beta-gated 1M window");
 	} finally {

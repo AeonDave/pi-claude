@@ -126,23 +126,21 @@ test("an explicit beta override remains verbatim on Haiku", () => {
 	}
 });
 
-test("bundled per-model additions match all eleven captured models exactly", () => {
+test("bundled per-model additions match the captured clean models exactly", () => {
 	const toolChanges = "mid-conversation-tool-changes-2026-07-01";
 	const perTurn = "per-turn-control-2026-07-01";
 	const midConvo = "mid-conversation-system-2026-04-07";
 	const advisor = "advisor-tool-2026-03-01";
 	const base = DEFAULT_ANTHROPIC_BETA.split(",");
 
-	// Fable 5.1 is the only two-addition chain. The anchors lock the captured
+	// Opus 5.5 and Fable 5.1 share the two-addition chain. The anchors lock the captured
 	// order: mid-conversation-system → per-turn-control → tool-changes → advisor.
-	const fable = getAnthropicBetaForModel("claude-fable-5-1").split(",");
-	assert.equal(fable.length, 16);
-	assert.deepEqual(fable.slice(6, 10), [midConvo, perTurn, toolChanges, advisor]);
-	assert.deepEqual(
-		fable.filter((flag) => flag !== perTurn && flag !== toolChanges),
-		base,
-		"the two additions are the only differences from the common base",
-	);
+	for (const id of ["claude-opus-5-5", "claude-fable-5-1"]) {
+		const flags = getAnthropicBetaForModel(id).split(",");
+		assert.equal(flags.length, 16, id);
+		assert.deepEqual(flags.slice(6, 10), [midConvo, perTurn, toolChanges, advisor], id);
+		assert.deepEqual(flags.filter((flag) => flag !== perTurn && flag !== toolChanges), base, id);
+	}
 
 	// The new tool-change flag is exact-id scoped. These are the only other three
 	// bundled captures carrying it, always directly after mid-conversation-system.
@@ -166,12 +164,12 @@ test("bundled per-model additions match all eleven captured models exactly", () 
 			.filter(([, delta]) => (delta.add?.length ?? 0) > 0)
 			.map(([id]) => id)
 			.sort(),
-		["claude-fable-5", "claude-fable-5-1", "claude-opus-4-8", "claude-opus-5"],
+		["claude-fable-5", "claude-fable-5-1", "claude-opus-4-8", "claude-opus-5", "claude-opus-5-5"],
 		"only exact captured ids gain flags",
 	);
 });
 
-test("TUI beta headers preserve the exact captured order for all eleven models", () => {
+test("TUI beta headers preserve the exact captured order for all twelve clean models", () => {
 	withEnvCleared(["PI_CLAUDE_NATIVE_ANTHROPIC_BETA", "PI_CLAUDE_NATIVE_CC_ENTRYPOINT"], () => {
 		const cc = "claude-code-20250219";
 		const oauth = "oauth-2025-04-20";
@@ -192,6 +190,10 @@ test("TUI beta headers preserve the exact captured order for all eleven models",
 		const cacheDiagnosis = "cache-diagnosis-2026-04-07";
 
 		const expected: Record<string, readonly string[]> = {
+			"claude-opus-5-5": [
+				cc, oauth, interleaved, tokenCount, context, cacheScope, midConversation, perTurn,
+				toolChanges, advisor, advanced, effort, thinkingBinding, displayUpdates, afk, cacheTtl, cacheDiagnosis,
+			],
 			"claude-opus-5": [
 				cc, oauth, interleaved, tokenCount, context, cacheScope, midConversation, toolChanges,
 				advisor, advanced, effort, thinkingBinding, displayUpdates, afk, cacheTtl, cacheDiagnosis,
@@ -239,7 +241,7 @@ test("TUI beta headers preserve the exact captured order for all eleven models",
 			],
 		};
 
-		assert.equal(Object.keys(expected).length, 11);
+		assert.equal(Object.keys(expected).length, 12);
 		for (const [id, flags] of Object.entries(expected)) {
 			assert.deepEqual(getAnthropicBetaForModel(id, "tui").split(","), flags, id);
 			assert.equal(flags.filter((flag) => flag === displayUpdates).length, 1, `${id}: one mode-wide signal`);
@@ -287,8 +289,9 @@ test("an unknown discovered budget model gets the non-effort base while adaptive
 	});
 });
 
-test("bundled request max_tokens matches all eleven genuine captures", () => {
+test("bundled request max_tokens matches all twelve clean genuine captures", () => {
 	const expected = {
+		"claude-opus-5-5": 128_000,
 		"claude-opus-5": 64_000,
 		"claude-sonnet-5": 64_000,
 		"claude-fable-5-1": 64_000,

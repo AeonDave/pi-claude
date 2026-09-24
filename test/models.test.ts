@@ -187,6 +187,7 @@ test("parseModelId: known families accept major-minor + new bare-major generatio
 	// real Sonnet 5 id is `claude-sonnet-5`, and a future `claude-opus-5` too.
 	assert.deepEqual(parseModelId("claude-sonnet-5"), { family: "sonnet", versionLabel: "5" });
 	assert.deepEqual(parseModelId("claude-opus-5"), { family: "opus", versionLabel: "5" });
+	assert.deepEqual(parseModelId("claude-opus-5-5"), { family: "opus", versionLabel: "5.5" });
 	// new families: appear on their own (the Q2 goal)
 	assert.deepEqual(parseModelId("claude-fable-5"), { family: "fable", versionLabel: "5" });
 	assert.deepEqual(parseModelId("claude-fable-5-2"), { family: "fable", versionLabel: "5.2" });

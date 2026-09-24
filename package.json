@@ -1,6 +1,6 @@
 {
   "name": "pi-claude",
-  "version": "1.7.1",
+  "version": "1.7.2",
   "private": false,
   "type": "module",
   "description": "Adds a Claude Pro/Max Native provider to Pi with mode-aware Claude Code and Agent SDK wire profiles, OAuth, live model discovery, and captured request signals.",

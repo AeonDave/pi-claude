@@ -7,26 +7,59 @@
  * ships an updated catalog. This module closes that gap:
  *
  *   1. `fetchLiveModels` queries Anthropic's own `GET /v1/models` with the
- *      subscription's OAuth token, so a model appears the day it ships;
+ *      subscription's OAuth token once a Pi session starts;
  *   2. `writeModelCache`/`readModelCache` persist the result to
  *      `<agent dir>/claude-native/models.json`, which `index.ts` reads at load — so the
  *      offline/pre-session fallback stays as fresh as the last successful fetch.
+ *      A verified bundled snapshot covers a new model during a cold list when
+ *      the cache and Pi catalog are still stale.
  *
  * Everything is best-effort: any network/parse/fs error degrades silently to the
- * curated seed + Pi's catalog. `/v1/models` carries NO pricing, so discovered
- * entries deliberately omit `cost` — when Pi's catalog later lists the same id,
- * its real cost wins in the merge (see `index.ts`).
+ * local cache, bundled snapshot, curated seed, and Pi's catalog. `/v1/models`
+ * carries NO pricing, so live-discovered entries deliberately omit `cost` —
+ * when Pi's catalog later lists the same id, its real cost wins in the merge
+ * (see `index.ts`).
  */
 
 import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname } from "node:path";
 import { type CatalogEntry, parseModelId } from "./models.ts";
 
-/** A discovered model: a clean id plus whatever the source could tell us (no cost). */
+/** A discovered model: a clean id plus source metadata (live API omits cost). */
 export interface DiscoveredModel {
 	id: string;
 	catalog: CatalogEntry;
 }
+
+/**
+ * Load-time fallback for a release that is newer than Pi's bundled catalog and
+ * the user's last live cache. `pi --list-models` never starts a session, so it
+ * cannot perform authenticated discovery before it prints the list. Keep this
+ * below the cache, live endpoint, and Pi catalog in merge precedence. Unlike a
+ * curated seed, this entry retains the endpoint's exact capabilities and can
+ * be corrected by newer sources without changing `parseModelId`'s bare-major
+ * rollover rule. Refresh this small snapshot only from verified public specs
+ * and the first-party `/v1/models` response, not from family assumptions.
+ *
+ * Claude Opus 5.5: https://platform.claude.com/docs/en/models/opus-5-5/overview
+ * Capabilities were also observed on `/v1/models` on 2026-09-24.
+ */
+export const BUNDLED_MODEL_SNAPSHOT: readonly DiscoveredModel[] = [
+	{
+		id: "claude-opus-5-5",
+		catalog: {
+			cost: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 },
+			contextWindow: 1_000_000,
+			maxTokens: 128_000,
+			reasoning: true,
+			input: ["text", "image"],
+			forceAdaptiveThinking: true,
+			supportsEffort: true,
+			supportsTemperature: false,
+			thinkingLevelMap: { xhigh: "xhigh", max: "max", off: null },
+		},
+	},
+];
 
 /** One `capabilities.<x>` node: `{ supported: boolean }`, possibly with children. */
 interface Supported {

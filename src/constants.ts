@@ -80,8 +80,8 @@ export const TOKEN_USER_AGENT = "axios/1.13.6";
 // so this constant must never lag the newest generation the provider exposes.
 // The one version literal that advances with a reviewed capture. Tests and
 // runtime freshness checks consume this export instead of copying the value.
-// Current evidence: `claude` 2.1.278, captured 2026-09-20.
-export const BUNDLED_CC_VERSION = "2.1.278";
+// Current evidence: `claude` 2.1.281, captured 2026-09-24.
+export const BUNDLED_CC_VERSION = "2.1.281";
 export const DEFAULT_CC_ENTRYPOINT = "sdk-cli";
 export const DEFAULT_PRINT_THINKING_DISPLAY = "omitted";
 
@@ -263,7 +263,7 @@ export function getBaseUrl(): string {
 
 /**
  * The conservative `anthropic-beta` BASE shared verbatim by the bundled
- * Opus 5 and Sonnet 5 normal-turn captures (`claude -p`).
+ * Opus 5.5 and Sonnet 5 normal-turn captures (`claude -p`).
  * This REPLACES Pi's per-model beta
  * logic so the header is byte-identical to Claude Code's everyday request.
  * Re-captured with the proxy marked first-party so conditional `cch` and beta
@@ -331,11 +331,11 @@ export const DEFAULT_NON_EFFORT_ANTHROPIC_BETA = DEFAULT_ANTHROPIC_BETA.split(",
 
 /**
  * How each model's `anthropic-beta` differs from the common base set — captured
- * across every id in the bundled capture (11 models). The exact sets are:
+ * across every clean id in the bundled capture (12 models). The exact sets are:
  *
  *   sonnet 5                              — the common base 14 (no delta)
  *   opus 5 / opus 4.8 / fable 5          — 15 (adds tool changes)
- *   fable 5.1                             — 16 (adds per-turn + tool changes)
+ *   opus 5.5 / fable 5.1                  — 16 (adds per-turn + tool changes)
  *   opus 4.7 / opus 4.6 / sonnet 4.6      — 13 (drops `mid-conversation-system`)
  *   opus 4.5                              — 12 (also drops `afk-mode`)
  *   sonnet 4.5 / haiku 4.5                — 11 (also drops `effort`)
@@ -356,6 +356,12 @@ export interface ModelBetaDelta {
 }
 
 export const MODEL_BETA_DELTAS: Record<string, ModelBetaDelta> = {
+	"claude-opus-5-5": {
+		add: [
+			{ flag: PER_TURN_CONTROL, after: MID_CONVO },
+			{ flag: MID_CONVO_TOOL_CHANGES, after: PER_TURN_CONTROL },
+		],
+	},
 	"claude-opus-5": { add: [{ flag: MID_CONVO_TOOL_CHANGES, after: MID_CONVO }] },
 	"claude-fable-5-1": {
 		add: [
@@ -523,7 +529,8 @@ export function getAnthropicBetaForModel(
 	}
 
 	// `modelBeta` is captured by `claude -p`. Interactive mode adds one signal on
-	// every captured model. Treat the universal 11/11 signal as part of the mode
+	// every model in the previous full TUI capture and the new Opus 5.5 capture.
+	// Treat the repeated signal as part of the mode
 	// profile so a newly-discovered family remains immediately usable.
 	if (getClaudeCodeEntrypoint(mode) === "cli") {
 		flags = insertAfter(flags, THINKING_DISPLAY_UPDATES, THINKING_BINDING_CONTROLS);
@@ -532,14 +539,16 @@ export function getAnthropicBetaForModel(
 }
 
 /**
- * Genuine request caps from the bundled capture across all eleven exposed
+ * Genuine request caps from the bundled capture across all twelve clean
  * model ids. These are intentionally distinct from `/v1/models.max_tokens` and
- * Pi's catalog `maxTokens`: those advertise the API ceiling (128K/64K), while
- * the CLI actually puts 64K/32K on the wire. Keep the catalog values for model
- * metadata and clamp only the serialized request in `before_provider_request`.
+ * Pi's catalog `maxTokens`: those advertise the API ceiling, while the CLI
+ * puts 128K on Opus 5.5 and 64K/32K on the other captured ids. Keep the catalog
+ * values for model metadata and clamp only the serialized request in
+ * `before_provider_request`.
  * Unknown models are left untouched until a real capture records their value.
  */
 export const DEFAULT_MODEL_MAX_TOKENS: Readonly<Record<string, number>> = {
+	"claude-opus-5-5": 128_000,
 	"claude-opus-5": 64_000,
 	"claude-sonnet-5": 64_000,
 	"claude-fable-5-1": 64_000,

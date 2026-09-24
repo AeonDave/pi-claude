@@ -55,6 +55,7 @@ test("default capture covers moving aliases before every currently exposed exact
 		"sonnet",
 		"haiku",
 		"fable",
+		"claude-opus-5-5",
 		"claude-opus-5",
 		"claude-sonnet-5",
 		"claude-fable-5-1",
@@ -67,7 +68,7 @@ test("default capture covers moving aliases before every currently exposed exact
 		"claude-sonnet-4-5",
 		"claude-haiku-4-5",
 	]);
-	assert.equal(DEFAULT_CAPTURE_MODELS.length, 15);
+	assert.equal(DEFAULT_CAPTURE_MODELS.length, 16);
 });
 
 test("fingerprint baseline is the ordered intersection of bare Opus and Sonnet aliases", () => {
@@ -319,12 +320,13 @@ test("explicit full-id captures select the newest unambiguous Opus and Sonnet ge
 	const candidates = [
 		candidate("claude-opus-4-8", ["old"], ["claude-opus-4-8"]),
 		candidate("claude-opus-5", ["base", "opus-only"], ["claude-opus-5"]),
+		candidate("claude-opus-5-5", ["base", "opus-new"], ["claude-opus-5-5"]),
 		candidate("claude-sonnet-4-6", ["old"], ["claude-sonnet-4-6"]),
 		candidate("claude-sonnet-5", ["base"], ["claude-sonnet-5"]),
 	];
 	const baseline = selectFingerprintBaseline(candidates);
 
-	assert.equal(baseline.opus.wireModel, "claude-opus-5");
+	assert.equal(baseline.opus.wireModel, "claude-opus-5-5");
 	assert.equal(baseline.sonnet.wireModel, "claude-sonnet-5");
 	assert.deepEqual(baseline.beta, ["base"]);
 });

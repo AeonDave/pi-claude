@@ -15,12 +15,13 @@
  * Native" and stores an `sk-ant-oat...` token, which is what flips Pi's built-in
  * Anthropic path into full Claude-Code-mimicry mode.
  *
- * Model list: registered at load from the curated seed + a persisted discovery
- * cache, then refreshed on `session_start` from Pi's built-in `anthropic` catalog
- * (so a newly-shipped Claude appears on its own) plus any
+ * Model list: registered at load from the curated seed, a verified low-priority
+ * release snapshot, and a persisted discovery cache, then refreshed on
+ * `session_start` from Pi's built-in `anthropic` catalog plus any
  * `PI_CLAUDE_NATIVE_MODELS` overrides. Unless explicitly disabled with
  * `PI_CLAUDE_NATIVE_LIVE_DISCOVERY=0`, it also queries Anthropic's live
- * `/v1/models` once per process and persists the result as the cache.
+ * `/v1/models` once per process and persists the result as the cache. Listing
+ * models before a session cannot perform that authenticated refresh.
  * `registerProvider` may be called again at runtime and takes effect immediately,
  * with no `/reload`.
  */
@@ -52,7 +53,7 @@ import {
 	PROVIDER_NAME,
 } from "./constants.ts";
 import { logNativeRequest } from "./debug.ts";
-import { type DiscoveredModel, fetchLiveModels, readModelCache, writeModelCache } from "./discovery.ts";
+import { BUNDLED_MODEL_SNAPSHOT, type DiscoveredModel, fetchLiveModels, readModelCache, writeModelCache } from "./discovery.ts";
 import { ALLOWLIST_RE, buildNativeModels, type CatalogEntry, type NativeModel } from "./models.ts";
 import { getApiKey, login, refreshToken } from "./oauth.ts";
 import {
@@ -181,12 +182,14 @@ export default function claudeProMaxNative(pi: ExtensionAPI) {
 	/**
 	 * Build the merged model list from all discovery sources, lowest precedence
 	 * first so a later source overrides earlier ones per-field:
-	 *   1. the persisted cache  — a previous live fetch (fresh offline fallback);
-	 *   2. this run's live fetch — overrides the cache;
-	 *   3. Pi's built-in `anthropic` catalog — authoritative (it alone carries real
-	 *      `cost`, since `/v1/models` has none), so it wins where it knows the id.
+	 *   1. the bundled snapshot — load-time fallback for a just-shipped model;
+	 *   2. the persisted cache — a previous live fetch;
+	 *   3. this run's live fetch — overrides the cache;
+	 *   4. Pi's built-in `anthropic` catalog — authoritative where it knows the id.
+	 * The bundled snapshot supplies verified pricing until Pi's catalog does;
+	 * `/v1/models` omits cost, so its refresh keeps the last known price.
 	 * The curated seed + user overrides are layered on by `buildNativeModels`.
-	 * `ctx` is omitted at load time (before any session), when only 1+2 apply.
+	 * `ctx` is omitted at load time (before any session), when only 1–3 apply.
 	 */
 	function buildMergedModels(ctx?: ExtensionContext): NativeModel[] {
 		const allowlist = getModelAllowlist();
@@ -198,12 +201,20 @@ export default function claudeProMaxNative(pi: ExtensionAPI) {
 			// Later sources win only for facts they actually state. In particular,
 			// Pi's catalog often omits live-only capability fields; spreading explicit
 			// `undefined` used to erase `supportsTemperature: false` and effort maps
-			// learned from `/v1/models`. Preserve boolean false: the Pi catalog's
-			// forceAdaptiveThinking=false below is the budget signal for Sonnet 4.5.
+			// learned from `/v1/models`. Preserve explicit boolean false: it is a
+			// budget-thinking signal, while an omitted marker is not.
 			const defined = Object.fromEntries(Object.entries(entry).filter(([, value]) => value !== undefined)) as CatalogEntry;
-			catalog.set(id, { ...catalog.get(id), ...defined });
+			const previous = catalog.get(id);
+			// A newer catalog may know the price but list only part of the effort map.
+			// Merge its stated keys so `off: null` from a verified adaptive-only
+			// snapshot/live response is not lost; an explicit key still wins.
+			const thinkingLevelMap = defined.thinkingLevelMap
+				? { ...previous?.thinkingLevelMap, ...defined.thinkingLevelMap }
+				: previous?.thinkingLevelMap;
+			catalog.set(id, { ...previous, ...defined, ...(thinkingLevelMap ? { thinkingLevelMap } : {}) });
 			if (!extraIds.includes(id)) extraIds.push(id);
 		};
+		for (const m of BUNDLED_MODEL_SNAPSHOT) add(m.id, m.catalog);
 		for (const m of readCachedModels()) add(m.id, m.catalog);
 		for (const m of liveModels) add(m.id, m.catalog);
 		if (ctx) {
@@ -223,10 +234,12 @@ export default function claudeProMaxNative(pi: ExtensionAPI) {
 					thinkingLevelMap: model.thinkingLevelMap,
 					// `forceAdaptiveThinking` / `supportsTemperature` live only on the Anthropic compat
 					// branch; the guard above already restricts to anthropic models, so read them
-					// through a narrow cast. Deliberately NOT carried: `supportsMidConvoEffort` (Pi
+					// through a narrow cast. An absent adaptive marker is NOT an explicit false:
+					// Pi's catalog can lag a newer live capability snapshot. Deliberately NOT
+					// carried: `supportsMidConvoEffort` (Pi
 					// would then hardcode effort "high" and add a `block_binding` field genuine Claude
 					// Code does not send) and `supportsStrictTools`.
-					forceAdaptiveThinking: (model.compat as { forceAdaptiveThinking?: boolean } | undefined)?.forceAdaptiveThinking === true,
+					forceAdaptiveThinking: (model.compat as { forceAdaptiveThinking?: boolean } | undefined)?.forceAdaptiveThinking,
 					supportsTemperature: (model.compat as { supportsTemperature?: boolean } | undefined)?.supportsTemperature,
 				});
 			}
@@ -267,8 +280,8 @@ export default function claudeProMaxNative(pi: ExtensionAPI) {
 		}
 	}
 
-	// Initial registration: curated seed + user overrides + persisted cache. Works
-	// offline and at load time, before any session context exists.
+	// Initial registration: curated seed + user overrides + bundled snapshot +
+	// persisted cache. Works offline and at load time, before any session context.
 	registerNative(buildMergedModels());
 
 	// Add the missing x-anthropic-billing-header as system[0], scoped strictly to

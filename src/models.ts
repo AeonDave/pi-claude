@@ -11,7 +11,7 @@
  *   1. a curated SEED of known ids (always present — works offline / at load);
  *   2. extra ids discovered at runtime (Pi's built-in `anthropic` catalog and,
  *      by default, Anthropic's live `/v1/models` — see `discovery.ts` / `index.ts`),
- *      so a newly-shipped Claude appears on its own without editing this file; and
+ *      plus a low-priority verified snapshot for cold listing of a new release; and
  *   3. user overrides from `PI_CLAUDE_NATIVE_MODELS` / `…_FILE` (highest priority).
  *
  * Discovery is family-AGNOSTIC: the allowlist accepts any `claude-<family>-<ver>`

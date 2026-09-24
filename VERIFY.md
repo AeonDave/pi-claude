@@ -9,9 +9,10 @@ What Anthropic's subscription backend actually keys on — and where each piece
 comes from. Verified against the current genuine `claude` wire captures and the
 installed `@earendil-works/pi-ai` / `pi-coding-agent` (not just docs).
 
-The reference must match the Pi runtime mode. The current capture does **not** use one
-profile for both. The capture completed on 2026-09-20 with 15/15 non-interactive
-requests (11 exact ids plus moving aliases) and 11/11 TUI models:
+The reference must match the Pi runtime mode. The captures do **not** use one
+profile for both. The latest print capture completed 16/16 requested runs
+(12 exact ids plus four moving aliases). A separate interactive capture verified
+Opus 5.5 alone; the latest complete TUI suite remains 11/11 models:
 
 | Pi mode | Genuine capture | Entrypoint / UA profile | `system[1]` | `thinking.display` |
 |---------|-----------------|-------------------------|-------------|--------------------|
@@ -36,7 +37,7 @@ requests (11 exact ids plus moving aliases) and 11/11 TUI models:
 | Tool names PascalCase (`Read`, `Bash`, …) | ✅ | ✅ | Pi built-in (`toClaudeCodeName`); request capture proves naming/presence, Pi tests cover response mapping |
 | `metadata.user_id` (device/account/session ids) | ✅ | ✅ | **plugin** (read from `~/.claude.json`) |
 | `thinking.display` | `updates` interactively; `omitted` non-interactively | matches `ctx.mode` | **plugin** (`before_provider_request`) |
-| request `max_tokens` | 64K or 32K in every current capture | same captured per-model cap | **plugin** (`before_provider_request`; Pi catalog ceiling is intentionally not rewritten) |
+| request `max_tokens` | 128K for Opus 5.5; 64K or 32K for the other captured ids | same captured per-model cap | **plugin** (`before_provider_request`; Pi catalog ceiling is intentionally not rewritten) |
 | budget thinking (4.5 models) | `budget_tokens: 31999`; Opus adds effort `high` | same exact profile | **plugin** (`before_provider_request`) |
 | `cc_version` consistent with `user-agent` version | ✅ | ✅ | **plugin** (one source of truth) |
 | System prompt clears the third-party classifier | ✅ | ✅ | **plugin** (`sanitizeSystemPrompt` strips the "Pi documentation" block) |
@@ -56,12 +57,28 @@ available. For `Refresh token expired`, run `/login` → **Claude Pro/Max Native
 to obtain a fresh grant, then `/skill-optimizer init` if the optimizer was the
 caller. Claude CLI credentials and Pi's built-in `anthropic` login are separate.
 
-The current bundled wire evidence is Claude Code **2.1.278**, captured on
-2026-09-20. Fable 5.2 was not exposed by the CLI or local cache during that run,
-so it is not seeded and has no invented beta or request-cap profile; the
-family-agnostic parser, live discovery and moving aliases will surface it when
-available. The TUI validator accepts additional clean model ids, so that future
-capture does not require a validator edit first.
+The current bundled print evidence is Claude Code **2.1.281**. Its 16/16 run
+confirmed that `claude --model opus` and the explicit `claude-opus-5-5` request
+resolve consistently. The Opus 5.5 print header has 16 flags: the unchanged
+14-flag common base plus `per-turn-control-2026-07-01` followed by
+`mid-conversation-tool-changes-2026-07-01`. Its captured effort was `medium` and
+request cap was 128,000.
+Anthropic's live model metadata reports a 1M context window, 128K output ceiling,
+adaptive-only thinking, and `xhigh`/`max` effort support. Pi print comparison
+passed 32/32 checks, and a real Pi request returned `fingerprint` after session
+refresh. A separate print comparison with absent temporary fingerprint/cache
+files and live discovery disabled passed 32/32 too, proving the bundled snapshot
+alone selected the model.
+
+A separate genuine interactive capture verified one Opus 5.5 main
+request: 17 beta flags, `max_tokens: 128000`, adaptive thinking with display
+updates, effort `medium`, and 21 tools. Pi TUI comparison passed 32/32 checks and
+returned `fingerprint`. This is scoped to Opus 5.5; the full 12-model TUI
+validator suite was not rerun. Its latest complete evidence remains the
+2.1.278 capture with 11/11 models.
+
+Other discovered models still require their own capture before the docs claim
+exact beta or request-cap behavior; discovery supplies capabilities only.
 
 ## How the billing header is correct *by construction*
 
@@ -178,7 +195,7 @@ npm run capture:fingerprint -- --mode tui --capture-dir captures/mode-interactiv
 ```
 
 It spins up the capture proxy, marks its URL first-party, drives genuine
-**non-interactive** `claude -p` across the moving family aliases plus all 11
+**non-interactive** `claude -p` across the moving family aliases plus all 12
 currently exposed ids, requires clean current Opus and
 Sonnet baselines, and writes:
 
@@ -212,7 +229,7 @@ mandatory. `--reuse --apply` therefore
 refuses legacy, missing, or incomplete provenance instead of publishing a partial
 run.
 
-The aliases catch a newly-rolled flagship; the full 11-id set is a safety
+The aliases catch a newly-rolled flagship; the full 12-id set is a safety
 property, not just broader coverage. A newer
 common base must not be combined with older exact-id deltas for uncaptured
 models. If a deliberately partial newer fingerprint omits an id, the extension
@@ -229,21 +246,28 @@ after manually capturing the TUI with the wire proxy. It validates and distills
 the existing `req-*.json` dumps, requires all bundled exact ids, accepts and
 includes additional clean Claude ids discovered during a rollover, and rejects
 `--apply`; it does not drive a TUI or fake a PTY and writes a review-only
-artifact. In the 2026-09-20 captures, TUI adds
+artifact. The historical complete 11-model TUI suite adds
 `thinking-display-updates-2026-08-18` immediately after the binding flag on all
-11 models, and no model sends `fallback-credit-2026-06-01`.
+11 models, and no model sends `fallback-credit-2026-06-01`. The single-model
+Opus 5.5 TUI comparison is described above; it does not replace the full
+12-model validator run. The existing `captures/mode-interactive` directory has
+only the old 11-model dump set and is incomplete under the current validator.
+Capture the full 12-id TUI set into a fresh directory before running the
+validator; do not reuse that old directory unchanged.
 
 ## Matching the `anthropic-beta` set exactly
 
 For the non-interactive profile, the default is the **ordered common set captured
 from the current `claude -p` capture**
-(`src/constants.ts` `DEFAULT_ANTHROPIC_BETA`): 14 flags shared by Opus 5 and Sonnet 5,
+(`src/constants.ts` `DEFAULT_ANTHROPIC_BETA`): 14 flags shared by Opus 5.5 and Sonnet 5,
 including `advanced-tool-use-2025-11-20`, `afk-mode-2026-01-31`, and
 `cache-diagnosis-2026-04-07`, with `thinking-binding-controls-2026-08-01`
 immediately after `effort-2025-11-24` (but **not** `context-1m-2025-08-07` — see "The 1M /
 long-context trap" below). The final set is per-model in BOTH directions:
 
 - **Sonnet 5** emits 14 flags, the common set.
+- **Opus 5.5** emits 16: the common set plus `per-turn-control-2026-07-01` and
+  `mid-conversation-tool-changes-2026-07-01`, in that order.
 - **Opus 5, Opus 4.8 and Fable 5** emit 15: the common set plus
   `mid-conversation-tool-changes-2026-07-01`, directly after
   `mid-conversation-system-2026-04-07`.

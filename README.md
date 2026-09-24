@@ -91,15 +91,32 @@ The **curated seed** — always present, even offline:
 | `claude-sonnet-4-6` | 1M | `max` |
 | `claude-haiku-4-5` | 200K | — (fast tier) |
 
-Newer models are **not** listed here — they arrive through discovery, so no code
-edit is needed. `claude-opus-5`, `claude-sonnet-5`, `claude-fable-5` and
-`claude-fable-5-1` all appear automatically, with their real 1M window, effort
-ceiling and adaptive-only flags derived from Anthropic's own `/v1/models`.
-Fable 5.2 was not exposed by the Claude CLI or local model cache during the
-2026-09-20 capture, so it is not seeded and has no invented beta or request-cap
-profile. Its family-agnostic parser, live discovery and moving aliases are ready
-to surface it. The TUI validator also accepts additional clean model ids, so it
-can capture Fable 5.2 when exposed without first changing the validator.
+Newer models are not part of the curated seed. Pi combines the bundled fallback,
+the persisted discovery cache, live discovery, and Pi's Anthropic catalog. The
+v1.7.2 bundled fallback includes Opus 5.5 so it is available before a live
+refresh:
+
+| Model (Pi id) | Context | Captured request cap | Effort | Thinking |
+|---------------|---------|----------------------|--------|----------|
+| `claude-opus-5-5` | 1M | 128K | `xhigh`, `max` | adaptive-only |
+
+The latest 16/16 print capture confirmed that `claude --model opus` resolves to
+`claude-opus-5-5`. Its 16-flag beta header adds
+`per-turn-control-2026-07-01` and then
+`mid-conversation-tool-changes-2026-07-01`; the common 14-flag base is unchanged.
+The captured print effort was `medium`, and the exact-id capture records
+`max_tokens: 128000`. Anthropic lists Opus 5.5 at
+$4/$20 per million input/output tokens, with cache writes at $5 and cache reads
+at $0.20 per million tokens ([official model details](https://platform.claude.com/docs/en/models/opus-5-5/overview)).
+This is a fallback snapshot; live discovery and Pi's catalog take precedence.
+
+An interactive capture separately verified one Opus 5.5 TUI request:
+17 beta flags (the print set plus the display flag), `max_tokens: 128000`,
+adaptive thinking with display updates, effort `medium`, and 21 tools. This is a
+single-model capture; the complete 12-model TUI suite has not been recaptured.
+
+Fable 5.2 remains unseeded. Discovery can expose it when the endpoint or Pi
+catalog lists it; its beta set and request cap remain unclaimed until captured.
 
 Opus 4.8/4.7/4.6 and Sonnet 4.6 are **natively 1M**, exposed as a single clean-id
 entry each at their full window; Haiku stays 200K. There is **no `[1m]` wire
@@ -112,13 +129,19 @@ unlock >200K, add it via `PI_CLAUDE_NATIVE_ANTHROPIC_BETA`. Adaptive-model effor
 follows Pi's thinking level via `output_config.effort`; the captured default/high
 Opus 4.5 budget profile emits effort `high`.
 
-The list is **dynamic and family-agnostic**: the curated seed above is augmented
-at session start from Pi's built-in `anthropic` catalog and from your
-`PI_CLAUDE_NATIVE_MODELS` overrides — no source edits or reinstall. Discovery
-accepts **any** `claude-<family>-<version>` id, so when Anthropic ships a new
-family (e.g. **Fable**, Mythos) it appears on its own the moment Pi's catalog
-lists it: curated families keep their pinned cost/effort/context-window policy, while a
-new family derives everything (cost, window, effort) straight from the catalog.
+The list is **dynamic and family-agnostic**: the curated seed and bundled
+fallback above are augmented at session start from Pi's built-in `anthropic`
+catalog, your `PI_CLAUDE_NATIVE_MODELS` overrides, and the live endpoint — no
+source edits or reinstall. `pi --list-models` does not start a Pi session, so it
+does not run `session_start` or refresh `/v1/models`; its list can be stale unless
+the bundled fallback or local cache already includes the model. Once a Pi session
+starts with the provider logged in, live discovery refreshes the model registry
+and cache.
+
+Discovery accepts **any** `claude-<family>-<version>` id. When Anthropic ships a
+new family (e.g. **Fable**, Mythos), Pi exposes it when its catalog or the live
+endpoint lists it: curated families keep their pinned cost/effort/context-window
+policy, while a new family derives those values from the catalog.
 For every discovered model, a window above 200K is trusted only when the source
 positively marks that exact id as adaptive; partial or budget-only entries are
 clamped to 200K because this provider does not advertise `context-1m`.
@@ -127,23 +150,22 @@ errors at request time. Discovery surfaces every current-generation model your
 catalog knows (so older 4.x point releases show too) — tighten the set with
 `PI_CLAUDE_NATIVE_MODELS_ALLOW` (a regex) if you only want the latest.
 
-> A *brand-new* model appears on its own: **live discovery is on by default** —
-> one `GET /v1/models` per process at session start, using your subscription
-> token, cached to `<agent dir>/claude-native/models.json` as a fresh local fallback.
-> That endpoint is the only authoritative source for the facts this extension
-> would otherwise hard-code per model (effort ceiling, adaptive-vs-budget
-> thinking, real context window), which is what keeps a new model working with no
-> code edit. It carries no pricing, so Pi's catalog still wins `cost`. Opt out
-> with `PI_CLAUDE_NATIVE_LIVE_DISCOVERY=0`; every failure degrades silently to
-> cache + Pi's catalog + the curated seed.
+> **Live discovery is on by default** — one `GET /v1/models` per process after
+> session start, using your subscription token. The result refreshes the registry
+> and is cached to `<agent dir>/claude-native/models.json`. It reports effort,
+> thinking modes, and context window; it does not report per-model Claude Code
+> beta headers or the CLI's request `max_tokens`, which still require a capture.
+> It carries no pricing, so Pi's catalog wins `cost`. Opt out with
+> `PI_CLAUDE_NATIVE_LIVE_DISCOVERY=0`; failures fall back to the local cache,
+> bundled discovery data, Pi's catalog, and the curated seed.
 
 Newly discovered families also inherit the signals captured on every model for
 the active client mode. When live capabilities positively identify a budget-only
 model, its beta header uses the captured non-effort subset; adaptive-only flags
 are not sent blindly. Only exceptional beta flags remain exact-id scoped. This
-keeps a new model visible and usable immediately without spreading a risky
-model-specific flag; re-capture is needed only for exceptions `/v1/models`
-cannot describe.
+provides safe defaults for a newly discovered model. A model-specific beta
+exception and request cap still need a genuine Claude capture before the
+bundled profile can claim wire fidelity.
 
 ## How it works
 
@@ -159,26 +181,27 @@ runtime mode instead of mixing them:
 |--------------------|--------|
 | Bearer OAuth, `x-app: cli`, initial identity, PascalCase tool-name mapping/round-trip | Pi built-in (triggered by the OAuth token) |
 | mode-specific identity, `user-agent`, billing `cc_entrypoint`, thinking display | this extension (`ctx.mode`) |
-| captured `anthropic-beta` sets (no `context-1m`) | this extension; 15/15 non-interactive requests (11 exact ids plus moving aliases) and 11/11 TUI models captured on 2026-09-20; common/per-model fingerprint plus the universal TUI display flag |
+| captured `anthropic-beta` sets (no `context-1m`) | this extension; 16/16 non-interactive requests (12 exact ids plus four moving aliases); one Opus 5.5 TUI request was captured separately; the complete TUI suite remains 11/11 |
 | `x-client-request-id` (fresh UUID per request) | this extension (`before_provider_headers`; Pi sets it only on its OpenAI/Codex paths) |
 | `x-claude-code-request-class: main` in both captured modes | this extension (`before_provider_headers`) |
 | `x-anthropic-billing-header` as `system[0]`, incl. the trailing `cc_prompt_id` | this extension (`before_provider_request`) |
 | billing `cc_turn_origin=sdk` / `human` for `sdk-cli` / `cli` | this extension (`before_provider_request`) |
 | `metadata.user_id` (device/account/session ids) | this extension (read from `~/.claude.json`) |
 | `thinking.display: "updates"` in TUI, `"omitted"` otherwise (adaptive and budget) | this extension (`before_provider_request`) |
-| captured request `max_tokens` (64K/32K) | this extension (`before_provider_request`; catalog ceilings remain intact) |
+| captured request `max_tokens` (128K for Opus 5.5; 64K/32K for the other captured ids) | this extension (`before_provider_request`; catalog ceilings remain intact) |
 | captured budget-thinking shape (31,999 tokens on Opus/Sonnet/Haiku 4.5; Opus 4.5 effort `high`) | this extension (`before_provider_request`) |
 | system prompt free of the third-party-agent fingerprint | this extension (`sanitizeSystemPrompt` strips the "Pi documentation" block — confirmed to clear the classifier) |
 
 The billing header's `cc_version` is kept consistent with the `user-agent`
 version, and the `anthropic-beta` value is captured from a real `claude` request
 rather than guessed (Anthropic returns 400 on unexpected beta flags). The default
-is the ordered 14-flag intersection of genuine Opus/Sonnet **normal turns** (no
+is the ordered 14-flag intersection of genuine Opus 5.5/Sonnet 5 **normal turns** (no
 `context-1m`), with `thinking-binding-controls-2026-08-01` immediately after
 `effort-2025-11-24`; exact model additions/removals are layered afterward, and
 the natively-1M models expose their window without the long-context beta. TUI
-adds `thinking-display-updates-2026-08-18` immediately after the binding flag,
-and no model sends `fallback-credit-2026-06-01` in the current capture.
+adds `thinking-display-updates-2026-08-18` immediately after the binding flag.
+The Opus 5.5 TUI request matched this order; the complete 11-model suite is
+historical evidence, where no model sent `fallback-credit-2026-06-01`.
 The request path also mirrors Claude's `context_management` controls: the
 `clear_thinking_20251015` edit is injected only when thinking is enabled/adaptive.
 When thinking is off or disabled, an incompatible clear-thinking edit is removed
@@ -209,8 +232,8 @@ env vars below pin them when you want full control.
 | `PI_CLAUDE_NATIVE_DEBUG` | _(off)_ | JSONL path; logs the transformed body per request. |
 | `PI_CLAUDE_NATIVE_MODELS` / `…_FILE` | _(none)_ | JSON array of model overrides (inline or file) merged over the list. |
 | `PI_CLAUDE_NATIVE_MODELS_ALLOW` | _(built-in regex)_ | Regex for which `anthropic` catalog ids are auto-exposed (tighten to hide older models). |
-| `PI_CLAUDE_NATIVE_LIVE_DISCOVERY` | _(on)_ | Query Anthropic's live `/v1/models` at session start (once per process) so a new model appears the day it ships, with its real window/effort/thinking capabilities; result persisted as the local fallback. Set `0` to disable. Best-effort, silent fallback to cache + seed. |
-| `PI_CLAUDE_NATIVE_MODELS_CACHE` | `<agent dir>/claude-native/models.json` | Path to the persisted discovery cache (the auto-updated local seed/fallback). |
+| `PI_CLAUDE_NATIVE_LIVE_DISCOVERY` | _(on)_ | Query Anthropic's live `/v1/models` at session start (once per process) for current window/effort/thinking capabilities; result refreshes the registry and cache. `pi --list-models` does not run `session_start`. Set `0` to disable. Best-effort fallback to cache + bundled data + seed. |
+| `PI_CLAUDE_NATIVE_MODELS_CACHE` | `<agent dir>/claude-native/models.json` | Path to the persisted discovery cache (the auto-updated local fallback). |
 | `PI_CLAUDE_NATIVE_SYSTEM_ANCHORS` | `["Pi documentation (read only when"]` | JSON `[string]`; drops whole prompt paragraphs containing an anchor (the classifier fix). |
 | `PI_CLAUDE_NATIVE_SYSTEM_REPLACEMENTS` | _(built-in rule)_ | JSON `[{match,replacement}]` literal scrub of system-prompt text. |
 | `PI_CLAUDE_NATIVE_USER_ID` / `PI_CLAUDE_NATIVE_NO_METADATA` | _(read `~/.claude.json`)_ | Override or disable the `metadata.user_id` value. |
@@ -234,12 +257,15 @@ rest:
   "Claude Code <v> does not support this model; version <n> or newer is required".
   `/claude-native` shows which source the version came from.
 - **The captured wire profile still has its own freshness gate.** This release
-  bundles the reviewed Claude Code **2.1.278** capture: 15/15 non-interactive
-  requests (11 exact ids plus moving aliases) and 11/11 TUI models, all
-  captured on 2026-09-20. It includes the common beta set, exact per-model
-  deltas, 64K/32K request caps, and budget profiles; TUI adds the display flag
-  after the binding flag and no model carries `fallback-credit`. Recapture and
-  review these values after a newer client update.
+  bundles the reviewed Claude Code **2.1.281** print capture: 16/16 requested
+  runs (12 exact ids plus four moving aliases), including Opus 5.5. Its common
+  beta base is unchanged; Opus 5.5 adds two exact-id flags and has a captured
+  128K request cap. With local fingerprint/cache files absent and live discovery
+  disabled, the bundled snapshot alone selected Opus 5.5; print comparison passed
+  32/32 and the Pi response was `fingerprint`. One Opus 5.5 TUI request also
+  passed 32/32 comparison and returned `fingerprint`; the complete TUI suite
+  remains 11/11 on 2.1.278, so this does not establish a full new TUI profile.
+  Recapture both profiles after a newer client update.
 - **New models are derived.** Family-agnostic discovery surfaces new families from
   Pi's catalog *and* from Anthropic's live `/v1/models`, which supplies the real
   context window, effort ceiling and thinking modes (see Models).
@@ -255,7 +281,7 @@ rest:
   This spins up the capture proxy, marks the proxy URL as first-party (so `cch`
   and conditional beta flags survive), drives genuine **non-interactive**
   `claude -p` across the moving family aliases (to catch a flagship rollover)
-  plus all 11 currently exposed ids, requires both Opus and Sonnet baselines,
+  plus all 12 currently exposed ids, requires both Opus and Sonnet baselines,
   derives their
   ordered common beta set, records every model's captured set verbatim, and
   records its request `max_tokens`, then **diffs the common base and per-model
