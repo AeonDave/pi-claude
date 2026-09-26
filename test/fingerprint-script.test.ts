@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
+import { SERVER_CLASSIFIER_BETA } from "../src/fingerprint.ts";
 import {
 	assertConsistentFingerprintCandidate,
 	assertNoCanonicalModelDrift,
@@ -9,6 +10,9 @@ import {
 	buildModelBeta,
 	buildModelBudgetThinking,
 	buildModelMaxTokens,
+	buildClaudeCaptureEnv,
+	CAPTURE_CLAUDE_ENV,
+	captureWireFlags,
 	computeBetaDeviations,
 	DEFAULT_CAPTURE_MODELS,
 	DEFAULT_TUI_CAPTURE_MODELS,
@@ -205,6 +209,37 @@ test("non-interactive captures require cch, Agent SDK identity and omitted displ
 	assert.throws(() => selectFingerprintBaseline([{ ...opus, hasCch: false }]), /first-party cch marker is missing/);
 });
 
+test("captures carrying auto mode's server classifier fail before any write", () => {
+	// 2.1.283 in auto mode pairs this beta with a `safeguards` body Pi never sends.
+	// Either signal alone means the classifier was on for the capture.
+	assert.deepEqual(CAPTURE_CLAUDE_ENV, { CLAUDE_CODE_AUTO_MODE_SERVER: "0" });
+	const env = buildClaudeCaptureEnv({ CLAUDE_CODE_AUTO_MODE_SERVER: "1", KEEP: "yes" }, "http://127.0.0.1:1");
+	assert.equal(env.CLAUDE_CODE_AUTO_MODE_SERVER, "0", "the caller env cannot re-enable the classifier");
+	assert.equal(env.ANTHROPIC_BASE_URL, "http://127.0.0.1:1");
+	assert.equal(env._CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL, "1");
+	assert.equal(env.KEEP, "yes");
+
+	// The body signal is caught even when the beta header does not carry the flag.
+	const flags = captureWireFlags({ safeguards: [{ type: "dangerous_tool_use" }] }, " base , effort ");
+	assert.deepEqual(flags, { beta: ["base", "effort"], has1mBeta: false, hasSafeguards: true });
+	assert.deepEqual(captureWireFlags({}, undefined), { beta: [], has1mBeta: false, hasSafeguards: false });
+	assert.throws(
+		() => selectFingerprintBaseline([candidate("claude-opus-5-5", flags.beta, ["opus"], flags), candidate("claude-sonnet-5", ["base", "effort"], ["sonnet"])]),
+		/claude-opus-5-5: normal-turn capture carries auto mode's server classifier/,
+	);
+	const opus = candidate("claude-opus-5-5", ["base", "effort"], ["opus"]);
+	const sonnet = candidate("claude-sonnet-5", ["base", "effort"], ["sonnet"]);
+	assert.doesNotThrow(() => selectFingerprintBaseline([opus, sonnet]));
+	assert.throws(
+		() => selectFingerprintBaseline([opus, { ...sonnet, beta: ["base", "effort", SERVER_CLASSIFIER_BETA] }]),
+		/claude-sonnet-5: normal-turn capture carries auto mode's server classifier.*CLAUDE_CODE_AUTO_MODE_SERVER=0/,
+	);
+	assert.throws(
+		() => selectFingerprintBaseline([{ ...opus, hasSafeguards: true }, sonnet]),
+		/claude-opus-5-5: normal-turn capture carries auto mode's server classifier/,
+	);
+});
+
 test("TUI captures require the bundled exact model set and emit overlay fields", () => {
 	const candidates = DEFAULT_TUI_CAPTURE_MODELS.map((model) => candidate(model, ["base", "thinking-display-updates-2026-08-18"], [model], {
 		version: FIXTURE_VERSION,
@@ -296,6 +331,14 @@ test("TUI capture validation rejects a missing id, profile mismatch, duplicate b
 	assert.throws(() => selectTuiCaptureCandidates([{ ...base[0], turnOrigin: "system" }, ...base.slice(1)]), /turn_origin=human/i);
 	assert.throws(() => selectTuiCaptureCandidates([{ ...base[0], beta: ["base", "base"] }, ...base.slice(1)]), /duplicate flags/i);
 	assert.throws(() => selectTuiCaptureCandidates([{ ...base[0], beta: ["base", "context-1m-2025-08-07"] }, ...base.slice(1)]), /context-1m/i);
+	assert.throws(
+		() => selectTuiCaptureCandidates([{ ...base[0], beta: ["base", SERVER_CLASSIFIER_BETA] }, ...base.slice(1)]),
+		/TUI capture carries auto mode's server classifier/,
+	);
+	assert.throws(
+		() => selectTuiCaptureCandidates([{ ...base[0], hasSafeguards: true }, ...base.slice(1)]),
+		/TUI capture carries auto mode's server classifier/,
+	);
 });
 
 test("TUI capture validation rejects inconsistent repeated observations for one id", () => {

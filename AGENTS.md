@@ -24,7 +24,7 @@ core beta flags, bearer auth, `x-app`, and PascalCase tool names on an
 
 - `src/constants.ts` — provider id, OAuth endpoints/scopes, CC fingerprint. **Version is derived**: env wins, then the newest trustworthy value among fingerprint, installed `claude`, and the bundled capture floor. An older/versionless fingerprint cannot override captured beta/entrypoint values. `ctx.mode` selects the genuine current profile: TUI=`cli`/Claude Code/`updates`; print/json/rpc=`sdk-cli`/Agent SDK/`omitted`. `getAnthropicBetaForModel` resolves explicit env → usable `claude -p` fingerprint → the 14-flag common base ± exact captured model deltas (including Opus 5.5's two-flag addition), then applies the captured interactive display flag after `thinking-binding-controls-2026-08-01`. `getClaudeCodeMaxTokensForModel` uses captured `modelMaxTokens` → the bundled map and never guesses for an unknown id. The disk side lives in `src/fingerprint.ts`. Plus family-agnostic model/live-discovery config and first-party signals. All env-overridable.
 - `src/discovery.ts` — impure, on by default: `fetchLiveModels` queries Anthropic `GET /v1/models` with the subscription OAuth token at `session_start`; `normalizeModelsResponse`/`stripDateSuffix` (pure) turn dated wire ids into clean aliases filtered by the same `parseModelId` gate. The endpoint supplies exact-id effort, adaptive-vs-budget thinking and window capabilities, but no `cost`, Claude Code beta set or CLI request `max_tokens`. Pi's catalog wins `cost`; exact beta/cap values stay captured. Initial registration uses bundled fallbacks and the persisted cache. `pi --list-models` does not run `session_start`, so its list can be stale unless one already includes the model. Live results refresh the registry and cache after a session starts with an OAuth token. Opus 5.5 has a bundled low-precedence snapshot for immediate discovery; live/cache/catalog entries take precedence. Any failure degrades to cache + bundle + seed.
-- `src/fingerprint.ts` — impure: ALL on-disk state, including validated per-model beta, request-cap, and budget-thinking maps. `getAgentDir()`/`getStateDir()` (`<PI_CODING_AGENT_DIR ?? ~/.pi/agent>/claude-native/`), path/read/version/migration/cache helpers live here so filesystem moves stay isolated and testable.
+- `src/fingerprint.ts` — impure: ALL on-disk state, including validated per-model beta, request-cap, and budget-thinking maps (the auto-mode server-classifier flag is stripped at load), plus the once-per-state advisory record `<state dir>/notices.json`. `getAgentDir()`/`getStateDir()` (`<PI_CODING_AGENT_DIR ?? ~/.pi/agent>/claude-native/`), path/read/version/migration/cache helpers live here so filesystem moves stay isolated and testable.
 - `src/warn.ts` — `warnConfig()`: a `[claude-native]` stderr diagnostic that never throws. Its own module so `constants.ts` and `fingerprint.ts` share it without an import cycle.
 - `src/oauth.ts` / `src/pkce.ts` — `/login` flow (authorize, exchange, refresh).
 - `src/models.ts` — pure: builds the model list from a curated seed + runtime-discovered catalog ids + overrides (`buildNativeModels`). **Family-agnostic** discovery via `parseModelId`; curated seed entries keep pinned `FAMILY_DEFAULTS`/`ID_OVERRIDES`, while discovered families derive from `CatalogEntry`. A discovered >200K window and adaptive mode require a positive exact-model capability signal; neither `reasoning: true` nor a family name is proof. Explicit user overrides remain the escape hatch. Opus/Sonnet seed entries are natively 1M (clean id only); Haiku is 200K.
@@ -32,7 +32,7 @@ core beta flags, bearer auth, `x-app`, and PascalCase tool names on an
 - `src/payload.ts` — pure: idempotent `system[0]` billing-header injection, exact-known-identity alignment, `sanitizeSystemPrompt`, `applyMetadata`, captured request-only `max_tokens` clamp, and mode-aware thinking display for adaptive/budget modes.
 - `src/debug.ts` — optional `PI_CLAUDE_NATIVE_DEBUG` body logging.
 - `src/index.ts` — factory: `registerProvider` (seed + bundle + cache at load, refreshed on `session_start` from cache < live < Pi catalog; live discovery runs once when authenticated unless disabled) + `before_provider_request` (sanitize → mode identity/display → captured `max_tokens` → context/diagnostics/metadata/billing) + `before_provider_headers` (in-place mode-specific user-agent/beta + fresh request id) + status + `/claude-native` diagnostics.
-- `scripts/` — capture proxy + mitmproxy addon, strict mode-aware `compare-requests.mjs`, classifier dump/bisect pair, and `capture-fingerprint.mjs`. Fingerprint capture defaults to moving family aliases plus the bundled exact ids, requires current Opus AND Sonnet baselines, verifies version/profile, derives their ordered intersection, preserves every model's verbatim set/cap, and reports exact deviations. `--mode tui --capture-dir <dir>` validates manual interactive dumps; all 12 bundled exact ids are required, with additional clean ids accepted. The old 11-id ignored dump directory is incomplete; capture a fresh full 12-id set before validation. The single Opus 5.5 TUI comparison is not a suite replacement. The validator does not drive a TUI or fake a PTY and rejects `--apply`. Ambiguous/incomplete/mixed-profile/non-first-party/long-context/duplicate-flag/auxiliary-only/collision/one-family runs fail before writes. A run manifest makes `--reuse --apply` fail closed; newer partial fingerprints never inherit older model rules. Baseline policy lives in `scripts/fingerprint-baseline.ts` and TypeScript scripts are typechecked.
+- `scripts/` — capture proxy + mitmproxy addon, strict mode-aware `compare-requests.mjs`, classifier dump/bisect pair, and `capture-fingerprint.mjs`. The capture runs `claude` with auto mode's server classifier off (`CAPTURE_CLAUDE_ENV`) and rejects any `safeguards`/`dangerous-tool-use` evidence, in both modes. Fingerprint capture defaults to moving family aliases plus the bundled exact ids, requires current Opus AND Sonnet baselines, verifies version/profile, derives their ordered intersection, preserves every model's verbatim set/cap, and reports exact deviations. `--mode tui --capture-dir <dir>` validates manual interactive dumps; all 12 bundled exact ids are required, with additional clean ids accepted. The old 11-id ignored dump directory is incomplete; capture a fresh full 12-id set before validation. The single Opus 5.5 TUI comparison is not a suite replacement. The validator does not drive a TUI or fake a PTY and rejects `--apply`. Ambiguous/incomplete/mixed-profile/non-first-party/long-context/duplicate-flag/auxiliary-only/collision/one-family runs fail before writes. A run manifest makes `--reuse --apply` fail closed; newer partial fingerprints never inherit older model rules. Baseline policy lives in `scripts/fingerprint-baseline.ts` and TypeScript scripts are typechecked.
 
 ## Invariants (do not break)
 
@@ -90,7 +90,25 @@ core beta flags, bearer auth, `x-app`, and PascalCase tool names on an
   fingerprint OLDER than either floor loses. Its beta/entrypoint also lose when
   it is older than the bundle; otherwise stale per-model state would mask a
   newly captured exact-id flag. A stale fingerprint silently pinning an old
-  version is what caused the 2.1.241 outage.
+  version is what caused the 2.1.241 outage. A fingerprint behind the installed
+  `claude` is the normal state after every Claude update (the version already
+  follows the install), so that advisory — and the behind-the-bundle one — is
+  shown once per state, not on every Pi start. The record is
+  `<state dir>/notices.json`, written only for the state-dir fingerprint and only
+  when stderr is a terminal; headless runs and fingerprints elsewhere repeat it.
+- **Auto mode's server classifier is never reproduced.** In auto mode, Claude
+  Code 2.1.283+ sends `dangerous-tool-use-2026-09-03` only together with a
+  `safeguards` body (permission mode, rules, cwd, home, git state, user
+  identity) so the server can classify tool calls. Pi runs its own tools and
+  never sends that body, so the flag alone is a tuple no genuine client emits.
+  The capture script runs `claude` with `CLAUDE_CODE_AUTO_MODE_SERVER=0`, which
+  disables only the server classifier. Auto mode itself, and with it `afk-mode`,
+  comes from the capturing user's `permissions.defaultMode: "auto"`: the bundled
+  base is an auto-mode client, so capture in auto mode or the nine afk-mode ids
+  show false drift. The capture fails before writes on either
+  signal; `coerceFingerprint` strips the exact flag from an older fingerprint;
+  `compare-requests.mjs` requires `safeguards` absent on both sides. Set the same
+  env for manual genuine captures.
 - **System-prompt sanitization is load-bearing.** Anthropic fingerprints the
   system prompt and rejects third-party harnesses with a 400 disguised as a usage
   error. `sanitizeSystemPrompt` strips Pi's meta-development "Pi documentation"
@@ -110,7 +128,8 @@ core beta flags, bearer auth, `x-app`, and PascalCase tool names on an
   recomputes a wire value is how the tooling and the extension drift apart.
 - **The TUI profile is manually captured and validated.** The interactive
   entrypoint/identity/display values come from a manual interactive `claude`
-  session (raw dumps live in the gitignored `captures/mode-interactive/`). Run
+  session started with `CLAUDE_CODE_AUTO_MODE_SERVER=0` (raw dumps live in the
+  gitignored `captures/mode-interactive/`). Run
   `npm run capture:fingerprint -- --mode tui --capture-dir captures/mode-interactive`
   to validate and distill those dumps; it does not drive a TUI or fake a PTY,
   writes a review-only artifact, and rejects `--apply`. The bundled exact ids
@@ -123,6 +142,7 @@ core beta flags, bearer auth, `x-app`, and PascalCase tool names on an
 | Forbidden | Use instead |
 |-----------|-------------|
 | Guessing/editing `anthropic-beta` by hand | Re-capture from real `claude` (`scripts/capture-proxy.mjs`); Anthropic 400s on unexpected flags |
+| Sending `dangerous-tool-use-*` or a `safeguards` body | Capture genuine `claude` with `CLAUDE_CODE_AUTO_MODE_SERVER=0`; the server classifier's context describes the capturing user and is not Pi's to send |
 | Changing the salt `59cf53e54c78` or positions `[4,7,20]` in `billing-header.ts` | Leave them; a golden test locks them. Re-capture before any change |
 | Re-introducing the `[1m]` wire suffix | The clean id is the valid model id; `claude-opus-4-8[1m]` 404s (`not_found`). Opus/Sonnet are natively 1M — send the clean id, no suffix |
 | Sending effort `"ultracode"` | It is a UI label only, never a wire value. The wire ladder is low/medium/high/xhigh/**max**, and `max` IS sent — `thinkingLevelMap` maps it for the models whose captures show it. Map a level only where a capture supports it |
@@ -132,7 +152,7 @@ core beta flags, bearer auth, `x-app`, and PascalCase tool names on an
 
 ## Packaging
 
-**The published package is 15 files / ~57 kB with ZERO runtime dependencies**
+**The published package is 15 files / ~61 kB with ZERO runtime dependencies**
 (`files: ["src", "README.md", "VERIFY.md"]`). Check it with `npm pack --dry-run`
 before any release; if the count or the dependency list grew, something is wrong.
 
@@ -234,12 +254,20 @@ capture both clients via `scripts/capture-proxy.mjs`, then
   set was safe across 2.1.233/2.1.241/2.1.261, but 2.1.266 falsified the broader
   assumption: Opus gained a model-specific flag while Sonnet did not. Therefore
   a fingerprint older than the bundled capture loses as a whole.
-- **Current capture snapshot (2026-09-24, Claude Code 2.1.281).** Captured 16/16
-  non-interactive requests (12 exact ids plus four moving aliases); `opus` and
+- **Current capture snapshot (2026-09-26, Claude Code 2.1.283).** Captured 16/16
+  non-interactive requests (12 exact ids plus four moving aliases) with the
+  server classifier off; every beta set, request cap, thinking and effort value
+  is identical to 2.1.281 apart from the version. With the classifier on, the
+  nine ids that send `afk-mode` also send `dangerous-tool-use-2026-09-03` between
+  `effort` and `thinking-binding-controls` plus a `safeguards` body; Opus 4.5,
+  Sonnet 4.5 and Haiku 4.5 send neither. The capturing machine uses
+  `permissions.defaultMode: "auto"`, and in the 2.1.283 binary `afk-mode` is also
+  added only while auto mode is active. `opus` and
   the explicit `claude-opus-5-5` request agree. Non-interactive requests use
   `sdk-cli`/Agent SDK/
   `thinking.display: "omitted"`; interactive requests use `cli`/Claude Code/
-  `"updates"`. A separate Opus 5.5 TUI capture passed a 32/32 Pi wire comparison;
+  `"updates"`. The live Pi wire comparison was not rerun for 2.1.283. At 2.1.281,
+  a separate Opus 5.5 TUI capture passed a 32/32 Pi wire comparison;
   the complete 12-model TUI suite was not rerun. With temporary fingerprint/cache
   paths absent and live discovery disabled, the bundled snapshot alone selected
   Opus 5.5; print comparison passed 32/32 and the Pi response was `fingerprint`.
@@ -306,7 +334,8 @@ expensive to find, so they are recorded rather than re-learned.
 
 | What happened | The rule it produced |
 |---|---|
-| A stale captured fingerprint outranked the installed `claude`, pinning an old `cc_version` forever — Anthropic gates MODEL ACCESS on it, so every new model 400'd | `resolveClaudeCodeVersion()` never claims older than the installed `claude`; it warns once and `/claude-native` shows the source |
+| A stale captured fingerprint outranked the installed `claude`, pinning an old `cc_version` forever — Anthropic gates MODEL ACCESS on it, so every new model 400'd | `resolveClaudeCodeVersion()` never claims older than the installed `claude`; it advises once per claude version and `/claude-native` shows the source |
+| The 2.1.283 capture, run in auto mode, promoted `dangerous-tool-use-2026-09-03` into the common base — a flag that travels with a `safeguards` body Pi never sends | Capture with `CLAUDE_CODE_AUTO_MODE_SERVER=0`; fail on `safeguards` or the flag; strip it from older fingerprints |
 | `capture-fingerprint` printed a confident "No change" on a run whose own table showed Fable sending a 14th flag — it diffed only one model | The report diffs the base set AND per-model deviations; only Opus/Sonnet may define the base |
 | `ID_OVERRIDES` REPLACED the catalog's `thinkingLevelMap`, dropping `off: null` from adaptive-only models, so Pi could send `thinking: {type:"disabled"}` to a model that rejects it | Layer these maps, never replace: family default → catalog → overlay |
 | `applyClaudeCodeMaxTokens` clamped `max_tokens` under a `budget_tokens` the caller had already committed to — Anthropic requires `budget_tokens < max_tokens`, so a working request became a hard 400 | Request transforms must read the WHOLE payload they constrain, not one field |

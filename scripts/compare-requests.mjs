@@ -223,6 +223,17 @@ check(
 	`claude=${genuineOutputConfig === undefined ? "absent" : "present"} | pi=${piOutputConfig === undefined ? "absent" : "present"} | equal=${outputConfigEqual}`,
 );
 
+// Auto mode's server classifier (Claude 2.1.283+) adds a `safeguards` body that
+// describes the capturing user's permission rules, paired with its own beta. Pi
+// never sends it; capture the genuine side with CLAUDE_CODE_AUTO_MODE_SERVER=0.
+const claudeSafeguards = claude.body?.safeguards;
+const piSafeguards = pi.body?.safeguards;
+check(
+	'body "safeguards" is absent on both captures (auto-mode server classifier off)',
+	claudeSafeguards === undefined && piSafeguards === undefined,
+	`claude=${claudeSafeguards === undefined ? "absent" : "present"} | pi=${piSafeguards === undefined ? "absent" : "present"}`,
+);
+
 const parseMetadataUserId = (request) => {
 	const raw = request.body?.metadata?.user_id;
 	if (typeof raw !== "string") return null;

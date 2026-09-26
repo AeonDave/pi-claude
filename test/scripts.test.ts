@@ -366,6 +366,26 @@ test("compare reports a malformed genuine billing header instead of silently ski
 	assert.match(result.stdout, /DIFF  genuine system\[0\] is a well-formed billing header/);
 });
 
+test("compare rejects auto mode's server-classifier safeguards on either side", () => {
+	const billing = (suffix: string, promptId: string) =>
+		`x-anthropic-billing-header: cc_version=${FIXTURE_VERSION}.${suffix}; cc_entrypoint=sdk-cli; cch=12345; cc_prompt_id=${promptId};`;
+	const genuine = () => request(billing("abc", "123e4567-e89b-42d3-a456-426614174000"), "sdk-cli", FIXTURE_VERSION);
+	const native = () => request(billing("def", "123e4567-e89b-42d3-a456-426614174001"), "sdk-cli", FIXTURE_VERSION);
+	const withSafeguards = <T extends { body: object }>(value: T): T => {
+		(value.body as Record<string, unknown>).safeguards = [{ type: "dangerous_tool_use", classifier_context: { v: 1 } }];
+		return value;
+	};
+
+	const clean = compare(genuine(), native());
+	assert.equal(clean.status, 0, clean.stdout);
+	assert.match(clean.stdout, /PASS {2}body "safeguards" is absent on both captures/);
+	for (const [claude, pi] of [[withSafeguards(genuine()), native()], [genuine(), withSafeguards(native())]]) {
+		const result = compare(claude, pi);
+		assert.equal(result.status, 1, result.stdout);
+		assert.match(result.stdout, /DIFF {2}body "safeguards" is absent on both captures/);
+	}
+});
+
 test("compare rejects missing or drifted first-party headers and body controls", () => {
 	const billing = (suffix: string, promptId: string) =>
 		`x-anthropic-billing-header: cc_version=${FIXTURE_VERSION}.${suffix}; cc_entrypoint=sdk-cli; cch=12345; cc_prompt_id=${promptId};`;

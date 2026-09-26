@@ -2,9 +2,9 @@ import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { test } from "node:test";
-import { coerceFingerprint } from "../src/fingerprint.ts";
+import { coerceFingerprint, SERVER_CLASSIFIER_BETA } from "../src/fingerprint.ts";
 
 /**
  * The fingerprint file is read once and memoized per process, so each case points
@@ -55,6 +55,86 @@ test("fingerprint coercion keeps only valid per-model budget-thinking profiles",
 		"claude-opus-4-5": { budgetTokens: 31_999, effort: "high" },
 		"claude-sonnet-4-5": { budgetTokens: 31_999 },
 	});
+});
+
+test("fingerprint coercion strips only auto mode's server-classifier beta", () => {
+	const flags = "claude-code-20250219,effort-2025-11-24,thinking-binding-controls-2026-08-01";
+	const withClassifier = `claude-code-20250219,effort-2025-11-24,${SERVER_CLASSIFIER_BETA},thinking-binding-controls-2026-08-01`;
+	const fingerprint = coerceFingerprint({
+		anthropicBeta: withClassifier,
+		modelBeta: { "claude-opus-5-5": withClassifier, "claude-haiku-4-5": flags, "only-classifier": SERVER_CLASSIFIER_BETA },
+	});
+
+	assert.equal(fingerprint?.anthropicBeta, flags);
+	assert.deepEqual(fingerprint?.modelBeta, { "claude-opus-5-5": flags, "claude-haiku-4-5": flags });
+});
+
+test("a classifier-on fingerprint resolves to the classifier-off wire set", async () => {
+	// Exactly what an older capture script wrote on 2.1.283 in auto mode: the
+	// classifier flag sat between effort and thinking-binding-controls.
+	const currentVersion = await bundledVersion();
+	const { DEFAULT_ANTHROPIC_BETA } = await import("../src/constants.ts");
+	const withClassifier = DEFAULT_ANTHROPIC_BETA.replace("effort-2025-11-24,", `effort-2025-11-24,${SERVER_CLASSIFIER_BETA},`);
+	assert.notEqual(withClassifier, DEFAULT_ANTHROPIC_BETA);
+	const constants = await withFingerprint(
+		JSON.stringify({
+			version: currentVersion,
+			anthropicBeta: withClassifier,
+			modelBeta: { "claude-sonnet-5": withClassifier },
+		}),
+	);
+	for (const mode of ["print", "tui"] as const) {
+		const sonnet = constants.getAnthropicBetaForModel("claude-sonnet-5", mode);
+		assert.ok(!sonnet.includes(SERVER_CLASSIFIER_BETA), mode);
+		assert.ok(!constants.getAnthropicBetaForModel("claude-opus-5-5", mode).includes(SERVER_CLASSIFIER_BETA), mode);
+	}
+	assert.equal(constants.getAnthropicBetaForModel("claude-sonnet-5", "print"), constants.DEFAULT_ANTHROPIC_BETA);
+});
+
+test("fingerprint advisories are claimed once per state, only for the state-dir fingerprint", async () => {
+	await withFingerprint(JSON.stringify({ version: "2.1.1" }));
+	const fp = await import("../src/fingerprint.ts");
+	const dir = dirname(process.env.PI_CLAUDE_NATIVE_FINGERPRINT as string);
+	const savedStateDir = process.env.PI_CLAUDE_NATIVE_STATE_DIR;
+	process.env.PI_CLAUDE_NATIVE_STATE_DIR = dir;
+	try {
+		assert.ok(fp.readFingerprint());
+		const notices = join(dir, "notices.json");
+		// A headless run (stderr not a terminal) advises but records nothing.
+		assert.equal(fp.claimFingerprintNotice("behindInstalled", "2.1.1<2.1.2", false), true);
+		assert.equal(fp.claimFingerprintNotice("behindInstalled", "2.1.1<2.1.2", false), true);
+		assert.equal(existsSync(notices), false);
+
+		assert.equal(fp.claimFingerprintNotice("behindInstalled", "2.1.1<2.1.2", true), true);
+		assert.equal(fp.claimFingerprintNotice("behindInstalled", "2.1.1<2.1.2", true), false, "a later start stays quiet");
+		assert.equal(fp.claimFingerprintNotice("behindInstalled", "2.1.1<2.1.2", false), false, "a recorded state stays quiet headless too");
+		assert.equal(fp.claimFingerprintNotice("behindBundled", "2.1.1<2.1.9", true), true, "kinds are independent");
+		assert.equal(fp.claimFingerprintNotice("behindInstalled", "2.1.1<2.1.3", true), true, "a newer claude is mentioned again");
+		assert.deepEqual(JSON.parse(readFileSync(notices, "utf8")), {
+			behindInstalled: "2.1.1<2.1.3",
+			behindBundled: "2.1.1<2.1.9",
+		});
+
+		// A fingerprint outside the state dir never gets a notices.json beside it.
+		const elsewhere = mkdtempSync(join(tmpdir(), "claude-native-fp-elsewhere-"));
+		process.env.PI_CLAUDE_NATIVE_FINGERPRINT = join(elsewhere, "fp.json");
+		writeFileSync(process.env.PI_CLAUDE_NATIVE_FINGERPRINT, JSON.stringify({ version: "2.1.1" }), "utf8");
+		fp.resetStateCaches();
+		assert.ok(fp.readFingerprint());
+		assert.equal(fp.claimFingerprintNotice("behindInstalled", "x", true), true);
+		assert.equal(fp.claimFingerprintNotice("behindInstalled", "x", true), true);
+		assert.equal(existsSync(join(elsewhere, "notices.json")), false);
+
+		// With no fingerprint in use there is nothing to record against: always advise.
+		process.env.PI_CLAUDE_NATIVE_FINGERPRINT = join(dir, "absent.json");
+		fp.resetStateCaches();
+		assert.equal(fp.readFingerprint(), null);
+		assert.equal(fp.claimFingerprintNotice("behindInstalled", "y", true), true);
+		assert.equal(fp.claimFingerprintNotice("behindInstalled", "y", true), true);
+	} finally {
+		if (savedStateDir === undefined) delete process.env.PI_CLAUDE_NATIVE_STATE_DIR;
+		else process.env.PI_CLAUDE_NATIVE_STATE_DIR = savedStateDir;
+	}
 });
 
 test("a captured per-model beta set is used verbatim, preserving the genuine flag order", async () => {

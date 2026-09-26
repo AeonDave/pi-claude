@@ -56,7 +56,7 @@ them to the project's `.pi/settings.json` instead.
 You do **not** need `npm install` to use the extension, and installing it pulls
 **no dependencies at all**: Pi loads `src/` through jiti (no build step) and
 supplies the `@earendil-works/*` peer dependencies itself. The published package
-is 15 files / ~57 kB — `src` plus this file and `VERIFY.md`. `npm install` is
+is 15 files / ~61 kB — `src` plus this file and `VERIFY.md`. `npm install` is
 only for development, and Pi installs git packages with `--omit=dev`, so those
 dev tools never land on a user's machine.
 
@@ -93,8 +93,8 @@ The **curated seed** — always present, even offline:
 
 Newer models are not part of the curated seed. Pi combines the bundled fallback,
 the persisted discovery cache, live discovery, and Pi's Anthropic catalog. The
-v1.7.2 bundled fallback includes Opus 5.5 so it is available before a live
-refresh:
+bundled fallback (since v1.7.2) includes Opus 5.5 so it is available before a
+live refresh:
 
 | Model (Pi id) | Context | Captured request cap | Effort | Thinking |
 |---------------|---------|----------------------|--------|----------|
@@ -225,7 +225,7 @@ env vars below pin them when you want full control.
 | `PI_CLAUDE_NATIVE_CC_VERSION` | _(newest of installed `claude`, usable fingerprint, or bundled capture)_ | Version in `user-agent` **and** billing header (kept consistent). |
 | `PI_CLAUDE_NATIVE_CC_ENTRYPOINT` | _(mode-derived: `cli` in TUI, `sdk-cli` otherwise)_ | Pins the **whole** wire profile, not just billing/user-agent: entrypoint, identity, thinking display and the mode-specific beta flags all follow it. Set it only to force one profile everywhere. |
 | `PI_CLAUDE_NATIVE_USER_AGENT` | `claude-cli/<v> (external, <mode profile>)` | Full `user-agent` override. |
-| `PI_CLAUDE_NATIVE_ANTHROPIC_BETA` | _(fingerprint, else captured normal-turn set, no `context-1m`)_ | Verbatim `anthropic-beta` override (including on Haiku). Set to a value **captured** from your `claude` — never guess. |
+| `PI_CLAUDE_NATIVE_ANTHROPIC_BETA` | _(fingerprint, else captured normal-turn set, no `context-1m`)_ | Verbatim `anthropic-beta` override (including on Haiku). Set to a value **captured** from your `claude` — never guess. Capture it with `CLAUDE_CODE_AUTO_MODE_SERVER=0`: in auto mode `claude` otherwise adds `dangerous-tool-use-2026-09-03`, and this override is not filtered. |
 | `PI_CLAUDE_NATIVE_STATE_DIR` | `<agent dir>/claude-native` | Where this extension keeps its state. `<agent dir>` is `PI_CODING_AGENT_DIR`, else `~/.pi/agent` — the same directory Pi uses for `auth.json`, `settings.json` and every other extension's state. |
 | `PI_CLAUDE_NATIVE_FINGERPRINT` | `<agent dir>/claude-native/fingerprint.json` | Path to a non-interactive capture `{ version, entrypoint, userAgent, anthropicBeta, modelBeta, modelMaxTokens, modelBudgetThinking }` (written by `capture:fingerprint --apply`). Per-model maps preserve beta, request cap, and legacy thinking profiles. An older/versionless fingerprint cannot override captured fields; a newer partial fingerprint never inherits older exact-id rules. |
 | `PI_CLAUDE_NATIVE_BASE_URL` | `https://api.anthropic.com` | Route through a proxy/gateway (e.g. the capture proxy). |
@@ -255,17 +255,31 @@ rest:
   `claude` or the bundled capture —
   Anthropic gates model access on `cc_version`, so a stale pin would 400 with
   "Claude Code <v> does not support this model; version <n> or newer is required".
-  `/claude-native` shows which source the version came from.
+  `/claude-native` shows which source the version came from. When `claude` is
+  newer than your captured fingerprint, the provider already sends the installed
+  version; the startup advisory appears once per `claude` version (recorded in
+  `<agent dir>/claude-native/notices.json` after it was shown in a terminal),
+  not on every Pi start.
 - **The captured wire profile still has its own freshness gate.** This release
-  bundles the reviewed Claude Code **2.1.281** print capture: 16/16 requested
-  runs (12 exact ids plus four moving aliases), including Opus 5.5. Its common
-  beta base is unchanged; Opus 5.5 adds two exact-id flags and has a captured
-  128K request cap. With local fingerprint/cache files absent and live discovery
-  disabled, the bundled snapshot alone selected Opus 5.5; print comparison passed
-  32/32 and the Pi response was `fingerprint`. One Opus 5.5 TUI request also
-  passed 32/32 comparison and returned `fingerprint`; the complete TUI suite
-  remains 11/11 on 2.1.278, so this does not establish a full new TUI profile.
-  Recapture both profiles after a newer client update.
+  bundles the reviewed Claude Code **2.1.283** print capture: 16/16 requested
+  runs (12 exact ids plus four moving aliases), including Opus 5.5. Every beta
+  set, request cap, thinking and effort value is identical to 2.1.281; only the
+  version moved. Opus 5.5 keeps its two exact-id flags and its captured 128K
+  request cap. The live Pi wire comparison was not rerun for 2.1.283; at 2.1.281
+  print comparison passed 32/32, and one Opus 5.5 TUI request also passed 32/32.
+  The complete TUI suite remains 11/11 on 2.1.278, so this does not establish a
+  full new TUI profile. Recapture both profiles after a client update that
+  changes the wire.
+- **Auto mode's server classifier is left off.** With
+  `permissions.defaultMode: "auto"`, Claude Code 2.1.283+ adds the
+  `dangerous-tool-use-2026-09-03` beta plus a `safeguards` body that describes
+  your permission rules, cwd and git state for server-side tool classification.
+  Pi runs its own tools and never sends that body, so the capture runs `claude`
+  with `CLAUDE_CODE_AUTO_MODE_SERVER=0` and rejects any capture carrying either
+  signal. A fingerprint captured earlier with the classifier on has the flag
+  stripped when loaded. The capture still needs auto mode itself
+  (`permissions.defaultMode: "auto"`): the bundled base reflects an auto-mode
+  client through `afk-mode-2026-01-31`, which `claude` sends only in auto mode.
 - **New models are derived.** Family-agnostic discovery surfaces new families from
   Pi's catalog *and* from Anthropic's live `/v1/models`, which supplies the real
   context window, effort ceiling and thinking modes (see Models).
@@ -279,7 +293,8 @@ rest:
   ```
 
   This spins up the capture proxy, marks the proxy URL as first-party (so `cch`
-  and conditional beta flags survive), drives genuine **non-interactive**
+  and conditional beta flags survive), turns auto mode's server classifier off,
+  drives genuine **non-interactive**
   `claude -p` across the moving family aliases (to catch a flagship rollover)
   plus all 12 currently exposed ids, requires both Opus and Sonnet baselines,
   derives their

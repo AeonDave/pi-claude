@@ -57,25 +57,38 @@ available. For `Refresh token expired`, run `/login` → **Claude Pro/Max Native
 to obtain a fresh grant, then `/skill-optimizer init` if the optimizer was the
 caller. Claude CLI credentials and Pi's built-in `anthropic` login are separate.
 
-The current bundled print evidence is Claude Code **2.1.281**. Its 16/16 run
-confirmed that `claude --model opus` and the explicit `claude-opus-5-5` request
-resolve consistently. The Opus 5.5 print header has 16 flags: the unchanged
+The current bundled print evidence is Claude Code **2.1.283**, captured with
+auto mode's server classifier off (`CLAUDE_CODE_AUTO_MODE_SERVER=0`). Its 16/16
+run is identical to 2.1.281 in every beta set, request cap, thinking and effort
+value; only the version moved. It confirmed that `claude --model opus` and the
+explicit `claude-opus-5-5` request resolve consistently. The Opus 5.5 print
+header has 16 flags: the unchanged
 14-flag common base plus `per-turn-control-2026-07-01` followed by
 `mid-conversation-tool-changes-2026-07-01`. Its captured effort was `medium` and
 request cap was 128,000.
 Anthropic's live model metadata reports a 1M context window, 128K output ceiling,
-adaptive-only thinking, and `xhigh`/`max` effort support. Pi print comparison
-passed 32/32 checks, and a real Pi request returned `fingerprint` after session
-refresh. A separate print comparison with absent temporary fingerprint/cache
-files and live discovery disabled passed 32/32 too, proving the bundled snapshot
-alone selected the model.
+adaptive-only thinking, and `xhigh`/`max` effort support.
 
-A separate genuine interactive capture verified one Opus 5.5 main
+The live Pi wire comparison was not rerun for 2.1.283. At 2.1.281, Pi print
+comparison passed 32/32 checks, and a real Pi request returned `fingerprint`
+after session refresh. A separate print comparison with absent temporary
+fingerprint/cache files and live discovery disabled passed 32/32 too, proving
+the bundled snapshot alone selected the model. The comparator now has a 33rd
+check (`safeguards` absent on both sides).
+
+A separate genuine 2.1.281 interactive capture verified one Opus 5.5 main
 request: 17 beta flags, `max_tokens: 128000`, adaptive thinking with display
 updates, effort `medium`, and 21 tools. Pi TUI comparison passed 32/32 checks and
 returned `fingerprint`. This is scoped to Opus 5.5; the full 12-model TUI
 validator suite was not rerun. Its latest complete evidence remains the
 2.1.278 capture with 11/11 models.
+
+With the classifier on (auto mode), 2.1.283 adds `dangerous-tool-use-2026-09-03`
+between `effort-2025-11-24` and `thinking-binding-controls-2026-08-01` on the
+nine ids that send `afk-mode`, always together with a `safeguards` body
+describing the capturing user's permission rules, cwd and git state. Opus 4.5,
+Sonnet 4.5 and Haiku 4.5 send neither. Pi does not send that body, so the flag is
+excluded: see "Auto mode's server classifier" below.
 
 Other discovered models still require their own capture before the docs claim
 exact beta or request-cap behavior; discovery supplies capabilities only.
@@ -137,7 +150,7 @@ client — so capture each side under its own proxy run:
 # terminal 1 — genuine Claude Code pass
 $env:PI_CAPTURE_LABEL="claude"; node scripts/capture-proxy.mjs
 # terminal 2
-$env:_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL="1"; $env:ANTHROPIC_BASE_URL="http://127.0.0.1:8118"; claude -p "say hello"
+$env:_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL="1"; $env:CLAUDE_CODE_AUTO_MODE_SERVER="0"; $env:ANTHROPIC_BASE_URL="http://127.0.0.1:8118"; claude -p "say hello"
 
 # terminal 1 — restart for the Pi pass (Ctrl-C first; select a claude-pro-max-native model)
 $env:PI_CAPTURE_LABEL="pi"; node scripts/capture-proxy.mjs
@@ -156,6 +169,15 @@ the capture an artifact rather than the request sent to `api.anthropic.com`.
 The proxy prints `anthropic-beta` / `user-agent` / `x-app` / `system[0]` for each
 request and saves the full (token-redacted) dump.
 
+`CLAUDE_CODE_AUTO_MODE_SERVER=0` matters only in auto mode, and changes nothing
+else. With the server classifier on, Claude 2.1.283+ adds
+`dangerous-tool-use-2026-09-03` plus a `safeguards` body that Pi never sends;
+`compare-requests.mjs` then reports a dedicated `safeguards` DIFF alongside the
+`anthropic-beta` DIFF, so the mismatch is attributable to the classifier. Set it
+for interactive genuine captures too. The genuine side must itself run in auto
+mode (`permissions.defaultMode: "auto"`): the bundled base is an auto-mode
+client, and without auto mode the afk-mode ids omit `afk-mode-2026-01-31`.
+
 ### Method B — mitmproxy (fallback)
 
 If a client refuses an http base URL, intercept TLS instead. `pip install
@@ -168,7 +190,7 @@ mitmdump -s scripts/mitmproxy_dump.py
 
 # terminal 2 (Node CLIs trust the CA via NODE_EXTRA_CA_CERTS)
 $env:HTTPS_PROXY="http://127.0.0.1:8080"; $env:NODE_EXTRA_CA_CERTS="$HOME/.mitmproxy/mitmproxy-ca-cert.pem"
-$env:PI_CAPTURE_LABEL="claude"; claude -p "say hello"
+$env:PI_CAPTURE_LABEL="claude"; $env:CLAUDE_CODE_AUTO_MODE_SERVER="0"; claude -p "say hello"
 $env:PI_CAPTURE_LABEL="pi";     pi -p "say hello"
 ```
 
@@ -194,7 +216,8 @@ npm run capture:fingerprint -- --apply  # + install <agent dir>/claude-native/fi
 npm run capture:fingerprint -- --mode tui --capture-dir captures/mode-interactive
 ```
 
-It spins up the capture proxy, marks its URL first-party, drives genuine
+It spins up the capture proxy, marks its URL first-party, turns auto mode's
+server classifier off, drives genuine
 **non-interactive** `claude -p` across the moving family aliases plus all 12
 currently exposed ids, requires clean current Opus and
 Sonnet baselines, and writes:
@@ -253,7 +276,34 @@ Opus 5.5 TUI comparison is described above; it does not replace the full
 12-model validator run. The existing `captures/mode-interactive` directory has
 only the old 11-model dump set and is incomplete under the current validator.
 Capture the full 12-id TUI set into a fresh directory before running the
-validator; do not reuse that old directory unchanged.
+validator; do not reuse that old directory unchanged. Start that interactive
+`claude` with `CLAUDE_CODE_AUTO_MODE_SERVER=0`; the validator rejects dumps that
+carry the server classifier.
+
+## Auto mode's server classifier
+
+In auto mode, Claude Code 2.1.283+ can classify each tool call server-side. The
+request then carries `dangerous-tool-use-2026-09-03` in `anthropic-beta` and a
+`safeguards: [{type: "dangerous_tool_use", classifier_context: {...}}]` body
+field with the user's permission mode, rules, trusted directories, cwd, home,
+git state and identity. The two always travel together, and the binary drops
+both after a 400 on either. Pi executes its own tools under its own permissions,
+so it sends neither; the flag without its body is a tuple no genuine client
+emits.
+
+- `capture:fingerprint` spawns `claude` with `CLAUDE_CODE_AUTO_MODE_SERVER=0`,
+  which turns only the server classifier off. Auto mode itself comes from the
+  capturing user's settings: the bundled base, with `afk-mode-2026-01-31`, is an
+  auto-mode client, and the 2.1.283 binary adds `afk-mode` only while auto mode
+  is active. Capture with `permissions.defaultMode: "auto"`, or the nine afk-mode
+  ids lose that flag and the report shows false base drift. A capture that still
+  carries `safeguards` or the flag fails before writing anything, in print and
+  TUI validation alike. If it persists, an `env` entry in Claude's own settings
+  is overriding the variable; remove it for the capture run.
+- `coerceFingerprint` strips the exact flag from a fingerprint captured with the
+  classifier on. At 2.1.283 that capture was otherwise byte-identical to a
+  classifier-off one.
+- `compare-requests.mjs` requires `safeguards` to be absent on both sides.
 
 ## Matching the `anthropic-beta` set exactly
 
@@ -289,7 +339,9 @@ never guessed.
 
 If your `claude --version` is newer than the bundled capture, re-capture and override:
 
-1. Capture genuine `claude`'s `anthropic-beta` (Method A above prints it).
+1. Capture genuine `claude`'s `anthropic-beta` with Method A above, keeping
+   `CLAUDE_CODE_AUTO_MODE_SERVER=0`. The override is sent as-is and never
+   filtered, so it must not contain `dangerous-tool-use-*`.
 2. Set it verbatim:
 
    ```bash
@@ -390,6 +442,13 @@ capture confirms that both clients send `/v1/messages?beta=true`.
    `anthropic-beta` set exactly" above).
 3. **`anthropic-dangerous-direct-browser-access: true`** is set by Pi for all
    Anthropic requests; a genuine Node CLI may omit it. Harmless allow-flag.
+4. **Auto mode's server classifier.** With the classifier on (the default in
+   auto mode unless `CLAUDE_CODE_AUTO_MODE_SERVER=0`), genuine Claude Code
+   2.1.283+ adds `dangerous-tool-use-2026-09-03` plus a `safeguards` body on the
+   nine ids that send `afk-mode`. Pi sends neither; its tuple matches a genuine
+   client with the classifier off, which is how reference captures are taken.
+   See "Auto mode's server classifier" above.
+
 After a Claude Code update, the installed version is normally derived
 automatically. If its state files lag, set `PI_CLAUDE_NATIVE_CC_VERSION`; the
 `user-agent` and billing-header `cc_version` still move together.

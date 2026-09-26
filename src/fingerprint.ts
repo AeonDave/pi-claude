@@ -14,9 +14,9 @@
  *     moved onto the convention by `migrateLegacyState()`.
  */
 
-import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync } from "node:fs";
+import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
-import { join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { warnConfig } from "./warn.ts";
 
 /**
@@ -29,6 +29,7 @@ import { warnConfig } from "./warn.ts";
  */
 export function resetStateCaches(): void {
 	fingerprintCache = undefined;
+	fingerprintPathInUse = undefined;
 	installedVersionCache = undefined;
 	migrated = false;
 }
@@ -68,22 +69,44 @@ export interface Fingerprint {
 	modelBudgetThinking?: Record<string, { budgetTokens: number; effort?: "low" | "medium" | "high" | "xhigh" | "max" }>;
 }
 
+/**
+ * Auto mode's server-side tool classifier (Claude Code 2.1.283+). Genuine Claude
+ * sends this beta only together with a `safeguards` body field describing the
+ * capturing user's permission mode, rules, cwd and git state. Pi runs its own
+ * tools and never sends that body, so the flag alone is a tuple no genuine client
+ * emits. The capture script turns the classifier off; a fingerprint captured with
+ * it on (an older script in auto mode) has the flag stripped at load. That
+ * capture was otherwise byte-identical to a classifier-off one at 2.1.283.
+ */
+export const SERVER_CLASSIFIER_BETA = "dangerous-tool-use-2026-09-03";
+
+function withoutServerClassifierBeta(value: string): string {
+	if (!value.includes(SERVER_CLASSIFIER_BETA)) return value;
+	return value
+		.split(",")
+		.filter((flag) => flag.trim() !== SERVER_CLASSIFIER_BETA)
+		.join(",");
+}
+
 /** A hand-edited fingerprint must never crash the session — validate every field. */
 export function coerceFingerprint(data: unknown): Fingerprint | null {
 	if (!data || typeof data !== "object" || Array.isArray(data)) return null;
 	const raw = data as Record<string, unknown>;
 	const str = (key: string): string | undefined => (typeof raw[key] === "string" ? (raw[key] as string) : undefined);
+	const anthropicBeta = str("anthropicBeta");
 	const out: Fingerprint = {
 		version: str("version"),
 		entrypoint: str("entrypoint"),
-		anthropicBeta: str("anthropicBeta"),
+		anthropicBeta: anthropicBeta === undefined ? undefined : withoutServerClassifierBeta(anthropicBeta),
 		userAgent: str("userAgent"),
 	};
 	const modelBeta = raw.modelBeta;
 	if (modelBeta && typeof modelBeta === "object" && !Array.isArray(modelBeta)) {
 		const map: Record<string, string> = {};
 		for (const [id, value] of Object.entries(modelBeta as Record<string, unknown>)) {
-			if (typeof value === "string" && value.length > 0) map[id] = value;
+			if (typeof value !== "string") continue;
+			const flags = withoutServerClassifierBeta(value);
+			if (flags.length > 0) map[id] = flags;
 		}
 		if (Object.keys(map).length > 0) out.modelBeta = map;
 	}
@@ -197,6 +220,7 @@ function readJsonFile(path: string): unknown {
 }
 
 let fingerprintCache: Fingerprint | null | undefined;
+let fingerprintPathInUse: string | undefined;
 export function readFingerprint(): Fingerprint | null {
 	if (fingerprintCache !== undefined) return fingerprintCache;
 	// An explicit env path is used alone — never silently fall back past a path the
@@ -208,13 +232,48 @@ export function readFingerprint(): Fingerprint | null {
 	for (const path of candidates) {
 		try {
 			fingerprintCache = coerceFingerprint(readJsonFile(path));
-			if (fingerprintCache) return fingerprintCache;
+			if (fingerprintCache) {
+				fingerprintPathInUse = path;
+				return fingerprintCache;
+			}
 		} catch {
 			// absent/unreadable — try the next candidate
 		}
 	}
 	fingerprintCache = null; // nothing readable — fall back to derivation/defaults
 	return fingerprintCache;
+}
+
+/**
+ * Whether to show an advisory about the fingerprint in use: false only when this
+ * `state` was already shown. A Claude update that merely outpaces the capture is
+ * expected (the version already follows the install), so it is mentioned once
+ * per new state instead of on every Pi start. The record is `<state dir>/notices.json`
+ * and is written only for a fingerprint in the state dir and only when `persist`
+ * (default: stderr is a terminal — a headless rpc/json host may discard it).
+ * Anything else — an explicit fingerprint elsewhere, the legacy loose file, an
+ * unwritable record — simply repeats the advisory.
+ */
+export function claimFingerprintNotice(kind: string, state: string, persist = process.stderr.isTTY === true): boolean {
+	const fingerprintPath = fingerprintPathInUse;
+	const stateDir = getStateDir();
+	if (!fingerprintPath || resolve(dirname(fingerprintPath)) !== resolve(stateDir)) return true;
+	const path = join(stateDir, "notices.json");
+	let notices: Record<string, unknown> = {};
+	try {
+		const data = readJsonFile(path);
+		if (data && typeof data === "object" && !Array.isArray(data)) notices = data as Record<string, unknown>;
+	} catch {
+		// absent or unreadable — treat as never shown
+	}
+	if (notices[kind] === state) return false;
+	if (!persist) return true;
+	try {
+		writeFileSync(path, `${JSON.stringify({ ...notices, [kind]: state }, null, 2)}\n`, "utf8");
+	} catch {
+		// best-effort: the advisory shows again next session
+	}
+	return true;
 }
 
 /**

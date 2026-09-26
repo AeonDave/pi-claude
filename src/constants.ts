@@ -15,6 +15,7 @@ import { readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import {
+	claimFingerprintNotice,
 	type Fingerprint,
 	getModelCachePath,
 	getModelCacheReadPaths,
@@ -80,8 +81,8 @@ export const TOKEN_USER_AGENT = "axios/1.13.6";
 // so this constant must never lag the newest generation the provider exposes.
 // The one version literal that advances with a reviewed capture. Tests and
 // runtime freshness checks consume this export instead of copying the value.
-// Current evidence: `claude` 2.1.281, captured 2026-09-24.
-export const BUNDLED_CC_VERSION = "2.1.281";
+// Current evidence: `claude` 2.1.283, captured 2026-09-26.
+export const BUNDLED_CC_VERSION = "2.1.283";
 export const DEFAULT_CC_ENTRYPOINT = "sdk-cli";
 export const DEFAULT_PRINT_THINKING_DISPLAY = "omitted";
 
@@ -181,10 +182,16 @@ function getUsableFingerprint(): Fingerprint | null {
 	if (!missingVersion && !isOlderThanBundledFingerprint(fingerprint)) return fingerprint;
 	if (!warnedStaleFingerprint) {
 		warnedStaleFingerprint = true;
-		const reason = missingVersion
-			? "fingerprint has no version, so its capture freshness cannot be verified"
-			: `fingerprint version ${version} is older than the bundled Claude Code ${BUNDLED_CC_VERSION} capture`;
-		warnConfig(`${reason}; ignoring its beta/entrypoint/per-model values. Re-run \`npm run capture:fingerprint -- --apply\` to refresh it.`);
+		// The bundled capture already covers this; say so once per state, not per start.
+		if (claimFingerprintNotice("behindBundled", `${version || "versionless"}<${BUNDLED_CC_VERSION}`)) {
+			const reason = missingVersion
+				? "fingerprint has no version, so its capture freshness cannot be verified"
+				: `fingerprint version ${version} is older than the bundled Claude Code ${BUNDLED_CC_VERSION} capture`;
+			warnConfig(
+				`${reason}; ignoring its beta/entrypoint/per-model values. ` +
+					`Re-run \`npm run capture:fingerprint -- --apply\` to refresh it.`,
+			);
+		}
 	}
 	return null;
 }
@@ -202,10 +209,14 @@ export function getClaudeCodeVersionInfo(): { version: string; source: VersionSo
 		getUsableFingerprint(); // emits the one-time stale bundled-capture diagnostic
 	} else if (pinned && installed && resolved.source === "installed" && !warnedStaleFingerprint) {
 		warnedStaleFingerprint = true;
-		warnConfig(
-			`fingerprint version ${pinned.trim()} is older than the installed claude ${installed}; sending ${installed}. ` +
-				`Re-run \`npm run capture:fingerprint -- --apply\` to refresh the captured pair.`,
-		);
+		// Expected after every Claude update: the version already follows the
+		// install. Advise once per installed version, not on every Pi start.
+		if (claimFingerprintNotice("behindInstalled", `${pinned.trim()}<${installed}`)) {
+			warnConfig(
+				`fingerprint version ${pinned.trim()} is older than the installed claude ${installed}; sending ${installed}. ` +
+					`Re-run \`npm run capture:fingerprint -- --apply\` to refresh the captured pair.`,
+			);
+		}
 	}
 	return resolved;
 }
@@ -287,6 +298,10 @@ export function getBaseUrl(): string {
  * full window. With it removed, this set matches a genuine `claude` opus normal
  * turn byte-for-byte (verified by capture). If your plan needs the beta to
  * unlock >200K, add it via `PI_CLAUDE_NATIVE_ANTHROPIC_BETA`.
+ *
+ * `dangerous-tool-use-2026-09-03` (2.1.283) is likewise NOT here: auto mode's
+ * server classifier sends it only with a `safeguards` body Pi does not produce.
+ * See `SERVER_CLASSIFIER_BETA` in `fingerprint.ts`.
  *
  * Anthropic returns a 400 on unexpected beta values, so do not edit this by
  * guessing — re-capture from your installed `claude` (see VERIFY.md) and set

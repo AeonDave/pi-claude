@@ -14,6 +14,12 @@ fp-raw/            # npm run capture:fingerprint — one req-fp-<n>.json per mod
 mode-interactive/  # hand-run interactive `claude` — the ONLY source for the TUI profile
 ```
 
+Run genuine `claude` in auto mode (`permissions.defaultMode: "auto"`, which the
+bundled base with `afk-mode` reflects) and with `CLAUDE_CODE_AUTO_MODE_SERVER=0`.
+Otherwise auto mode adds a `safeguards` body and its `dangerous-tool-use` beta,
+which Pi never sends; the validators and `compare-requests.mjs` reject such
+captures.
+
 The TUI validator requires every bundled exact id and also includes additional
 clean Claude ids found in the directory, so a new model can be captured before
 the bundled model list is refreshed.
@@ -21,7 +27,7 @@ the bundled model list is refreshed.
 Ad-hoc pairs still use the flat naming:
 
 ```
-req-claude-<n>.json   # genuine: PI_CAPTURE_LABEL=claude claude -p "say hello"
+req-claude-<n>.json   # genuine: PI_CAPTURE_LABEL=claude CLAUDE_CODE_AUTO_MODE_SERVER=0 claude -p "say hello"
 req-pi-<n>.json       # plugin:  PI_CAPTURE_LABEL=pi     pi -p "say hello"
 ```
 

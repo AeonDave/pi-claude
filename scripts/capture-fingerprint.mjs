@@ -23,6 +23,9 @@
  *       existing captures/fp-raw/ without driving `claude` again
  *
  * Requires a logged-in `claude` on PATH (uses your subscription; tiny prompts).
+ * Auto mode's server classifier is turned off for the run
+ * (`CLAUDE_CODE_AUTO_MODE_SERVER=0`): its beta travels with a `safeguards` body
+ * that Pi does not send, and a capture still carrying either fails before writes.
  * Override the executable with `PI_CLAUDE_NATIVE_CLAUDE_BIN` when needed.
  * Run this after `claude` updates to refresh the captured values.
  */
@@ -53,7 +56,9 @@ import {
 	buildModelBeta,
 	buildModelBudgetThinking,
 	buildModelMaxTokens,
+	buildClaudeCaptureEnv,
 	buildTuiFingerprint,
+	captureWireFlags,
 	computeBetaDeviations,
 	DEFAULT_CAPTURE_MODELS,
 	DEFAULT_TUI_CAPTURE_MODELS,
@@ -117,7 +122,6 @@ if (MODELS.length === 0 || MODELS.some((model) => !/^[a-zA-Z0-9][a-zA-Z0-9._:-]*
 	process.exit(2);
 }
 
-const ONE_M_BETA = "context-1m-2025-08-07";
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 const CLAUDE_PROMPT = "reply with the single word ok";
 
@@ -259,13 +263,7 @@ function runClaude(model, baseUrl) {
 		const command = isWindowsShim ? process.env.ComSpec || "cmd.exe" : executable;
 		const commandArgs = isWindowsShim ? ["/d", "/s", "/c", executable, ...claudeArgs] : claudeArgs;
 		const child = spawn(command, commandArgs, {
-			env: {
-				...process.env,
-				ANTHROPIC_BASE_URL: baseUrl,
-				// Claude Code omits cch when a custom base URL looks third-party. This
-				// override makes a proxy capture retain the real first-party header.
-				_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL: "1",
-			},
+			env: buildClaudeCaptureEnv(process.env, baseUrl),
 			stdio: "ignore",
 		});
 		let timedOut = false;
@@ -285,10 +283,6 @@ function runClaude(model, baseUrl) {
 	});
 }
 
-function betaList(value) {
-	return (value || "").split(",").map((s) => s.trim()).filter(Boolean);
-}
-
 function readTuiCandidate(path) {
 	const record = readRawCapture(path);
 	if (!isRequestedTuiCapture(record?.body, CLAUDE_PROMPT)) return null;
@@ -298,7 +292,6 @@ function readTuiCandidate(path) {
 	const systemHeader = typeof system[0]?.text === "string" ? system[0].text : "";
 	const userAgent = typeof headers["user-agent"] === "string" ? headers["user-agent"] : "";
 	const profile = parseCaptureProfile(body.model, userAgent, systemHeader);
-	const beta = betaList(headers["anthropic-beta"]);
 	return {
 		wireModel: body.model,
 		userAgent,
@@ -314,8 +307,7 @@ function readTuiCandidate(path) {
 		requestClass: headers["x-claude-code-request-class"] ?? null,
 		turnOrigin: /cc_turn_origin=([^;]+);/.exec(systemHeader)?.[1] ?? null,
 		hasCch: / cch=[0-9a-f]{5};/.test(systemHeader),
-		has1mBeta: beta.includes(ONE_M_BETA),
-		beta,
+		...captureWireFlags(body, headers["anthropic-beta"]),
 		triggeredBy: [],
 	};
 }
@@ -462,7 +454,6 @@ async function distill(captureOwner, runResults, runManifest) {
 		const ua = h["user-agent"] || "";
 		const sys0 = (rec.body.system && rec.body.system[0] && rec.body.system[0].text) || "";
 		const profile = parseCaptureProfile(rec.body.model, ua, sys0);
-		const beta = betaList(h["anthropic-beta"]);
 		const observation = {
 			wireModel: rec.body.model,
 			userAgent: ua,
@@ -475,8 +466,7 @@ async function distill(captureOwner, runResults, runManifest) {
 			identity: rec.body.system?.[1]?.text ?? null,
 			thinkingDisplay: rec.body.thinking?.display ?? null,
 			hasCch: / cch=[0-9a-f]{5};/.test(sys0),
-			has1mBeta: beta.includes(ONE_M_BETA),
-			beta,
+			...captureWireFlags(rec.body, h["anthropic-beta"]),
 			triggeredBy: owner ? [owner] : [],
 		};
 		const size = JSON.stringify(rec.body).length;

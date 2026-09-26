@@ -1,3 +1,4 @@
+import { SERVER_CLASSIFIER_BETA } from "../src/fingerprint.ts";
 import { parseModelId } from "../src/models.ts";
 
 export interface FingerprintCandidate {
@@ -16,6 +17,8 @@ export interface FingerprintCandidate {
 	requestClass?: unknown;
 	turnOrigin?: unknown;
 	has1mBeta: boolean;
+	/** The request body carried auto mode's server-classifier `safeguards` field. */
+	hasSafeguards?: boolean;
 	beta: string[];
 	triggeredBy: string[];
 }
@@ -87,6 +90,50 @@ export const DEFAULT_TUI_CAPTURE_MODELS = DEFAULT_CAPTURE_MODELS.filter(
 );
 
 const CONTEXT_1M_BETA = "context-1m-2025-08-07";
+
+/**
+ * Spawn `claude` with auto mode's server-side classifier off. In auto mode it
+ * otherwise adds `SERVER_CLASSIFIER_BETA` plus a `safeguards` body describing the
+ * capturing user's permission rules, which Pi does not reproduce. Auto mode itself
+ * (and its `afk-mode` flag) is unaffected.
+ */
+export const CAPTURE_CLAUDE_ENV = { CLAUDE_CODE_AUTO_MODE_SERVER: "0" } as const;
+
+/** Environment for a captured `claude -p` run; the classifier switch is applied last. */
+export function buildClaudeCaptureEnv(baseEnv: NodeJS.ProcessEnv, baseUrl: string): NodeJS.ProcessEnv {
+	return {
+		...baseEnv,
+		ANTHROPIC_BASE_URL: baseUrl,
+		// Claude Code omits cch when a custom base URL looks third-party. This
+		// override makes a proxy capture retain the real first-party header.
+		_CLAUDE_CODE_ASSUME_FIRST_PARTY_BASE_URL: "1",
+		...CAPTURE_CLAUDE_ENV,
+	};
+}
+
+/** The beta list plus the conditional wire signals every capture candidate records. */
+export function captureWireFlags(
+	body: unknown,
+	betaHeader: unknown,
+): { beta: string[]; has1mBeta: boolean; hasSafeguards: boolean } {
+	const beta = typeof betaHeader === "string" ? betaHeader.split(",").map((flag) => flag.trim()).filter(Boolean) : [];
+	return {
+		beta,
+		has1mBeta: beta.includes(CONTEXT_1M_BETA),
+		hasSafeguards: !!body && typeof body === "object" && (body as { safeguards?: unknown }).safeguards !== undefined,
+	};
+}
+
+function assertNoServerClassifier(candidate: FingerprintCandidate, kind: string): void {
+	if (candidate.hasSafeguards === true || candidate.beta.includes(SERVER_CLASSIFIER_BETA)) {
+		throw new Error(
+			`${candidate.wireModel}: ${kind} capture carries auto mode's server classifier ` +
+				`(safeguards / ${SERVER_CLASSIFIER_BETA}); recapture with CLAUDE_CODE_AUTO_MODE_SERVER=0 ` +
+				`(capture:fingerprint already sets it; if the classifier persists, an "env" entry in Claude's ` +
+				`settings overrides it — remove that entry for the capture run)`,
+		);
+	}
+}
 
 /** Read the current prompt from a hand-captured interactive turn with history. */
 export function lastUserMessageText(body: unknown): string | undefined {
@@ -223,6 +270,7 @@ export function selectTuiCaptureCandidates(
 		if (candidate.has1mBeta || candidate.beta.includes(CONTEXT_1M_BETA)) {
 			throw new Error(`${candidate.wireModel}: TUI capture unexpectedly contains ${CONTEXT_1M_BETA}`);
 		}
+		assertNoServerClassifier(candidate, "TUI");
 		if (typeof candidate.maxTokens !== "number" || !Number.isSafeInteger(candidate.maxTokens) || candidate.maxTokens <= 0) {
 			throw new Error(`${candidate.wireModel}: max_tokens must be a positive integer`);
 		}
@@ -422,6 +470,7 @@ function assertUsableCapture(candidate: FingerprintCandidate): void {
 	if (candidate.has1mBeta || candidate.beta.includes(CONTEXT_1M_BETA)) {
 		throw new Error(`${candidate.wireModel}: normal-turn capture unexpectedly contains ${CONTEXT_1M_BETA}`);
 	}
+	assertNoServerClassifier(candidate, "normal-turn");
 }
 
 export function selectFingerprintBaseline(candidates: readonly FingerprintCandidate[]): FingerprintBaseline {
