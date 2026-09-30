@@ -73,6 +73,7 @@ export const DEFAULT_CAPTURE_MODELS = [
 	"claude-opus-5-5",
 	"claude-opus-5",
 	"claude-sonnet-5",
+	"claude-sonnet-5-5",
 	"claude-fable-5-1",
 	"claude-fable-5",
 	"claude-opus-4-8",
@@ -191,6 +192,13 @@ export function assertRequestedCapturesComplete(runs: readonly CaptureRunSummary
 		.map((run) => run.model);
 	if (missing.length > 0) {
 		throw new Error(`requested model run(s) produced no matching main capture: ${missing.join(", ")}`);
+	}
+}
+
+/** A reusable run must cover the capture plan selected for this invocation. */
+export function assertCapturePlanMatches(recorded: readonly string[], selected: readonly string[]): void {
+	if (recorded.length !== selected.length || recorded.some((model, index) => model !== selected[index])) {
+		throw new Error("capture manifest model list differs from --models; run a fresh capture or pass the original --models list");
 	}
 }
 

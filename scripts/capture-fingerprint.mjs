@@ -50,6 +50,7 @@ import {
 import { getStateDir } from "../src/fingerprint.ts";
 import {
 	assertConsistentFingerprintCandidate,
+	assertCapturePlanMatches,
 	assertNoCanonicalModelDrift,
 	assertNonInteractiveCaptureProfile,
 	assertRequestedCapturesComplete,
@@ -352,6 +353,7 @@ async function runNonInteractiveCapture() {
 		}
 		runManifest = readRunManifest();
 		if (runManifest) {
+			assertCapturePlanMatches(runManifest.requestedModels, MODELS);
 			runResults.push(...runManifest.runs);
 			assertRequestedCapturesComplete(runResults);
 		} else if (APPLY) {

@@ -45,6 +45,14 @@ test("a prompt-scoped billing header carries the captured TUI turn origin", () =
 	assert.match(result.system[0].text, / cc_prompt_id=[0-9a-f-]+; cc_turn_origin=human;$/);
 });
 
+test("2.1.284 billing header adds the first-turn position once", () => {
+	const once = applyBillingHeader(basePayload(), "2.1.284", "sdk-cli", "session-a", true) as {
+		system: Array<{ text: string }>;
+	};
+	assert.match(once.system[0].text, / cc_turn_origin=sdk; cc_prompt_index=0; cc_turn_index=1;$/);
+	assert.equal(applyBillingHeader(once, "2.1.284", "sdk-cli", "session-a"), once);
+});
+
 test("does not mutate the original payload", () => {
 	const payload = basePayload();
 	applyBillingHeader(payload, VERSION, ENTRYPOINT);

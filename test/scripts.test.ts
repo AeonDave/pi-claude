@@ -151,6 +151,28 @@ test("compare accepts a matching sdk-cli pair on both sides", () => {
 	assert.equal(result.status, 0, result.stdout + result.stderr);
 });
 
+test("compare requires the paired 2.1.284 prompt and turn indices when genuine sends them", () => {
+	const version = "2.1.284";
+	const billing = (suffix: string, promptId: string, tail: string) =>
+		`x-anthropic-billing-header: cc_version=${version}.${suffix}; cc_entrypoint=sdk-cli; cch=12345; cc_prompt_id=${promptId}; cc_turn_origin=sdk;${tail}`;
+	const claude = request(
+		billing("abc", "123e4567-e89b-42d3-a456-426614174000", " cc_prompt_index=0; cc_turn_index=1;"),
+		"sdk-cli", version, AGENT_SDK_IDENTITY,
+	);
+	const pi = request(
+		billing("def", "123e4567-e89b-42d3-a456-426614174001", " cc_prompt_index=0; cc_turn_index=1;"),
+		"sdk-cli", version, AGENT_SDK_IDENTITY,
+	);
+	assert.equal(compare(claude, pi).status, 0);
+	for (const tail of ["", " cc_prompt_index=0; cc_turn_index=2;", " cc_prompt_index=0;", " cc_turn_index=1; cc_prompt_index=0;"]) {
+		const mismatch = structuredClone(pi);
+		mismatch.body.system[0].text = billing("def", "123e4567-e89b-42d3-a456-426614174001", tail);
+		const result = compare(claude, mismatch);
+		assert.equal(result.status, 1, result.stdout + result.stderr);
+		assert.match(result.stdout, /DIFF  billing prompt\/turn position matches genuine|DIFF  system\[0\] is a well-formed billing header/);
+	}
+});
+
 test("compare accepts different URL origins when pathname and search match, but rejects route drift", () => {
 	const billing = (suffix: string, promptId: string) =>
 		`x-anthropic-billing-header: cc_version=${FIXTURE_VERSION}.${suffix}; cc_entrypoint=sdk-cli; cch=12345; cc_prompt_id=${promptId};`;

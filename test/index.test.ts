@@ -3,7 +3,7 @@ import { randomUUID } from "node:crypto";
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import {
 	CLAUDE_AGENT_SDK_IDENTITY,
 	CLAUDE_CODE_IDENTITY,
@@ -13,13 +13,18 @@ import {
 import { writeModelCache } from "../src/discovery.ts";
 import claudeProMaxNative from "../src/index.ts";
 
-// Isolation: never read the developer's REAL ~/.pi/claude-native-fingerprint.json.
-// A locally-applied capture (a newer version, or a per-model `modelBeta` set)
-// silently changes the flag counts asserted below, so the suite would pass or fail
-// depending on whose machine it runs on. Point at a path that cannot exist.
-process.env.PI_CLAUDE_NATIVE_FINGERPRINT = join(tmpdir(), `claude-native-absent-fingerprint-${randomUUID()}.json`);
-// Live discovery is on by default; tests must never hit the network.
+// Provider construction and request hooks can read Pi's state and ~/.claude.json.
+// Keep every default path inside an empty home, including tests that do not set
+// a per-test models cache path.
+const testHome = mkdtempSync(join(tmpdir(), "pi-claude-index-test-"));
+process.env.HOME = testHome;
+process.env.USERPROFILE = testHome;
+process.env.PI_CODING_AGENT_DIR = join(testHome, "agent");
+process.env.PI_CLAUDE_NATIVE_STATE_DIR = join(testHome, "agent", "claude-native");
+process.env.PI_CLAUDE_NATIVE_FINGERPRINT = join(testHome, "absent-fingerprint.json");
+process.env.PI_CLAUDE_NATIVE_MODELS_CACHE = join(testHome, "absent-models.json");
 process.env.PI_CLAUDE_NATIVE_LIVE_DISCOVERY = "0";
+after(() => rmSync(testHome, { recursive: true, force: true }));
 
 const FABLE_COST = { input: 10, output: 50, cacheRead: 1, cacheWrite: 12.5 };
 
@@ -92,7 +97,7 @@ test("session refresh re-registers when catalog fields change without an id/wind
 	}
 });
 
-test("Opus 5.5 is visible at load with a stale cache, while older discovered generations stay visible", () => {
+test("Opus 5.5 and Sonnet 5.5 are visible at load with a stale cache, while older discovered generations stay visible", () => {
 	const previous = process.env.PI_CLAUDE_NATIVE_MODELS_CACHE;
 	const dir = mkdtempSync(join(tmpdir(), "claude-native-cold-list-"));
 	const cachePath = join(dir, "models.json");
@@ -102,7 +107,7 @@ test("Opus 5.5 is visible at load with a stale cache, while older discovered gen
 		catalog: { contextWindow: 1_000_000, maxTokens: 128_000, forceAdaptiveThinking: true },
 	}]);
 	try {
-		const registrations: Array<{ models: Array<Record<string, unknown>> }> = [];
+		const registrations: Array<{ models: Array<Record<string, unknown>>; headers?: Record<string, string> }> = [];
 		const { pi } = harness((_id, config) => registrations.push(config as never));
 		claudeProMaxNative(pi as never);
 		const models = registrations[0]?.models;
@@ -114,7 +119,18 @@ test("Opus 5.5 is visible at load with a stale cache, while older discovered gen
 		assert.deepEqual(opus55.cost, { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 });
 		assert.deepEqual(opus55.compat, { forceAdaptiveThinking: true, supportsTemperature: false });
 		assert.deepEqual(opus55.thinkingLevelMap, { xhigh: "xhigh", max: "max", off: null });
-		assert.equal((opus55.headers as Record<string, string>)["anthropic-beta"].split(",").length, 16);
+		assert.equal((opus55.headers as Record<string, string>)["anthropic-beta"].split(",").length, 17);
+		const sonnet55 = models?.find((model) => model.id === "claude-sonnet-5-5");
+		assert.ok(sonnet55, "cold listing must include the verified bundled Sonnet 5.5 snapshot without session_start");
+		assert.equal(sonnet55.contextWindow, 1_000_000);
+		assert.equal(sonnet55.maxTokens, 128_000);
+		assert.deepEqual(sonnet55.cost, { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 });
+		assert.deepEqual(sonnet55.compat, { forceAdaptiveThinking: true, supportsTemperature: false });
+		assert.deepEqual(sonnet55.thinkingLevelMap, { xhigh: "xhigh", max: "max", off: null });
+		// Sonnet 5.5 is the common base verbatim, so it carries no per-model header
+		// override and inherits the provider-level 15-flag base.
+		assert.equal(sonnet55.headers, undefined);
+		assert.equal((registrations[0]?.headers as Record<string, string> | undefined)?.["anthropic-beta"].split(",").length, 15);
 	} finally {
 		if (previous === undefined) delete process.env.PI_CLAUDE_NATIVE_MODELS_CACHE;
 		else process.env.PI_CLAUDE_NATIVE_MODELS_CACHE = previous;
@@ -305,6 +321,7 @@ test("request and header hooks emit coherent TUI and print Claude profiles", () 
 				mode,
 				model: { provider: PROVIDER_ID, id: "claude-opus-5" },
 				modelRegistry: { isUsingOAuth: () => true },
+				sessionManager: { getBranch: () => [{ type: "message", message: { role: "user", content: "hi" } }] },
 			};
 			const transformed = beforeRequest(
 				{
@@ -333,7 +350,7 @@ test("request and header hooks emit coherent TUI and print Claude profiles", () 
 		assert.equal(tui.headers["anthropic-beta"], getAnthropicBetaForModel("claude-opus-5", "tui"));
 		assert.ok(tui.headers["anthropic-beta"].includes("thinking-display-updates-2026-08-18"));
 		assert.equal(tui.headers["anthropic-beta"].includes("fallback-credit-2026-06-01"), false);
-		assert.match(tui.transformed.system[0]?.text ?? "", / cc_turn_origin=human;$/);
+		assert.match(tui.transformed.system[0]?.text ?? "", / cc_turn_origin=human; cc_prompt_index=1; cc_turn_index=1;$/);
 		assert.equal(tui.headers["x-claude-code-request-class"], "main");
 
 		const print = applyProfile("print", CLAUDE_CODE_IDENTITY);
@@ -344,13 +361,56 @@ test("request and header hooks emit coherent TUI and print Claude profiles", () 
 		assert.equal(print.headers["anthropic-beta"], getAnthropicBetaForModel("claude-opus-5", "print"));
 		assert.equal(print.headers["anthropic-beta"].includes("thinking-display-updates-2026-08-18"), false);
 		assert.equal(print.headers["anthropic-beta"].includes("fallback-credit-2026-06-01"), false);
-		assert.match(print.transformed.system[0]?.text ?? "", / cc_turn_origin=sdk;$/);
+		assert.match(print.transformed.system[0]?.text ?? "", / cc_turn_origin=sdk; cc_prompt_index=0; cc_turn_index=1;$/);
 		assert.equal(print.headers["x-claude-code-request-class"], "main");
 	} finally {
 		for (const [name, value] of saved) {
 			if (value === undefined) delete process.env[name];
 			else process.env[name] = value;
 		}
+	}
+});
+
+test("first-turn billing indices require a matching uncompacted session branch", () => {
+	const previousVersion = process.env.PI_CLAUDE_NATIVE_CC_VERSION;
+	process.env.PI_CLAUDE_NATIVE_CC_VERSION = "2.1.284";
+	try {
+		const { pi, handlers } = harness(() => {});
+		claudeProMaxNative(pi as never);
+		const hook = handlers.get("before_provider_request");
+		assert.ok(hook);
+		const user = { type: "message", message: { role: "user", content: "hi" } };
+		const system = { type: "message", message: { role: "system", content: "instructions" } };
+		const assistant = { type: "message", message: { role: "assistant", content: "working" } };
+		const toolResult = { type: "message", message: { role: "toolResult", content: "ok" } };
+		const billing = (branch: unknown[], text = "hi") => {
+			const ctx = {
+				mode: "print",
+				model: { provider: PROVIDER_ID, id: "claude-opus-5" },
+				modelRegistry: { isUsingOAuth: () => true },
+				sessionManager: { getBranch: () => branch },
+			};
+			const out = hook({ payload: { messages: [{ role: "user", content: text }], system: "system" } }, ctx) as {
+				system: Array<{ text: string }>;
+			};
+			return out.system[0].text;
+		};
+		assert.match(billing([system, user]), / cc_prompt_index=0; cc_turn_index=1;$/);
+		assert.match(billing([user, assistant, toolResult]), / cc_prompt_index=0; cc_turn_index=1;$/);
+		for (const branch of [
+			[],
+			[assistant, user],
+			[user, assistant, { ...user, message: { role: "user", content: "again" } }],
+			[user, { type: "compaction" }],
+			[user, { type: "branch_summary" }],
+			[user, { type: "custom_message" }],
+		]) {
+			assert.ok(!billing(branch).includes("cc_prompt_index"));
+		}
+		assert.ok(!billing([user], "rewritten").includes("cc_prompt_index"));
+	} finally {
+		if (previousVersion === undefined) delete process.env.PI_CLAUDE_NATIVE_CC_VERSION;
+		else process.env.PI_CLAUDE_NATIVE_CC_VERSION = previousVersion;
 	}
 });
 

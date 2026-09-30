@@ -122,13 +122,13 @@ test("cc_prompt_id and cc_turn_origin match the bundled capture shape and mode",
 	// gated on this exact regex (lifted from claude 2.1.261).
 	const GENUINE_PROMPT_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 	const messages = [{ role: "user", content: "hello" }];
-	const value = buildBillingHeaderValue(messages, BUNDLED_CC_VERSION, "sdk-cli", "session-a");
+	const value = buildBillingHeaderValue(messages, BUNDLED_CC_VERSION, "sdk-cli", "session-a", true);
 	const id = value.match(/cc_prompt_id=([^;]+);/)?.[1];
 	assert.ok(id, "the segment is present when a session id is supplied");
 	assert.match(id, GENUINE_PROMPT_ID);
-	assert.match(value, /^x-anthropic-billing-header: cc_version=\d+\.\d+\.\d+\.[0-9a-f]{3}; cc_entrypoint=sdk-cli; cch=[0-9a-f]{5}; cc_prompt_id=[^;]+; cc_turn_origin=sdk;$/);
+	assert.match(value, /^x-anthropic-billing-header: cc_version=\d+\.\d+\.\d+\.[0-9a-f]{3}; cc_entrypoint=sdk-cli; cch=[0-9a-f]{5}; cc_prompt_id=[^;]+; cc_turn_origin=sdk; cc_prompt_index=0; cc_turn_index=1;$/);
 	assert.equal(value.match(/cc_version=(\d+\.\d+\.\d+)\./)?.[1], BUNDLED_CC_VERSION);
-	assert.match(buildBillingHeaderValue(messages, BUNDLED_CC_VERSION, "cli", "session-a"), / cc_turn_origin=human;$/);
+	assert.match(buildBillingHeaderValue(messages, BUNDLED_CC_VERSION, "cli", "session-a", true), / cc_turn_origin=human; cc_prompt_index=1; cc_turn_index=1;$/);
 	assert.equal(turnOriginForEntrypoint("cli"), "human");
 	assert.equal(turnOriginForEntrypoint("sdk-cli"), "sdk");
 	assert.equal(turnOriginForEntrypoint("custom"), undefined);
@@ -137,6 +137,27 @@ test("cc_prompt_id and cc_turn_origin match the bundled capture shape and mode",
 	const unscoped = buildBillingHeaderValue(messages, BUNDLED_CC_VERSION, "sdk-cli");
 	assert.ok(!unscoped.includes("cc_prompt_id"));
 	assert.ok(!unscoped.includes("cc_turn_origin"));
+});
+
+test("turn indices are stamped only for a known fresh 2.1.284 prompt and its tool loop", () => {
+	const prompt: BillingMessage = { role: "user", content: "read the hello file" };
+	const initial = buildBillingHeaderValue([prompt], "2.1.284", "sdk-cli", "session-a", true);
+	assert.match(initial, / cc_prompt_index=0; cc_turn_index=1;$/);
+	const toolLoop = buildBillingHeaderValue([
+		prompt,
+		{ role: "assistant", content: [{ type: "tool_use", id: "t1" }] },
+		{ role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }] },
+	], "2.1.284", "sdk-cli", "session-a", true);
+	assert.match(toolLoop, / cc_prompt_index=0; cc_turn_index=1;$/);
+	assert.equal(toolLoop.match(/cc_prompt_id=([^;]+);/)?.[1], initial.match(/cc_prompt_id=([^;]+);/)?.[1]);
+
+	const secondPrompt = buildBillingHeaderValue([prompt, { role: "assistant", content: "done" }, { role: "user", content: "next" }], "2.1.284", "sdk-cli", "session-a", true);
+	assert.ok(!secondPrompt.includes("cc_prompt_index"), "later positions need Claude's internal transcript state");
+	assert.ok(!secondPrompt.includes("cc_turn_index"));
+	const compacted = buildBillingHeaderValue([{ role: "assistant", content: "summary" }, prompt], "2.1.284", "sdk-cli", "session-a", true);
+	assert.ok(!compacted.includes("cc_prompt_index"));
+	assert.ok(!buildBillingHeaderValue([prompt], "2.1.283", "sdk-cli", "session-a", true).includes("cc_prompt_index"));
+	assert.ok(!buildBillingHeaderValue([prompt], "2.1.284", "sdk-cli", "session-a").includes("cc_prompt_index"), "serialized history alone is insufficient");
 });
 
 test("cc_prompt_id is stable across a tool loop and changes on a new prompt", () => {

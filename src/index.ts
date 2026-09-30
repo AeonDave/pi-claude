@@ -28,6 +28,7 @@
 
 import { randomUUID } from "node:crypto";
 import type { ExtensionAPI, ExtensionContext } from "@earendil-works/pi-coding-agent";
+import { extractFirstUserMessageText } from "./billing-header.ts";
 import {
 	getAnthropicBeta,
 	getAnthropicBetaForModel,
@@ -95,6 +96,33 @@ const VERSION_SOURCE_LABEL: Record<string, string> = {
 function isNativeOAuth(ctx: ExtensionContext): boolean {
 	const model = ctx.model;
 	return !!model && model.provider === PROVIDER_ID && ctx.modelRegistry.isUsingOAuth(model);
+}
+
+/** Prove that a serialized one-prompt request is also the first prompt in Pi's session. */
+function hasFreshPromptHistory(ctx: ExtensionContext, payload: unknown): boolean {
+	if (!payload || typeof payload !== "object") return false;
+	const messages = (payload as { messages?: unknown }).messages;
+	if (!Array.isArray(messages)) return false;
+	const requestText = extractFirstUserMessageText(messages);
+	if (!requestText) return false;
+	try {
+		const branch = ctx.sessionManager?.getBranch();
+		if (!branch?.length) return false;
+		let userText: string | undefined;
+		for (const entry of branch) {
+			if (entry.type === "compaction" || entry.type === "branch_summary" || entry.type === "custom_message") return false;
+			if (entry.type !== "message") continue;
+			if (entry.message.role === "user") {
+				if (userText !== undefined) return false;
+				userText = extractFirstUserMessageText([entry.message]);
+			} else if (userText === undefined && entry.message.role !== "system") {
+				return false;
+			}
+		}
+		return userText === requestText;
+	} catch {
+		return false; // An unavailable session branch cannot prove first-turn position.
+	}
 }
 
 /** Footer status; best-effort (headless hosts may not have a theme/UI). */
@@ -303,7 +331,7 @@ export default function claudeProMaxNative(pi: ExtensionAPI) {
 		next = applyContextManagement(next);
 		next = applyDiagnostics(next);
 		next = applyMetadata(next, getClaudeUserId());
-		next = applyBillingHeader(next, version, entrypoint, getSessionId());
+		next = applyBillingHeader(next, version, entrypoint, getSessionId(), hasFreshPromptHistory(ctx, next));
 		logNativeRequest(next, { model: ctx.model?.id, userAgent: getUserAgent(ctx.mode), version, entrypoint });
 		return next === event.payload ? undefined : next;
 	});

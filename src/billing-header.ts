@@ -7,6 +7,7 @@
  *
  *   x-anthropic-billing-header: cc_version=<v>.<suffix>; cc_entrypoint=<e>;
  *     cch=<cch>; cc_prompt_id=<uuid>; cc_turn_origin=<origin>;
+ *     cc_prompt_index=<n>; cc_turn_index=<n>;
  *
  *   suffix = sha256(SALT + chars[4,7,20] of firstUserMessageText + version)[:3]
  *            VERIFIED byte-for-byte against Claude Code 2.1.261's own
@@ -108,8 +109,9 @@ export function extractCurrentPromptText(messages: readonly BillingMessage[]): s
  *
  * Genuine Claude Code generates a random `cc_prompt_id` per prompt and keeps it
  * for that turn's tool loop. We cannot reproduce its value, so we derive one that
- * has the same LIFETIME: same prompt (and session) → same id, new prompt → new id.
- * Deriving rather than generating also keeps this module pure and
+ * has the same lifetime through a prompt's tool loop. Different prompt text in
+ * one session produces a different id; repeated identical text reuses it, unlike
+ * genuine Claude Code. Deriving rather than generating keeps this module pure and
  * `applyBillingHeader` idempotent.
  */
 export function derivePromptId(seed: string): string {
@@ -132,6 +134,36 @@ export function turnOriginForEntrypoint(entrypoint: string): "human" | "sdk" | u
 }
 
 /**
+ * Claude Code 2.1.284 stamps the first SDK prompt (0, 1) and first human prompt
+ * (1, 1). Later positions come from its internal transcript, which the serialized
+ * Messages payload cannot reconstruct after compaction or session branching.
+ * The caller must also prove that Pi's complete session branch contains only
+ * this first prompt. The serialized request alone can look fresh after context
+ * compaction. Leave unproven turns unstamped instead of inventing a position.
+ */
+function initialTurnPosition(messages: readonly BillingMessage[], entrypoint: string): { promptIndex: number; turnIndex: number } | undefined {
+	if (entrypoint !== "cli" && entrypoint !== "sdk-cli") return undefined;
+	const first = messages[0];
+	if (first?.role !== "user") return undefined;
+	const firstContent = first.content;
+	const hasPromptText = typeof firstContent === "string"
+		? firstContent.length > 0
+		: Array.isArray(firstContent) && firstContent.some(isTextBlock);
+	if (!hasPromptText) return undefined;
+	for (const message of messages.slice(1)) {
+		if (message?.role === "assistant") continue;
+		if (
+			message?.role === "user" &&
+			Array.isArray(message.content) &&
+			message.content.length > 0 &&
+			message.content.every((block) => !!block && typeof block === "object" && (block as { type?: unknown }).type === "tool_result")
+		) continue;
+		return undefined;
+	}
+	return { promptIndex: entrypoint === "cli" ? 1 : 0, turnIndex: 1 };
+}
+
+/**
  * Build the full `x-anthropic-billing-header:` value for a request.
  *
  * With a `sessionId`, the prompt-lifetime id is appended. The captured profile
@@ -143,6 +175,7 @@ export function buildBillingHeaderValue(
 	version: string,
 	entrypoint: string,
 	sessionId?: string,
+	firstPromptConfirmed = false,
 ): string {
 	const text = extractFirstUserMessageText(messages);
 	const suffix = computeVersionSuffix(text, version);
@@ -151,5 +184,7 @@ export function buildBillingHeaderValue(
 	if (!sessionId) return base;
 	const promptId = derivePromptId(`${sessionId}\u0000${extractCurrentPromptText(messages)}`);
 	const turnOrigin = turnOriginForEntrypoint(entrypoint);
-	return `${base} cc_prompt_id=${promptId};${turnOrigin ? ` cc_turn_origin=${turnOrigin};` : ""}`;
+	const position = version === "2.1.284" && firstPromptConfirmed ? initialTurnPosition(messages, entrypoint) : undefined;
+	const indexFields = position ? ` cc_prompt_index=${position.promptIndex}; cc_turn_index=${position.turnIndex};` : "";
+	return `${base} cc_prompt_id=${promptId};${turnOrigin ? ` cc_turn_origin=${turnOrigin};` : ""}${indexFields}`;
 }

@@ -3,6 +3,7 @@ import { test } from "node:test";
 import { SERVER_CLASSIFIER_BETA } from "../src/fingerprint.ts";
 import {
 	assertConsistentFingerprintCandidate,
+	assertCapturePlanMatches,
 	assertNoCanonicalModelDrift,
 	assertNonInteractiveCaptureProfile,
 	assertRequestedCapturesComplete,
@@ -62,6 +63,7 @@ test("default capture covers moving aliases before every currently exposed exact
 		"claude-opus-5-5",
 		"claude-opus-5",
 		"claude-sonnet-5",
+		"claude-sonnet-5-5",
 		"claude-fable-5-1",
 		"claude-fable-5",
 		"claude-opus-4-8",
@@ -72,7 +74,20 @@ test("default capture covers moving aliases before every currently exposed exact
 		"claude-sonnet-4-5",
 		"claude-haiku-4-5",
 	]);
-	assert.equal(DEFAULT_CAPTURE_MODELS.length, 16);
+	assert.equal(DEFAULT_CAPTURE_MODELS.length, 17);
+});
+
+test("reuse rejects a manifest from an older capture plan", () => {
+	const current = [...DEFAULT_CAPTURE_MODELS];
+	assert.doesNotThrow(() => assertCapturePlanMatches(current, DEFAULT_CAPTURE_MODELS));
+	assert.throws(
+		() => assertCapturePlanMatches(current.filter((model) => model !== "claude-sonnet-5-5"), DEFAULT_CAPTURE_MODELS),
+		/manifest model list differs from --models/,
+	);
+	assert.throws(
+		() => assertCapturePlanMatches([...current].reverse(), DEFAULT_CAPTURE_MODELS),
+		/manifest model list differs from --models/,
+	);
 });
 
 test("fingerprint baseline is the ordered intersection of bare Opus and Sonnet aliases", () => {

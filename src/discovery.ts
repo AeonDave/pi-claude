@@ -43,12 +43,31 @@ export interface DiscoveredModel {
  *
  * Claude Opus 5.5: https://platform.claude.com/docs/en/models/opus-5-5/overview
  * Capabilities were also observed on `/v1/models` on 2026-09-24.
+ *
+ * Claude Sonnet 5.5: https://platform.claude.com/docs/en/models/sonnet-5-5/overview
+ * Capabilities were also observed on `/v1/models` on 2026-09-30 (the `sonnet`
+ * moving alias resolves here since Claude Code 2.1.284). Pricing from the
+ * public overview: $2 / $10 per MTok, cache read $0.20, cache write $2.50.
  */
 export const BUNDLED_MODEL_SNAPSHOT: readonly DiscoveredModel[] = [
 	{
 		id: "claude-opus-5-5",
 		catalog: {
 			cost: { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 },
+			contextWindow: 1_000_000,
+			maxTokens: 128_000,
+			reasoning: true,
+			input: ["text", "image"],
+			forceAdaptiveThinking: true,
+			supportsEffort: true,
+			supportsTemperature: false,
+			thinkingLevelMap: { xhigh: "xhigh", max: "max", off: null },
+		},
+	},
+	{
+		id: "claude-sonnet-5-5",
+		catalog: {
+			cost: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
 			contextWindow: 1_000_000,
 			maxTokens: 128_000,
 			reasoning: true,

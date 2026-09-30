@@ -10,8 +10,8 @@ comes from. Verified against the current genuine `claude` wire captures and the
 installed `@earendil-works/pi-ai` / `pi-coding-agent` (not just docs).
 
 The reference must match the Pi runtime mode. The captures do **not** use one
-profile for both. The latest print capture completed 16/16 requested runs
-(12 exact ids plus four moving aliases). A separate interactive capture verified
+profile for both. The latest print capture completed 17/17 requested runs
+(13 exact ids plus four moving aliases). A separate interactive capture verified
 Opus 5.5 alone; the latest complete TUI suite remains 11/11 models:
 
 | Pi mode | Genuine capture | Entrypoint / UA profile | `system[1]` | `thinking.display` |
@@ -29,7 +29,8 @@ Opus 5.5 alone; the latest complete TUI suite remains 11/11 models:
 | `x-claude-code-request-class: main` | ✅ in both modes | ✅ | **plugin** (`before_provider_headers`) |
 | `system[0]` = `x-anthropic-billing-header: …` | ✅ | ✅ | **plugin** (`before_provider_request`) |
 | billing `cc_turn_origin=sdk` / `human` | `sdk-cli` / `cli` respectively | same mode-specific value | **plugin** (`before_provider_request`) |
-| `cc_prompt_id=<uuid>;` trailing the billing header | ✅ | ✅ | **plugin** (derived per prompt — see below) |
+| billing first-turn indices on 2.1.284 | print `(0, 1)` in 17/17 main captures; TUI `(1, 1)` from installed client logic | same when Pi's active branch proves a first prompt | **plugin** (`before_provider_request`) |
+| `cc_prompt_id=<uuid>;` in the billing header | ✅ | ✅ | **plugin** (derived per prompt — see below) |
 | `x-client-request-id` | fresh UUID per request | fresh UUID per request | **plugin** (`before_provider_headers`, Pi >= 0.80.5) |
 | `x-stainless-*` SDK telemetry, `anthropic-dangerous-direct-browser-access` | ✅ | ✅ | Pi built-in (its Anthropic SDK) |
 | `accept-language: *`, `sec-fetch-mode: cors` | absent | present | undici artifacts — not removable from inside an extension |
@@ -57,29 +58,36 @@ available. For `Refresh token expired`, run `/login` → **Claude Pro/Max Native
 to obtain a fresh grant, then `/skill-optimizer init` if the optimizer was the
 caller. Claude CLI credentials and Pi's built-in `anthropic` login are separate.
 
-The current bundled print evidence is Claude Code **2.1.283**, captured with
-auto mode's server classifier off (`CLAUDE_CODE_AUTO_MODE_SERVER=0`). Its 16/16
-run is identical to 2.1.281 in every beta set, request cap, thinking and effort
-value; only the version moved. It confirmed that `claude --model opus` and the
-explicit `claude-opus-5-5` request resolve consistently. The Opus 5.5 print
-header has 16 flags: the unchanged
-14-flag common base plus `per-turn-control-2026-07-01` followed by
-`mid-conversation-tool-changes-2026-07-01`. Its captured effort was `medium` and
-request cap was 128,000.
+The current bundled print evidence is Claude Code **2.1.284**, captured with
+auto mode's server classifier off (`CLAUDE_CODE_AUTO_MODE_SERVER=0`). Its 17/17
+run is NOT wire-identical to 2.1.283: `per-turn-control-2026-07-01` moved into
+the common base (now 15 flags, immediately after
+`mid-conversation-system-2026-04-07`), `inline-tools-2026-09-15` was added to the
+Opus/Fable flagships, and `claude --model sonnet` now resolves to the new
+`claude-sonnet-5-5` instead of `claude-sonnet-5`. Request caps, budget-thinking
+shapes and the remaining per-model sets are unchanged. It confirmed that
+`claude --model opus` and the explicit `claude-opus-5-5` request resolve
+consistently. The Opus 5.5 print header has 17 flags: the 15-flag common base
+plus `mid-conversation-tool-changes-2026-07-01` followed by
+`inline-tools-2026-09-15`. Its captured effort was `medium` and
+request cap was 128,000. Sonnet 5.5 sends the common base verbatim (15 flags)
+with the same 128,000 cap.
 Anthropic's live model metadata reports a 1M context window, 128K output ceiling,
 adaptive-only thinking, and `xhigh`/`max` effort support.
 
-The live Pi wire comparison was not rerun for 2.1.283. At 2.1.281, Pi print
-comparison passed 32/32 checks, and a real Pi request returned `fingerprint`
-after session refresh. A separate print comparison with absent temporary
-fingerprint/cache files and live discovery disabled passed 32/32 too, proving
-the bundled snapshot alone selected the model. The comparator now has a 33rd
-check (`safeguards` absent on both sides).
+The 2.1.284 Pi print comparison was rerun on a first Sonnet 5.5 prompt:
+**34/34 wire checks passed** against the genuine explicit-id capture, including
+the paired billing indices and absence of `safeguards`. The live request reached
+Anthropic but received account rate limit HTTP 429, so response success is not
+established. At 2.1.281, Pi print comparison passed 32/32 checks, and a real Pi
+request returned `fingerprint` after session refresh. A separate print comparison
+with absent temporary fingerprint/cache files and live discovery disabled passed
+32/32 too, proving the bundled snapshot alone selected the model.
 
 A separate genuine 2.1.281 interactive capture verified one Opus 5.5 main
 request: 17 beta flags, `max_tokens: 128000`, adaptive thinking with display
 updates, effort `medium`, and 21 tools. Pi TUI comparison passed 32/32 checks and
-returned `fingerprint`. This is scoped to Opus 5.5; the full 12-model TUI
+returned `fingerprint`. This is scoped to Opus 5.5; the full 13-model TUI
 validator suite was not rerun. Its latest complete evidence remains the
 2.1.278 capture with 11/11 models.
 
@@ -95,7 +103,7 @@ exact beta or request-cap behavior; discovery supplies capabilities only.
 
 ## How the billing header is correct *by construction*
 
-`x-anthropic-billing-header: cc_version=<v>.<suffix>; cc_entrypoint=<e>; cch=<cch>; cc_prompt_id=<uuid>; cc_turn_origin=<sdk|human>;`
+`x-anthropic-billing-header: cc_version=<v>.<suffix>; cc_entrypoint=<e>; cch=<cch>; cc_prompt_id=<uuid>; cc_turn_origin=<sdk|human>; [cc_prompt_index=<n>; cc_turn_index=<n>;]`
 
 - `suffix = sha256(SALT + chars[4,7,20] of firstUserMessageText + version)[:3]`
   — **verified byte-for-byte** against Claude Code 2.1.261's own implementation
@@ -107,11 +115,19 @@ exact beta or request-cap behavior; discovery supplies capabilities only.
   are now ground truth, not two converging guesses.
 - `cc_prompt_id` — genuine emits a random uuid per prompt and keeps it for that
   turn's tool loop. We cannot reproduce the value, so we derive one with the same
-  **lifetime**: `uuid(sha256(session id + current prompt text))`. Same prompt (and
-  its tool_result turns) → same id; new prompt → new id. That also keeps
-  `applyBillingHeader` pure and idempotent.
+  **lifetime** through a tool loop: `uuid(sha256(session id + current prompt
+  text))`. Different prompt text produces a different id. Repeating identical
+  text in the same session reuses it, unlike the genuine random-per-prompt id.
+  The derivation keeps `applyBillingHeader` pure and idempotent.
 - `cc_turn_origin` follows the wire profile: `sdk` for `sdk-cli` requests and
   `human` for interactive `cli` requests.
+- Claude Code 2.1.284 also sends paired prompt/turn indices. All 17 captured
+  first print requests carried `(0, 1)`; its installed implementation computes
+  `(1, 1)` for a first interactive prompt. The extension emits them only when
+  Pi's active session branch proves a matching, uncompacted first user prompt.
+  It omits them on later or ambiguous turns, whose position cannot safely be
+  reconstructed from a possibly truncated request payload. A 2.1.284 TUI
+  request and later-turn parity remain unverified.
 - `cch` — **not reproducible, and not validated by Anthropic.** The genuine
   2.1.261 client builds the header with a literal ` cch=00000;` placeholder
   (those are the only two occurrences of `cch=` in the whole 209 MB binary) and
@@ -218,7 +234,7 @@ npm run capture:fingerprint -- --mode tui --capture-dir captures/mode-interactiv
 
 It spins up the capture proxy, marks its URL first-party, turns auto mode's
 server classifier off, drives genuine
-**non-interactive** `claude -p` across the moving family aliases plus all 12
+**non-interactive** `claude -p` across the moving family aliases plus all 13
 currently exposed ids, requires clean current Opus and
 Sonnet baselines, and writes:
 
@@ -226,8 +242,9 @@ Sonnet baselines, and writes:
   anthropicBeta, modelBeta, modelMaxTokens, modelBudgetThinking }`, the exact shape `src/constants.ts`
   reads.
   `anthropicBeta` is their ordered intersection; the current common base has
-  14 flags, with `thinking-binding-controls-2026-08-01` immediately after
-  `effort-2025-11-24`. Exact model deltas remain byte-order-sensitive.
+  15 flags, with `per-turn-control-2026-07-01` immediately after
+  `mid-conversation-system-2026-04-07` and `thinking-binding-controls-2026-08-01`
+  immediately after `effort-2025-11-24`. Exact model deltas remain byte-order-sensitive.
   `modelBeta` records each captured model's set **verbatim** (order included),
   and the extension prefers it over its built-in deltas. `modelMaxTokens` records
   the genuine request cap rather than Pi's larger catalog ceiling, while
@@ -248,11 +265,11 @@ The run sidecar records every requested alias/id and its matching main request.
 Auxiliary traffic does not count; repeated captures of one wire id must agree on
 UA, billing profile, identity, thinking mode, beta, effort and `max_tokens`;
 clean/dated aliases are collision-checked and the first-party `cch` marker is
-mandatory. `--reuse --apply` therefore
-refuses legacy, missing, or incomplete provenance instead of publishing a partial
-run.
+mandatory. `--reuse` requires the manifest's requested list to match the current
+`--models` plan; `--reuse --apply` refuses legacy, missing, or incomplete
+provenance instead of publishing a partial run.
 
-The aliases catch a newly-rolled flagship; the full 12-id set is a safety
+The aliases catch a newly-rolled flagship; the full 13-id set is a safety
 property, not just broader coverage. A newer
 common base must not be combined with older exact-id deltas for uncaptured
 models. If a deliberately partial newer fingerprint omits an id, the extension
@@ -273,9 +290,9 @@ artifact. The historical complete 11-model TUI suite adds
 `thinking-display-updates-2026-08-18` immediately after the binding flag on all
 11 models, and no model sends `fallback-credit-2026-06-01`. The single-model
 Opus 5.5 TUI comparison is described above; it does not replace the full
-12-model validator run. The existing `captures/mode-interactive` directory has
+13-model validator run. The existing `captures/mode-interactive` directory has
 only the old 11-model dump set and is incomplete under the current validator.
-Capture the full 12-id TUI set into a fresh directory before running the
+Capture the full 13-id TUI set into a fresh directory before running the
 validator; do not reuse that old directory unchanged. Start that interactive
 `claude` with `CLAUDE_CODE_AUTO_MODE_SERVER=0`; the validator rejects dumps that
 carry the server classifier.
@@ -295,8 +312,8 @@ emits.
   which turns only the server classifier off. Auto mode itself comes from the
   capturing user's settings: the bundled base, with `afk-mode-2026-01-31`, is an
   auto-mode client, and the 2.1.283 binary adds `afk-mode` only while auto mode
-  is active. Capture with `permissions.defaultMode: "auto"`, or the nine afk-mode
-  ids lose that flag and the report shows false base drift. A capture that still
+  is active. Capture with `permissions.defaultMode: "auto"`, or the model ids
+  with `afk-mode` lose that flag and the report shows false base drift. A capture that still
   carries `safeguards` or the flag fails before writing anything, in print and
   TUI validation alike. If it persists, an `env` entry in Claude's own settings
   is overriding the variable; remove it for the capture run.
@@ -309,24 +326,24 @@ emits.
 
 For the non-interactive profile, the default is the **ordered common set captured
 from the current `claude -p` capture**
-(`src/constants.ts` `DEFAULT_ANTHROPIC_BETA`): 14 flags shared by Opus 5.5 and Sonnet 5,
-including `advanced-tool-use-2025-11-20`, `afk-mode-2026-01-31`, and
-`cache-diagnosis-2026-04-07`, with `thinking-binding-controls-2026-08-01`
+(`src/constants.ts` `DEFAULT_ANTHROPIC_BETA`): 15 flags shared by Opus 5.5 and
+Sonnet 5.5, including `advanced-tool-use-2025-11-20`, `afk-mode-2026-01-31`, and
+`cache-diagnosis-2026-04-07`, with `per-turn-control-2026-07-01` immediately after
+`mid-conversation-system-2026-04-07` and `thinking-binding-controls-2026-08-01`
 immediately after `effort-2025-11-24` (but **not** `context-1m-2025-08-07` — see "The 1M /
 long-context trap" below). The final set is per-model in BOTH directions:
 
-- **Sonnet 5** emits 14 flags, the common set.
-- **Opus 5.5** emits 16: the common set plus `per-turn-control-2026-07-01` and
-  `mid-conversation-tool-changes-2026-07-01`, in that order.
-- **Opus 5, Opus 4.8 and Fable 5** emit 15: the common set plus
-  `mid-conversation-tool-changes-2026-07-01`, directly after
+- **Sonnet 5.5** emits 15 flags — the common set, with no deviation.
+- **Sonnet 5** emits 14: the common set minus `per-turn-control-2026-07-01`.
+- **Opus 5.5 and Fable 5.1** emit 17: the common set plus
+  `mid-conversation-tool-changes-2026-07-01` and `inline-tools-2026-09-15`, in
+  that order.
+- **Opus 5, Opus 4.8 and Fable 5** emit 16: those same two additions, but minus
+  `per-turn-control-2026-07-01`, with the additions placed directly after
   `mid-conversation-system-2026-04-07`.
 - **Haiku 4.5** emits 11 flags in the same run, omitting
-  `mid-conversation-system-2026-04-07`, `effort-2025-11-24` and
-  `afk-mode-2026-01-31` — it *keeps* `advisor-tool`.
-- **Fable 5.1** emits 16. Its captured chain is
-  `mid-conversation-system` → `per-turn-control-2026-07-01` →
-  `mid-conversation-tool-changes-2026-07-01` → `advisor-tool`.
+  `mid-conversation-system-2026-04-07`, `per-turn-control-2026-07-01`,
+  `effort-2025-11-24` and `afk-mode-2026-01-31` — it *keeps* `advisor-tool`.
 - **Opus 4.7/4.6 and Sonnet 4.6** remain at 13, **Opus 4.5** at 12, and
   **Sonnet 4.5/Haiku 4.5** at 11.
 
@@ -445,7 +462,7 @@ capture confirms that both clients send `/v1/messages?beta=true`.
 4. **Auto mode's server classifier.** With the classifier on (the default in
    auto mode unless `CLAUDE_CODE_AUTO_MODE_SERVER=0`), genuine Claude Code
    2.1.283+ adds `dangerous-tool-use-2026-09-03` plus a `safeguards` body on the
-   nine ids that send `afk-mode`. Pi sends neither; its tuple matches a genuine
+   ids that send `afk-mode`. Pi sends neither; its tuple matches a genuine
    client with the classifier off, which is how reference captures are taken.
    See "Auto mode's server classifier" above.
 

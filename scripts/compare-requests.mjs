@@ -65,21 +65,23 @@ check(
 const UUID_SOURCE = "[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}";
 const UUID_RE = new RegExp(`^${UUID_SOURCE}$`, "i");
 // What the PLUGIN must emit: the full first-party shape, including the prompt id
-// added in v1.6.0. Values differ per client; their shape and lifetime are what
-// matter on a one-request wire comparison.
+// added in v1.6.0. The 2.1.284 first-turn position pair is optional when the
+// transcript cannot establish it. Values differ per client; compare the pair
+// against the genuine request whenever it is present.
 const BILLING_RE = new RegExp(
-	`^x-anthropic-billing-header: cc_version=\\d+\\.\\d+\\.\\d+\\.[0-9a-f]{3}; cc_entrypoint=[\\w-]+; cch=[0-9a-f]{5}; cc_prompt_id=${UUID_SOURCE}; cc_turn_origin=(?:human|sdk);$`,
+	`^x-anthropic-billing-header: cc_version=\\d+\\.\\d+\\.\\d+\\.[0-9a-f]{3}; cc_entrypoint=[\\w-]+; cch=[0-9a-f]{5}; cc_prompt_id=${UUID_SOURCE}; cc_turn_origin=(?:human|sdk);(?: cc_prompt_index=(?:0|[1-9]\\d*); cc_turn_index=[1-9]\\d*;)?$`,
 	"i",
 );
 // What a GENUINE capture may look like: `cc_version` + `cc_entrypoint` are always
 // present, the tail is conditional (2.1.233 emits `cch` only when the base URL is
 // first-party — so an unmarked proxy capture legitimately has none — plus
-// `cc_prompt_id` / `cc_turn_origin` / `cc_workload` / `cc_is_subagent` /
+// `cc_prompt_id` / `cc_turn_origin` / the paired prompt and turn indices /
+// `cc_workload` / `cc_is_subagent` /
 // `cc_prev_req`). Entrypoints are hyphenated
 // (`sdk-cli`), so `\w+` alone never matched a `claude -p` capture and the two
 // cross-checks below were silently skipped.
 const GENUINE_BILLING_RE =
-	/^x-anthropic-billing-header: cc_version=\d+\.\d+\.\d+\.[0-9a-f]{3}; cc_entrypoint=[\w-]+;(?: cch=[0-9a-f]{5};| cc_prompt_id=[^;]+;| cc_turn_origin=[a-z][a-z_]{0,31};| cc_workload=[^;]*;| cc_is_subagent=true;| cc_prev_req=[^;]*;)*$/;
+	/^x-anthropic-billing-header: cc_version=\d+\.\d+\.\d+\.[0-9a-f]{3}; cc_entrypoint=[\w-]+;(?: cch=[0-9a-f]{5};| cc_prompt_id=[^;]+;| cc_turn_origin=[a-z][a-z_]{0,31};| cc_prompt_index=(?:0|[1-9]\d*); cc_turn_index=[1-9]\d*;| cc_workload=[^;]*;| cc_is_subagent=true;| cc_prev_req=[^;]*;)*$/;
 const KNOWN_IDENTITIES = new Set([
 	"You are Claude Code, Anthropic's official CLI for Claude.",
 	"You are a Claude agent, built on Anthropic's Claude Agent SDK.",
@@ -119,6 +121,17 @@ const piPromptId = piBilling.match(/cc_prompt_id=([^;]+);/)?.[1];
 const ccPromptId = claudeBilling.match(/cc_prompt_id=([^;]+);/)?.[1];
 const piTurnOrigin = piBilling.match(/cc_turn_origin=([^;]+);/)?.[1];
 const ccTurnOrigin = claudeBilling.match(/cc_turn_origin=([^;]+);/)?.[1];
+const positionPattern = / cc_prompt_index=(\d+); cc_turn_index=(\d+);/;
+const piPosition = piBilling.match(positionPattern);
+const ccPosition = claudeBilling.match(positionPattern);
+const piHasIndex = / cc_(?:prompt|turn)_index=/.test(piBilling);
+const ccHasIndex = / cc_(?:prompt|turn)_index=/.test(claudeBilling);
+check(
+	"billing prompt/turn position matches genuine",
+	(!piHasIndex && !ccHasIndex) ||
+		(!!piPosition && !!ccPosition && piPosition[1] === ccPosition[1] && piPosition[2] === ccPosition[2]),
+	`claude=${ccPosition ? `${ccPosition[1]}/${ccPosition[2]}` : ccHasIndex ? "incomplete" : "absent"} | pi=${piPosition ? `${piPosition[1]}/${piPosition[2]}` : piHasIndex ? "incomplete" : "absent"}`,
+);
 check(
 	"billing cc_prompt_id is UUID-shaped on both clients",
 	UUID_RE.test(piPromptId ?? "") && UUID_RE.test(ccPromptId ?? ""),

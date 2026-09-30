@@ -22,8 +22,8 @@ Anthropic path** — that path already emits the initial Claude Code identity,
 core beta flags, bearer auth, `x-app`, and PascalCase tool names on an
 `sk-ant-oat…` token. The extension mode-aligns and completes that request.
 
-- `src/constants.ts` — provider id, OAuth endpoints/scopes, CC fingerprint. **Version is derived**: env wins, then the newest trustworthy value among fingerprint, installed `claude`, and the bundled capture floor. An older/versionless fingerprint cannot override captured beta/entrypoint values. `ctx.mode` selects the genuine current profile: TUI=`cli`/Claude Code/`updates`; print/json/rpc=`sdk-cli`/Agent SDK/`omitted`. `getAnthropicBetaForModel` resolves explicit env → usable `claude -p` fingerprint → the 14-flag common base ± exact captured model deltas (including Opus 5.5's two-flag addition), then applies the captured interactive display flag after `thinking-binding-controls-2026-08-01`. `getClaudeCodeMaxTokensForModel` uses captured `modelMaxTokens` → the bundled map and never guesses for an unknown id. The disk side lives in `src/fingerprint.ts`. Plus family-agnostic model/live-discovery config and first-party signals. All env-overridable.
-- `src/discovery.ts` — impure, on by default: `fetchLiveModels` queries Anthropic `GET /v1/models` with the subscription OAuth token at `session_start`; `normalizeModelsResponse`/`stripDateSuffix` (pure) turn dated wire ids into clean aliases filtered by the same `parseModelId` gate. The endpoint supplies exact-id effort, adaptive-vs-budget thinking and window capabilities, but no `cost`, Claude Code beta set or CLI request `max_tokens`. Pi's catalog wins `cost`; exact beta/cap values stay captured. Initial registration uses bundled fallbacks and the persisted cache. `pi --list-models` does not run `session_start`, so its list can be stale unless one already includes the model. Live results refresh the registry and cache after a session starts with an OAuth token. Opus 5.5 has a bundled low-precedence snapshot for immediate discovery; live/cache/catalog entries take precedence. Any failure degrades to cache + bundle + seed.
+- `src/constants.ts` — provider id, OAuth endpoints/scopes, CC fingerprint. **Version is derived**: env wins, then the newest trustworthy value among fingerprint, installed `claude`, and the bundled capture floor. An older/versionless fingerprint cannot override captured beta/entrypoint values. `ctx.mode` selects the genuine current profile: TUI=`cli`/Claude Code/`updates`; print/json/rpc=`sdk-cli`/Agent SDK/`omitted`. `getAnthropicBetaForModel` resolves explicit env → usable `claude -p` fingerprint → the 15-flag common base ± exact captured model deltas (including Opus 5.5's two-flag addition of `mid-conversation-tool-changes` and `inline-tools`), then applies the captured interactive display flag after `thinking-binding-controls-2026-08-01`. `getClaudeCodeMaxTokensForModel` uses captured `modelMaxTokens` → the bundled map and never guesses for an unknown id. The disk side lives in `src/fingerprint.ts`. Plus family-agnostic model/live-discovery config and first-party signals. All env-overridable.
+- `src/discovery.ts` — impure, on by default: `fetchLiveModels` queries Anthropic `GET /v1/models` with the subscription OAuth token at `session_start`; `normalizeModelsResponse`/`stripDateSuffix` (pure) turn dated wire ids into clean aliases filtered by the same `parseModelId` gate. The endpoint supplies exact-id effort, adaptive-vs-budget thinking and window capabilities, but no `cost`, Claude Code beta set or CLI request `max_tokens`. Pi's catalog wins `cost`; exact beta/cap values stay captured. Initial registration uses bundled fallbacks and the persisted cache. `pi --list-models` does not run `session_start`, so its list can be stale unless one already includes the model. Live results refresh the registry and cache after a session starts with an OAuth token. Opus 5.5 and Sonnet 5.5 have a bundled low-precedence snapshot for immediate discovery; live/cache/catalog entries take precedence. Any failure degrades to cache + bundle + seed.
 - `src/fingerprint.ts` — impure: ALL on-disk state, including validated per-model beta, request-cap, and budget-thinking maps (the auto-mode server-classifier flag is stripped at load), plus the once-per-state advisory record `<state dir>/notices.json`. `getAgentDir()`/`getStateDir()` (`<PI_CODING_AGENT_DIR ?? ~/.pi/agent>/claude-native/`), path/read/version/migration/cache helpers live here so filesystem moves stay isolated and testable.
 - `src/warn.ts` — `warnConfig()`: a `[claude-native]` stderr diagnostic that never throws. Its own module so `constants.ts` and `fingerprint.ts` share it without an import cycle.
 - `src/oauth.ts` / `src/pkce.ts` — `/login` flow (authorize, exchange, refresh).
@@ -32,7 +32,7 @@ core beta flags, bearer auth, `x-app`, and PascalCase tool names on an
 - `src/payload.ts` — pure: idempotent `system[0]` billing-header injection, exact-known-identity alignment, `sanitizeSystemPrompt`, `applyMetadata`, captured request-only `max_tokens` clamp, and mode-aware thinking display for adaptive/budget modes.
 - `src/debug.ts` — optional `PI_CLAUDE_NATIVE_DEBUG` body logging.
 - `src/index.ts` — factory: `registerProvider` (seed + bundle + cache at load, refreshed on `session_start` from cache < live < Pi catalog; live discovery runs once when authenticated unless disabled) + `before_provider_request` (sanitize → mode identity/display → captured `max_tokens` → context/diagnostics/metadata/billing) + `before_provider_headers` (in-place mode-specific user-agent/beta + fresh request id) + status + `/claude-native` diagnostics.
-- `scripts/` — capture proxy + mitmproxy addon, strict mode-aware `compare-requests.mjs`, classifier dump/bisect pair, and `capture-fingerprint.mjs`. The capture runs `claude` with auto mode's server classifier off (`CAPTURE_CLAUDE_ENV`) and rejects any `safeguards`/`dangerous-tool-use` evidence, in both modes. Fingerprint capture defaults to moving family aliases plus the bundled exact ids, requires current Opus AND Sonnet baselines, verifies version/profile, derives their ordered intersection, preserves every model's verbatim set/cap, and reports exact deviations. `--mode tui --capture-dir <dir>` validates manual interactive dumps; all 12 bundled exact ids are required, with additional clean ids accepted. The old 11-id ignored dump directory is incomplete; capture a fresh full 12-id set before validation. The single Opus 5.5 TUI comparison is not a suite replacement. The validator does not drive a TUI or fake a PTY and rejects `--apply`. Ambiguous/incomplete/mixed-profile/non-first-party/long-context/duplicate-flag/auxiliary-only/collision/one-family runs fail before writes. A run manifest makes `--reuse --apply` fail closed; newer partial fingerprints never inherit older model rules. Baseline policy lives in `scripts/fingerprint-baseline.ts` and TypeScript scripts are typechecked.
+- `scripts/` — capture proxy + mitmproxy addon, strict mode-aware `compare-requests.mjs`, classifier dump/bisect pair, and `capture-fingerprint.mjs`. The capture runs `claude` with auto mode's server classifier off (`CAPTURE_CLAUDE_ENV`) and rejects any `safeguards`/`dangerous-tool-use` evidence, in both modes. Fingerprint capture defaults to moving family aliases plus the bundled exact ids, requires current Opus AND Sonnet baselines, verifies version/profile, derives their ordered intersection, preserves every model's verbatim set/cap, and reports exact deviations. `--mode tui --capture-dir <dir>` validates manual interactive dumps; all 13 bundled exact ids are required, with additional clean ids accepted. The old 11-id ignored dump directory is incomplete; capture a fresh full 13-id set before validation. The single Opus 5.5 TUI comparison is not a suite replacement. The validator does not drive a TUI or fake a PTY and rejects `--apply`. Ambiguous/incomplete/mixed-profile/non-first-party/long-context/duplicate-flag/auxiliary-only/collision/one-family runs fail before writes. A run manifest makes `--reuse --apply` fail closed; newer partial fingerprints never inherit older model rules. Baseline policy lives in `scripts/fingerprint-baseline.ts` and TypeScript scripts are typechecked.
 
 ## Invariants (do not break)
 
@@ -51,7 +51,7 @@ core beta flags, bearer auth, `x-app`, and PascalCase tool names on an
   and `"omitted"`; Pi print/json/rpc map to that profile. Keep entrypoint,
   user-agent, identity, beta, and display coherent per request. The interactive
   display flag is in the complete historical 11-model TUI suite and in one
-  separate Opus 5.5 TUI capture. The full 12-model suite has not been recaptured.
+  separate Opus 5.5 TUI capture. The full 13-model suite has not been recaptured.
   The mode-wide flag may carry to a new discovered family; no captured model has
   an additional credit delta.
 - **Request `max_tokens` is an exact captured client choice, not the catalog ceiling.**
@@ -62,7 +62,7 @@ core beta flags, bearer auth, `x-app`, and PascalCase tool names on an
   until captured.
 - **Budget capability affects the beta and body.** Preserve an explicit
   `forceAdaptiveThinking: false` from discovery. For an uncaptured budget-only
-  family, remove the three captured adaptive-effort beta flags so the model is
+  family, remove the four captured adaptive-effort beta flags so the model is
   usable without guessing exact-id exceptions. Genuine Opus/Sonnet/Haiku
   4.5 use `budget_tokens: 31999`; only Opus 4.5 also sends effort `high`.
 - **`before_provider_headers` mutates in place.** Pi's `emitBeforeProviderHeaders`
@@ -104,7 +104,7 @@ core beta flags, bearer auth, `x-app`, and PascalCase tool names on an
   The capture script runs `claude` with `CLAUDE_CODE_AUTO_MODE_SERVER=0`, which
   disables only the server classifier. Auto mode itself, and with it `afk-mode`,
   comes from the capturing user's `permissions.defaultMode: "auto"`: the bundled
-  base is an auto-mode client, so capture in auto mode or the nine afk-mode ids
+  base is an auto-mode client, so capture in auto mode or the ids with `afk-mode`
   show false drift. The capture fails before writes on either
   signal; `coerceFingerprint` strips the exact flag from an older fingerprint;
   `compare-requests.mjs` requires `safeguards` absent on both sides. Set the same
@@ -225,15 +225,18 @@ capture both clients via `scripts/capture-proxy.mjs`, then
   `sdk-cli`, the "Claude agent…Agent SDK" identity and `omitted`. Do not validate
   each field independently; the whole tuple must match the reference mode.
 - The `anthropic-beta` default is the captured ordered intersection of Claude
-  Opus 5.5 and Sonnet 5 **normal turns** (no `context-1m`): 14 common
-  flags, with `thinking-binding-controls-2026-08-01` immediately after
-  `effort-2025-11-24` and exact-id additions layered afterward. TUI adds
+  Opus 5.5 and Sonnet 5.5 **normal turns** (no `context-1m`): 15 common
+  flags, with `per-turn-control-2026-07-01` immediately after
+  `mid-conversation-system-2026-04-07`, `thinking-binding-controls-2026-08-01`
+  immediately after `effort-2025-11-24`, and exact-id additions layered
+  afterward. TUI adds
   `thinking-display-updates-2026-08-18` immediately after the binding flag;
   there is no exact-id credit exception. Haiku 4.5 uses the captured
   11-flag non-effort subset (drops
-  `mid-conversation-system`, `effort`, `afk-mode` — note: 2.1.241 changed the
-  Haiku subset vs 2.1.233, keeping `advisor-tool` and dropping
-  `mid-conversation-system`). Opus 4.8/4.7/4.6 and Sonnet 4.6 are natively
+  `mid-conversation-system`, `per-turn-control`, `effort`, `afk-mode` — note:
+  2.1.241 changed the Haiku subset vs 2.1.233, keeping `advisor-tool` and
+  dropping `mid-conversation-system`, and 2.1.284 added `per-turn-control` to
+  that drop list). Opus 4.8/4.7/4.6 and Sonnet 4.6 are natively
   1M and expose their window under their clean id — no `context-1m` and no `[1m]`
   suffix (the suffix 404s; `context-1m` 400/429s plans without long-context).
 - The "extra usage" 400 is a **system-prompt classifier**, not billing (verified:
@@ -254,42 +257,58 @@ capture both clients via `scripts/capture-proxy.mjs`, then
   set was safe across 2.1.233/2.1.241/2.1.261, but 2.1.266 falsified the broader
   assumption: Opus gained a model-specific flag while Sonnet did not. Therefore
   a fingerprint older than the bundled capture loses as a whole.
-- **Current capture snapshot (2026-09-26, Claude Code 2.1.283).** Captured 16/16
-  non-interactive requests (12 exact ids plus four moving aliases) with the
-  server classifier off; every beta set, request cap, thinking and effort value
-  is identical to 2.1.281 apart from the version. With the classifier on, the
-  nine ids that send `afk-mode` also send `dangerous-tool-use-2026-09-03` between
-  `effort` and `thinking-binding-controls` plus a `safeguards` body; Opus 4.5,
-  Sonnet 4.5 and Haiku 4.5 send neither. The capturing machine uses
-  `permissions.defaultMode: "auto"`, and in the 2.1.283 binary `afk-mode` is also
+- **Current capture snapshot (2026-09-30, Claude Code 2.1.284).** Captured 17/17
+  non-interactive requests (13 exact ids plus four moving aliases) with the
+  server classifier off. Unlike 2.1.283, this release DID change the wire:
+  `per-turn-control-2026-07-01` moved into the common base (15 flags),
+  `inline-tools-2026-09-15` was added to the Opus/Fable flagships, and the
+  `sonnet` alias now resolves to the new `claude-sonnet-5-5` (base verbatim,
+  15 flags, 128K request cap). Request caps, budget-thinking shapes and the
+  remaining per-model sets are unchanged. In the separate 2.1.283 capture with
+  the classifier on, the nine exact ids that sent `afk-mode` also sent
+  `dangerous-tool-use-2026-09-03` between `effort` and
+  `thinking-binding-controls` plus a `safeguards` body; Opus 4.5, Sonnet 4.5
+  and Haiku 4.5 sent neither. The 2.1.284 classifier-on profile has not been
+  recaptured. The capturing machine uses
+  `permissions.defaultMode: "auto"`, and in the 2.1.283+ binary `afk-mode` is also
   added only while auto mode is active. `opus` and
   the explicit `claude-opus-5-5` request agree. Non-interactive requests use
   `sdk-cli`/Agent SDK/
   `thinking.display: "omitted"`; interactive requests use `cli`/Claude Code/
-  `"updates"`. The live Pi wire comparison was not rerun for 2.1.283. At 2.1.281,
+  `"updates"`. A first Sonnet 5.5 Pi print request passed 34/34 wire checks
+  against the genuine 2.1.284 capture, but Anthropic returned account-rate-limit
+  HTTP 429, leaving response success unverified. At 2.1.281,
   a separate Opus 5.5 TUI capture passed a 32/32 Pi wire comparison;
-  the complete 12-model TUI suite was not rerun. With temporary fingerprint/cache
+  the complete 13-model TUI suite was not rerun. With temporary fingerprint/cache
   paths absent and live discovery disabled, the bundled snapshot alone selected
   Opus 5.5; print comparison passed 32/32 and the Pi response was `fingerprint`.
   Both modes send
   `x-claude-code-request-class: main`, and the
   billing header uses `cc_turn_origin=sdk` for `sdk-cli` and `human` for `cli`.
+  All 17 first print requests carry `cc_prompt_index=0; cc_turn_index=1;` in
+  2.1.284. The installed client computes `(1,1)` for a first interactive turn;
+  that TUI value has not been recaptured on 2.1.284. Emit the pair only when
+  Pi's active session branch proves a matching, uncompacted first prompt;
+  later or ambiguous positions are omitted.
   Both modes also send `context_management {edits:[{type:"clear_thinking_20251015",keep:"all"}]}`,
-  `diagnostics {previous_message_id:null}`, and a trailing `cc_prompt_id=<uuid>;`
+  `diagnostics {previous_message_id:null}`, and `cc_prompt_id=<uuid>;`
   on the billing header (which this extension sends with prompt-loop lifetime).
-  - The common Opus 5.5/Sonnet 5 set has 14 flags, with
+  - The common Opus 5.5/Sonnet 5.5 set has 15 flags, with
+    `per-turn-control-2026-07-01` immediately after
+    `mid-conversation-system-2026-04-07` and
     `thinking-binding-controls-2026-08-01` immediately after
-    `effort-2025-11-24`. The Opus 5.5 TUI capture adds
+    `effort-2025-11-24`. The historical Opus 5.5 TUI capture adds
     `thinking-display-updates-2026-08-18` immediately after the binding flag.
-  - Sonnet 5 sends 14 flags. Opus 5.5 sends 16, adding
-    `per-turn-control-2026-07-01` then
-    `mid-conversation-tool-changes-2026-07-01`. Opus 5, Opus 4.8 and Fable 5 send
-    15, adding
-    `mid-conversation-tool-changes-2026-07-01` after `mid-conversation-system`.
-    Fable 5.1 sends 16: `mid-conversation-system`, then
-    `per-turn-control-2026-07-01`, then `mid-conversation-tool-changes`, then
-    `advisor-tool`. Every addition is exact-id scoped; sending it wider risks a 400.
-  - Haiku 4.5 sends 11 (base minus `mid-conversation-system`, `effort`,
+  - Sonnet 5.5 sends 15 flags — the common set verbatim. Sonnet 5 sends 14,
+    dropping `per-turn-control-2026-07-01`. Opus 5.5 and Fable 5.1 send 17,
+    adding `mid-conversation-tool-changes-2026-07-01` then
+    `inline-tools-2026-09-15` (both after the base's `per-turn-control`).
+    Opus 5, Opus 4.8 and Fable 5 send
+    16: the same two additions after `mid-conversation-system`, minus
+    `per-turn-control-2026-07-01`.
+    Every addition is exact-id scoped; sending it wider risks a 400.
+  - Haiku 4.5 sends 11 (base minus `mid-conversation-system`,
+    `per-turn-control`, `effort`,
     `afk-mode`) — and in a DIFFERENT order (`claude-code-20250219` sixth, not
     first), which the captured `modelBeta` reproduces verbatim.
   - The older sets remain unchanged: Opus 4.7/4.6 and Sonnet 4.6 send 13,
