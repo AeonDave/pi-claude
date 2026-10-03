@@ -24,6 +24,7 @@ Output: captures/req-<label>-<n>.json   (label from PI_CAPTURE_LABEL, default "c
 
 import json
 import os
+import re
 
 OUT_DIR = os.environ.get("PI_CAPTURE_DIR", "captures")
 LABEL = os.environ.get("PI_CAPTURE_LABEL", "capture")
@@ -35,7 +36,17 @@ def _redact(headers: dict) -> dict:
     for key, value in headers.items():
         lower = key.lower()
         if lower == "authorization":
-            out[lower] = "Bearer sk-ant-REDACTED"
+            raw = value.strip() if isinstance(value, str) else ""
+            if re.fullmatch(r"Bearer[ \t]+\S+", raw, re.IGNORECASE):
+                out[lower] = "Bearer REDACTED"
+            elif re.fullmatch(r"Basic[ \t]+\S+", raw, re.IGNORECASE):
+                out[lower] = "Basic REDACTED"
+            elif re.match(r"^Bearer(?:[ \t]|$)", raw, re.IGNORECASE):
+                out[lower] = "Bearer (invalid credentials)"
+            elif re.match(r"^Basic(?:[ \t]|$)", raw, re.IGNORECASE):
+                out[lower] = "Basic (invalid credentials)"
+            else:
+                out[lower] = "UNKNOWN (redacted)"
         elif lower in ("x-api-key", "cookie"):
             out[lower] = "REDACTED"
         else:

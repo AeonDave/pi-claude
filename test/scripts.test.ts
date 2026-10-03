@@ -1,8 +1,8 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { copyFileSync, cpSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join, resolve } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { spawn, spawnSync } from "node:child_process";
 import { createServer, get as httpGet } from "node:http";
 import { test } from "node:test";
@@ -10,6 +10,7 @@ import { test } from "node:test";
 const COMPARE = resolve("scripts/compare-requests.mjs");
 const BISECT = resolve("scripts/bisect-classifier.ts");
 const CAPTURE_PROXY = resolve("scripts/capture-proxy.mjs");
+const CAPTURE_FINGERPRINT = resolve("scripts/capture-fingerprint.mjs");
 const OFFICIAL_CLI_IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude.";
 const AGENT_SDK_IDENTITY = "You are a Claude agent, built on Anthropic's Claude Agent SDK.";
 const APPENDED_SDK_IDENTITY =
@@ -31,9 +32,9 @@ async function reservePort(): Promise<number> {
 	return address.port;
 }
 
-function getText(port: number, path: string): Promise<{ status: number; body: string }> {
+function getText(port: number, path: string, headers: Record<string, string> = {}): Promise<{ status: number; body: string }> {
 	return new Promise((resolvePromise, rejectPromise) => {
-		const request = httpGet({ host: "127.0.0.1", port, path, timeout: 500 }, (response) => {
+		const request = httpGet({ host: "127.0.0.1", port, path, headers, timeout: 500 }, (response) => {
 			const chunks: Buffer[] = [];
 			response.on("data", (chunk) => chunks.push(Buffer.from(chunk)));
 			response.on("end", () =>
@@ -149,6 +150,126 @@ test("compare accepts a matching sdk-cli pair on both sides", () => {
 	);
 	const result = compare(claude, pi);
 	assert.equal(result.status, 0, result.stdout + result.stderr);
+});
+
+test("compare never prints an unredacted authorization value", () => {
+	const billing = (suffix: string, promptId: string) =>
+		`x-anthropic-billing-header: cc_version=${FIXTURE_VERSION}.${suffix}; cc_entrypoint=sdk-cli; cch=12345; cc_prompt_id=${promptId};`;
+	const genuine = request(billing("abc", "123e4567-e89b-42d3-a456-426614174000"), "sdk-cli", FIXTURE_VERSION, AGENT_SDK_IDENTITY);
+	const native = request(billing("def", "123e4567-e89b-42d3-a456-426614174001"), "sdk-cli", FIXTURE_VERSION, AGENT_SDK_IDENTITY);
+	const sentinel = "secret-bearer-sentinel-987654321";
+	for (const [authorization, expectedStatus] of [[`Bearer ${sentinel}`, 0], [sentinel, 1], [`Basic ${sentinel}`, 1], ["Bearer ", 1]] as const) {
+		native.headers.authorization = authorization;
+		const result = compare(genuine, native);
+		assert.equal(result.status, expectedStatus, result.stdout + result.stderr);
+		assert.ok(!(result.stdout + result.stderr).includes(sentinel), "comparison output must not reveal the credential");
+	}
+	native.headers.authorization = `Bearer ${sentinel}`;
+	genuine.headers.authorization = `Basic ${sentinel}`;
+	const nonOAuthReference = compare(genuine, native);
+	assert.equal(nonOAuthReference.status, 1, nonOAuthReference.stdout + nonOAuthReference.stderr);
+	assert.match(nonOAuthReference.stdout, /DIFF  authorization is Bearer OAuth on both captures/);
+	assert.ok(!(nonOAuthReference.stdout + nonOAuthReference.stderr).includes(sentinel));
+	genuine.headers.authorization = `Bearer ${sentinel}`;
+	for (const side of [genuine, native]) {
+		(side.headers as Record<string, string>)["x-api-key"] = sentinel;
+		const result = compare(genuine, native);
+		assert.equal(result.status, 1, result.stdout + result.stderr);
+		assert.match(result.stdout, /DIFF  x-api-key is absent on both OAuth captures/);
+		assert.ok(!(result.stdout + result.stderr).includes(sentinel));
+		delete (side.headers as Record<string, string>)["x-api-key"];
+	}
+});
+
+test("ownerless reuse recovers a complete report but cannot apply ambiguous or incomplete evidence", { timeout: 15_000 }, () => {
+	const root = mkdtempSync(join(tmpdir(), "claude-native-reuse-"));
+	const rawDir = join(root, "captures", "fp-raw");
+	const stateDir = join(root, "agent", "claude-native");
+	const manifestPath = join(rawDir, "run-manifest.json");
+	const ownersPath = join(rawDir, "owners.json");
+	const appliedPath = join(stateDir, "fingerprint.json");
+	const outputPath = join(root, "captures", `fingerprint-${FIXTURE_VERSION}.json`);
+	const prompt = "reply with the single word ok";
+	const writeCapture = (file: string, model: string) => writeFileSync(join(rawDir, file), JSON.stringify({
+		headers: { "user-agent": `claude-cli/${FIXTURE_VERSION} (external, sdk-cli)`, "anthropic-beta": "base" },
+		body: {
+			model,
+			messages: [{ role: "user", content: prompt }],
+			system: [
+				{ text: `x-anthropic-billing-header: cc_version=${FIXTURE_VERSION}.abc; cc_entrypoint=sdk-cli; cch=abcde;` },
+				{ text: AGENT_SDK_IDENTITY },
+			],
+			thinking: { type: "adaptive", display: "omitted" },
+			output_config: { effort: "medium" },
+			max_tokens: 64_000,
+		},
+	}));
+	const manifest = {
+		schemaVersion: 1,
+		prompt,
+		requestedModels: ["opus", "sonnet"],
+		runs: [
+			{ model: "opus", captures: 1, mainCaptures: 1, wireModels: ["claude-opus-5"] },
+			{ model: "sonnet", captures: 1, mainCaptures: 1, wireModels: ["claude-sonnet-5"] },
+		],
+	};
+	const env = {
+		...process.env,
+		HOME: root,
+		USERPROFILE: root,
+		PI_CODING_AGENT_DIR: join(root, "agent"),
+		PI_CLAUDE_NATIVE_STATE_DIR: stateDir,
+		PI_CLAUDE_NATIVE_FINGERPRINT: join(root, "absent-fingerprint.json"),
+		PI_CLAUDE_NATIVE_MODELS_CACHE: join(root, "absent-models.json"),
+		PI_CLAUDE_NATIVE_LIVE_DISCOVERY: "0",
+	};
+	const reuse = (...extra: string[]) => spawnSync(process.execPath, ["--import", "tsx", join(root, "scripts", "capture-fingerprint.mjs"), "--reuse", "--models", "opus,sonnet", ...extra], {
+		cwd: process.cwd(), env, encoding: "utf8",
+	});
+	try {
+		mkdirSync(join(root, "scripts"), { recursive: true });
+		mkdirSync(rawDir, { recursive: true });
+		cpSync(resolve("src"), join(root, "src"), { recursive: true });
+		copyFileSync(CAPTURE_FINGERPRINT, join(root, "scripts", "capture-fingerprint.mjs"));
+		copyFileSync(resolve("scripts/fingerprint-baseline.ts"), join(root, "scripts", "fingerprint-baseline.ts"));
+		writeCapture("req-fp-1.json", "claude-opus-5");
+		writeCapture("req-fp-2.json", "claude-sonnet-5");
+		writeFileSync(manifestPath, JSON.stringify(manifest));
+
+		const reportOnly = reuse();
+		assert.equal(reportOnly.status, 0, reportOnly.stdout + reportOnly.stderr);
+		assert.ok(existsSync(outputPath));
+		assert.match(readFileSync(join(root, "captures", "fingerprint-report.md"), "utf8"), /owners\.json unavailable; report only/);
+		assert.equal(existsSync(appliedPath), false);
+
+		const withoutOwners = reuse("--apply");
+		assert.equal(withoutOwners.status, 1, withoutOwners.stdout + withoutOwners.stderr);
+		assert.match(withoutOwners.stderr, /requires owners\.json/);
+		assert.equal(existsSync(appliedPath), false);
+
+		writeFileSync(ownersPath, JSON.stringify({ "req-fp-1.json": "opus", "req-fp-2.json": "sonnet" }));
+		const owned = reuse("--apply");
+		assert.equal(owned.status, 0, owned.stdout + owned.stderr);
+		assert.ok(existsSync(appliedPath));
+		unlinkSync(ownersPath);
+
+		unlinkSync(join(rawDir, "req-fp-2.json"));
+		const incomplete = reuse();
+		assert.equal(incomplete.status, 1, incomplete.stdout + incomplete.stderr);
+		assert.match(incomplete.stderr, /raw captures no longer match run-manifest\.json/);
+
+		writeCapture("req-fp-2.json", "claude-sonnet-5");
+		writeCapture("req-fp-3.json", "claude-opus-5-1");
+		manifest.runs[0].mainCaptures = 2;
+		manifest.runs[0].wireModels.push("claude-opus-5-1");
+		writeFileSync(manifestPath, JSON.stringify(manifest));
+		const ambiguous = reuse();
+		assert.equal(ambiguous.status, 1, ambiguous.stdout + ambiguous.stderr);
+		assert.match(ambiguous.stderr, /ambiguous Opus baseline/);
+	} finally {
+		assert.equal(resolve(dirname(root)), resolve(tmpdir()), "cleanup target must remain inside the temporary directory");
+		rmSync(root, { recursive: true, force: true });
+	}
 });
 
 test("compare requires the paired 2.1.284 prompt and turn indices when genuine sends them", () => {
@@ -490,6 +611,7 @@ test("capture proxy returns its configured nonce through the local health endpoi
 			PI_CAPTURE_PORT: String(port),
 			PI_CAPTURE_TARGET: "http://127.0.0.1:1",
 			PI_CAPTURE_DIR: dir,
+			PI_CAPTURE_LABEL: "capture",
 			PI_CAPTURE_HEALTH_NONCE: nonce,
 		},
 		stdio: "ignore",
@@ -505,6 +627,21 @@ test("capture proxy returns its configured nonce through the local health endpoi
 	const response = await waitForHttp(port, "/__pi_claude_capture_health");
 	assert.equal(response.status, 200, response.body);
 	assert.deepEqual(JSON.parse(response.body), { service: "pi-claude-capture-proxy", nonce });
+	const sentinel = "proxy-auth-secret-sentinel-987654321";
+	for (const [index, [authorization, expected]] of [
+		[`Bearer ${sentinel}`, "Bearer REDACTED"],
+		[`Basic ${sentinel}`, "Basic REDACTED"],
+		[`${sentinel} malformed`, "UNKNOWN (redacted)"],
+		[`Bearer ${sentinel} trailing`, "Bearer (invalid credentials)"],
+	].entries()) {
+		const result = await getText(port, "/v1/messages", { authorization, "x-api-key": sentinel });
+		assert.equal(result.status, 502);
+		const capture = readFileSync(join(dir, `req-capture-${index + 1}.json`), "utf8");
+		const record = JSON.parse(capture) as { headers: Record<string, string> };
+		assert.equal(record.headers.authorization, expected);
+		assert.equal(record.headers["x-api-key"], "REDACTED");
+		assert.ok(!capture.includes(sentinel), "capture file must not contain credential bytes");
+	}
 });
 
 test("classifier resolves auth.json through PI_CODING_AGENT_DIR before any live request", () => {

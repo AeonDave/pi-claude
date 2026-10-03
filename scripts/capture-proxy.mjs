@@ -39,12 +39,21 @@ const HEALTH_PATH = "/__pi_claude_capture_health";
 const target = new URL(TARGET);
 let count = 0;
 
+function redactAuthorization(value) {
+	const raw = typeof value === "string" ? value.trim() : "";
+	if (/^Bearer[ \t]+\S+$/i.test(raw)) return "Bearer REDACTED";
+	if (/^Basic[ \t]+\S+$/i.test(raw)) return "Basic REDACTED";
+	if (/^Bearer(?:[ \t]|$)/i.test(raw)) return "Bearer (invalid credentials)";
+	if (/^Basic(?:[ \t]|$)/i.test(raw)) return "Basic (invalid credentials)";
+	return "UNKNOWN (redacted)";
+}
+
 function redactHeaders(headers) {
 	const out = {};
 	for (const [key, value] of Object.entries(headers)) {
 		const lower = key.toLowerCase();
 		const flat = Array.isArray(value) ? value.join(", ") : value;
-		out[lower] = lower === "authorization" ? "Bearer sk-ant-REDACTED" : lower === "x-api-key" || lower === "cookie" ? "REDACTED" : flat;
+		out[lower] = lower === "authorization" ? redactAuthorization(flat) : lower === "x-api-key" || lower === "cookie" ? "REDACTED" : flat;
 	}
 	return out;
 }

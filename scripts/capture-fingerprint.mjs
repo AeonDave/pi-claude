@@ -328,7 +328,14 @@ function readRunManifest() {
 			value.requestedModels.some((model) => typeof model !== "string" || !model) ||
 			!Array.isArray(value.runs) ||
 			value.runs.length !== value.requestedModels.length ||
-			value.requestedModels.some((model) => !value.runs.some((run) => run?.model === model))
+			value.runs.some((run, index) =>
+				run?.model !== value.requestedModels[index] ||
+				!Number.isSafeInteger(run.mainCaptures) ||
+				run.mainCaptures <= 0 ||
+				!Array.isArray(run.wireModels) ||
+				run.wireModels.length !== run.mainCaptures ||
+				run.wireModels.some((wireModel) =>
+					typeof wireModel !== "string" || !isRequestedMainCapture(run.model, wireModel, CLAUDE_PROMPT, CLAUDE_PROMPT)))
 		) return null;
 		return value;
 	} catch {
@@ -356,6 +363,11 @@ async function runNonInteractiveCapture() {
 			assertCapturePlanMatches(runManifest.requestedModels, MODELS);
 			runResults.push(...runManifest.runs);
 			assertRequestedCapturesComplete(runResults);
+			if (APPLY && captureOwner.size === 0) {
+				throw new Error("--reuse --apply requires owners.json to bind each raw request to its capture run");
+			}
+		} else if (existsSync(RUN_MANIFEST_PATH)) {
+			throw new Error("run-manifest.json is malformed or incomplete; run a fresh capture");
 		} else if (APPLY) {
 			throw new Error("--reuse --apply requires a complete run-manifest.json; run a fresh capture first");
 		} else {
@@ -442,6 +454,8 @@ async function distill(captureOwner, runResults, runManifest) {
 	// Collect the largest capture per wire-model.
 	const byModel = new Map();
 	const captureTimes = [];
+	const rawByWireModel = new Map();
+	const rawByOwner = new Map();
 	for (const f of readdirSync(RAW_DIR)) {
 		if (!/^req-fp-\d+\.json$/.test(f)) continue;
 		const capturePath = join(RAW_DIR, f);
@@ -451,6 +465,8 @@ async function distill(captureOwner, runResults, runManifest) {
 		const firstUserText = firstUserMessageText(rec.body);
 		if (firstUserText !== CLAUDE_PROMPT) continue;
 		if (owner && !isRequestedMainCapture(owner, rec.body.model, firstUserText, CLAUDE_PROMPT)) continue;
+		rawByWireModel.set(rec.body.model, (rawByWireModel.get(rec.body.model) || 0) + 1);
+		if (owner) rawByOwner.set(owner, [...(rawByOwner.get(owner) || []), rec.body.model]);
 		captureTimes.push(statSync(capturePath).mtimeMs);
 		const h = rec.headers || {};
 		const ua = h["user-agent"] || "";
@@ -492,15 +508,39 @@ async function distill(captureOwner, runResults, runManifest) {
 	}
 
 	if (REUSE && runManifest) {
-		const observedRuns = runManifest.requestedModels.map((model) => ({
-			model,
-			captures: 0,
-			mainCaptures: [...byModel.values()].filter(({ observation }) =>
-				observation.triggeredBy.includes(model) &&
-				isRequestedMainCapture(model, observation.wireModel, CLAUDE_PROMPT, CLAUDE_PROMPT),
-			).length,
-		}));
-		assertRequestedCapturesComplete(observedRuns);
+		const sameWireModels = (actual, expected) =>
+			JSON.stringify([...actual].sort()) === JSON.stringify([...expected].sort());
+		const expectedByWireModel = new Map();
+		for (const run of runManifest.runs) {
+			for (const wireModel of run.wireModels) {
+				expectedByWireModel.set(wireModel, (expectedByWireModel.get(wireModel) || 0) + 1);
+			}
+		}
+		if (
+			expectedByWireModel.size !== rawByWireModel.size ||
+			[...expectedByWireModel].some(([wireModel, count]) => rawByWireModel.get(wireModel) !== count)
+		) {
+			throw new Error("raw captures no longer match run-manifest.json; run a fresh capture");
+		}
+		if (captureOwner.size > 0) {
+			for (const run of runManifest.runs) {
+				const observed = rawByOwner.get(run.model) || [];
+				if (!sameWireModels(observed, run.wireModels)) {
+					throw new Error(`${run.model}: raw captures no longer match run-manifest.json; run a fresh capture`);
+				}
+			}
+		} else {
+			// Report-only recovery: the manifest binds runs to wire ids, and exact
+			// per-id raw counts prove that no captured request went missing. Without
+			// owners.json there is no file-to-run proof, so --apply stays forbidden.
+			for (const run of runManifest.runs) {
+				for (const wireModel of run.wireModels) {
+					const captured = byModel.get(wireModel);
+					if (captured) captured.triggeredBy.add(run.model);
+				}
+			}
+			for (const { observation, triggeredBy } of byModel.values()) observation.triggeredBy = [...triggeredBy];
+		}
 	}
 
 	const perModel = {};
@@ -569,6 +609,8 @@ async function distill(captureOwner, runResults, runManifest) {
 	const requestedModels = [...new Set(captureOwner.values())];
 	const captureProvenance = requestedModels.length > 0
 		? `requested models: ${requestedModels.join(", ")}`
+		: runManifest
+			? `requested models per manifest: ${runManifest.requestedModels.join(", ")} (owners.json unavailable; report only)`
 		: REUSE
 			? "requested models unknown (owners.json unavailable)"
 			: `requested models: ${MODELS.join(", ")}`;

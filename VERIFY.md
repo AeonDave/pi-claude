@@ -5,14 +5,22 @@ Claude Code CLI, and how to **prove it on the wire** for yourself.
 
 ## TL;DR fidelity table
 
-What Anthropic's subscription backend actually keys on — and where each piece
-comes from. Verified against the current genuine `claude` wire captures and the
-installed `@earendil-works/pi-ai` / `pi-coding-agent` (not just docs).
+What the genuine Claude Code request contains, where each piece comes from, and
+what has been checked against Pi. The latest print request capture uses Claude
+Code 2.1.288; the fresh Pi print comparison and older checks are scoped below.
 
 The reference must match the Pi runtime mode. The captures do **not** use one
-profile for both. The latest print capture completed 17/17 requested runs
-(13 exact ids plus four moving aliases). A separate interactive capture verified
-Opus 5.5 alone; the latest complete TUI suite remains 11/11 models:
+profile for both. On 2026-10-03 the print capture observed 17/17 matching main
+requests (13 exact ids plus four moving aliases), but all Claude subprocesses
+exited 1 after the account reached its weekly usage limit. This validates the
+request capture, not successful responses. Separate 2.1.288 interactive
+first-turn captures cover Opus 5.5, Sonnet 5.5, and Haiku 4.5. The latest
+complete TUI suite remains 11/11 models on 2.1.278; the 2.1.288 13-model TUI
+suite has not been captured.
+
+The plugin column below describes its implemented request fields. Fresh
+Pi 1.0.0 print comparisons are documented after the table; the three 2.1.288
+TUI requests support the interactive rows, not full TUI parity.
 
 | Pi mode | Genuine capture | Entrypoint / UA profile | `system[1]` | `thinking.display` |
 |---------|-----------------|-------------------------|-------------|--------------------|
@@ -22,23 +30,23 @@ Opus 5.5 alone; the latest complete TUI suite remains 11/11 models:
 | Signal | Genuine Claude Code | This plugin | Source |
 |--------|--------------------|-------------|--------|
 | `authorization: Bearer sk-ant-oat…` | ✅ | ✅ | Pi built-in (triggered by our OAuth token) |
-| `anthropic-beta` (normal turns, no `context-1m`) | mode- and model-specific | same captured profile | **plugin** (non-interactive fingerprint + validated TUI dumps) |
+| `anthropic-beta` (normal turns, no `context-1m`) | mode- and model-specific | 2.1.288 print sets; Opus 5.5, Sonnet 5.5, and Haiku 4.5 TUI overlays | **plugin** (non-interactive fingerprint + captured interactive signal) |
 | `context-1m-2025-08-07` advertised | absent from the current native-1M normal turns | not by default | **plugin** (curated families are natively 1M; add it verbatim only for a beta-gated plan/model that genuinely requires it) |
 | `user-agent` version/profile | `external, cli` or `external, sdk-cli` | matches `ctx.mode` | **plugin** (`before_provider_headers`) |
 | `x-app: cli` | ✅ | ✅ | Pi built-in (plugin restates it) |
 | `x-claude-code-request-class: main` | ✅ in both modes | ✅ | **plugin** (`before_provider_headers`) |
 | `system[0]` = `x-anthropic-billing-header: …` | ✅ | ✅ | **plugin** (`before_provider_request`) |
 | billing `cc_turn_origin=sdk` / `human` | `sdk-cli` / `cli` respectively | same mode-specific value | **plugin** (`before_provider_request`) |
-| billing first-turn indices on 2.1.284 | print `(0, 1)` in 17/17 main captures; TUI `(1, 1)` from installed client logic | same when Pi's active branch proves a first prompt | **plugin** (`before_provider_request`) |
+| billing first-turn indices | print `(0, 1)` in 17/17 main 2.1.288 captures; Opus 5.5, Sonnet 5.5, and Haiku 4.5 TUI first prompts `(1, 1)` | `(0, 1)` for a confirmed first print prompt; `(1, 1)` for a confirmed first TUI prompt | **plugin** (`before_provider_request`) |
 | `cc_prompt_id=<uuid>;` in the billing header | ✅ | ✅ | **plugin** (derived per prompt — see below) |
-| `x-client-request-id` | fresh UUID per request | fresh UUID per request | **plugin** (`before_provider_headers`, Pi >= 0.80.5) |
+| `x-client-request-id` | fresh UUID per request | fresh UUID per request | **plugin** (`before_provider_headers`, Pi >= 1.0.0) |
 | `x-stainless-*` SDK telemetry, `anthropic-dangerous-direct-browser-access` | ✅ | ✅ | Pi built-in (its Anthropic SDK) |
 | `accept-language: *`, `sec-fetch-mode: cors` | absent | present | undici artifacts — not removable from inside an extension |
 | mode-specific `system[1]` identity | ✅ | ✅ | Pi built-in seed + **plugin** mode alignment |
 | Tool names PascalCase (`Read`, `Bash`, …) | ✅ | ✅ | Pi built-in (`toClaudeCodeName`); request capture proves naming/presence, Pi tests cover response mapping |
 | `metadata.user_id` (device/account/session ids) | ✅ | ✅ | **plugin** (read from `~/.claude.json`) |
 | `thinking.display` | `updates` interactively; `omitted` non-interactively | matches `ctx.mode` | **plugin** (`before_provider_request`) |
-| request `max_tokens` | 128K for Opus 5.5; 64K or 32K for the other captured ids | same captured per-model cap | **plugin** (`before_provider_request`; Pi catalog ceiling is intentionally not rewritten) |
+| request `max_tokens` | 128K for Opus 5.5 and Sonnet 5.5; 64K or 32K for the other captured ids | same captured per-model cap | **plugin** (`before_provider_request`; Pi catalog ceiling is intentionally not rewritten) |
 | budget thinking (4.5 models) | `budget_tokens: 31999`; Opus adds effort `high` | same exact profile | **plugin** (`before_provider_request`) |
 | `cc_version` consistent with `user-agent` version | ✅ | ✅ | **plugin** (one source of truth) |
 | System prompt clears the third-party classifier | ✅ | ✅ | **plugin** (`sanitizeSystemPrompt` strips the "Pi documentation" block) |
@@ -58,28 +66,44 @@ available. For `Refresh token expired`, run `/login` → **Claude Pro/Max Native
 to obtain a fresh grant, then `/skill-optimizer init` if the optimizer was the
 caller. Claude CLI credentials and Pi's built-in `anthropic` login are separate.
 
-The current bundled print evidence is Claude Code **2.1.284**, captured with
-auto mode's server classifier off (`CLAUDE_CODE_AUTO_MODE_SERVER=0`). Its 17/17
-run is NOT wire-identical to 2.1.283: `per-turn-control-2026-07-01` moved into
-the common base (now 15 flags, immediately after
-`mid-conversation-system-2026-04-07`), `inline-tools-2026-09-15` was added to the
-Opus/Fable flagships, and `claude --model sonnet` now resolves to the new
-`claude-sonnet-5-5` instead of `claude-sonnet-5`. Request caps, budget-thinking
-shapes and the remaining per-model sets are unchanged. It confirmed that
-`claude --model opus` and the explicit `claude-opus-5-5` request resolve
-consistently. The Opus 5.5 print header has 17 flags: the 15-flag common base
-plus `mid-conversation-tool-changes-2026-07-01` followed by
-`inline-tools-2026-09-15`. Its captured effort was `medium` and
-request cap was 128,000. Sonnet 5.5 sends the common base verbatim (15 flags)
-with the same 128,000 cap.
-Anthropic's live model metadata reports a 1M context window, 128K output ceiling,
-adaptive-only thinking, and `xhigh`/`max` effort support.
+The current bundled print evidence is Claude Code **2.1.288**, captured on
+2026-10-03 with auto mode's server classifier off
+(`CLAUDE_CODE_AUTO_MODE_SERVER=0`). The capture observed 17/17 matching main
+requests. Relative to 2.1.284, `mid-conversation-tool-changes-2026-07-01` and
+`inline-tools-2026-09-15` joined the ordered Opus 5.5/Sonnet 5.5 common base,
+now 17 flags. Both request `max_tokens: 128000` with print effort `medium`.
+`claude --model opus` and `sonnet` resolve to `claude-opus-5-5` and
+`claude-sonnet-5-5`; `fable` resolves to `claude-fable-5-1`. Captured request
+caps and budget-thinking shapes are unchanged. Every Claude subprocess exited 1
+because the account had exhausted its weekly usage limit, so no successful
+response is established by this run. Anthropic's live model metadata reports a
+1M context window, 128K output ceiling, adaptive-only thinking, and `xhigh`/`max`
+effort support for the two 5.5 models.
 
-The 2.1.284 Pi print comparison was rerun on a first Sonnet 5.5 prompt:
+Pi 1.0.0 print requests from the packed archive passed **35/35 wire checks** for
+Sonnet 5.5, Opus 5.5, and Haiku 4.5 with thinking `high`, against genuine 2.1.288
+captures. The Sonnet comparison matched effort `medium` and local Claude
+metadata; Haiku `high` matched the captured `budget_tokens: 31999`. A Haiku
+request at user-selected thinking `medium` sent 8192 tokens and therefore
+differs from Claude's 31999-token default. The comparison must use the same
+thinking setting on both sides. Both the source and packed extension loaded in
+an isolated Pi process with `PI_CODING_AGENT_DIR=~/agent`, a synthetic OAuth
+credential and a local SSE mock, which returned `blackbox-ok`. These
+comparisons verify the outgoing print request tuple; the local mock verifies
+Pi's request/response path. Separate 2.1.288 TUI captures cover Opus 5.5 and
+Sonnet 5.5 with 18 beta flags, 128K caps, and adaptive thinking at medium effort;
+Haiku 4.5 has 12 flags, a 32K cap, and 31,999 budget tokens at Pi thinking
+`high`. All three show display updates and first-turn indices `(1, 1)`.
+Repacked Pi 1.0.0 TUI requests matched their genuine captures on 35/35 wire
+checks each. The exhausted account prevented a successful live Anthropic
+response; these three comparisons do not establish full 13-model TUI parity.
+
+The historical 2.1.284 Pi print comparison was run on a first Sonnet 5.5 prompt:
 **34/34 wire checks passed** against the genuine explicit-id capture, including
 the paired billing indices and absence of `safeguards`. The live request reached
 Anthropic but received account rate limit HTTP 429, so response success is not
-established. At 2.1.281, Pi print comparison passed 32/32 checks, and a real Pi
+established. At 2.1.281, Pi print
+comparison passed 32/32 checks, and a real Pi
 request returned `fingerprint` after session refresh. A separate print comparison
 with absent temporary fingerprint/cache files and live discovery disabled passed
 32/32 too, proving the bundled snapshot alone selected the model.
@@ -90,6 +114,17 @@ updates, effort `medium`, and 21 tools. Pi TUI comparison passed 32/32 checks an
 returned `fingerprint`. This is scoped to Opus 5.5; the full 13-model TUI
 validator suite was not rerun. Its latest complete evidence remains the
 2.1.278 capture with 11/11 models.
+
+The genuine 2.1.288 Opus 5.5 and Sonnet 5.5 interactive first-turn requests
+carried 18 ordered beta flags (their 17-flag print sets plus
+`thinking-display-updates-2026-08-18` immediately after
+`thinking-binding-controls-2026-08-01`), `max_tokens: 128000`, adaptive
+thinking with `display: updates`, effort `medium`, and billing indices `(1, 1)`.
+Haiku 4.5 carried 12 ordered flags, a 32K cap, budget thinking with 31,999
+tokens, display updates, and the same indices. Repacked Pi 1.0.0 TUI requests
+passed 35/35 checks against each capture; the Haiku comparison used Pi thinking
+`high`. Account quota returned HTTP 429, so successful live responses remain
+unverified. These are three models and first turns, not the complete TUI suite.
 
 With the classifier on (auto mode), 2.1.283 adds `dangerous-tool-use-2026-09-03`
 between `effort-2025-11-24` and `thinking-binding-controls-2026-08-01` on the
@@ -121,13 +156,13 @@ exact beta or request-cap behavior; discovery supplies capabilities only.
   The derivation keeps `applyBillingHeader` pure and idempotent.
 - `cc_turn_origin` follows the wire profile: `sdk` for `sdk-cli` requests and
   `human` for interactive `cli` requests.
-- Claude Code 2.1.284 also sends paired prompt/turn indices. All 17 captured
-  first print requests carried `(0, 1)`; its installed implementation computes
-  `(1, 1)` for a first interactive prompt. The extension emits them only when
-  Pi's active session branch proves a matching, uncompacted first user prompt.
-  It omits them on later or ambiguous turns, whose position cannot safely be
-  reconstructed from a possibly truncated request payload. A 2.1.284 TUI
-  request and later-turn parity remain unverified.
+- Claude Code 2.1.288 also sends paired prompt/turn indices. All 17 captured
+  first print requests carried `(0, 1)`; captured Opus 5.5, Sonnet 5.5, and
+  Haiku 4.5 first interactive requests carried `(1, 1)`. The extension emits the captured pair
+  only when Pi's active session branch proves a matching, uncompacted first
+  user prompt. It omits indices on later or ambiguous turns, whose position
+  cannot safely be reconstructed from a possibly truncated request payload.
+  Later-turn parity remains unverified.
 - `cch` — **not reproducible, and not validated by Anthropic.** The genuine
   2.1.261 client builds the header with a literal ` cch=00000;` placeholder
   (those are the only two occurrences of `cch=` in the whole 209 MB binary) and
@@ -241,10 +276,12 @@ Sonnet baselines, and writes:
 - `captures/fingerprint-<version>.json` — `{ version, entrypoint, userAgent,
   anthropicBeta, modelBeta, modelMaxTokens, modelBudgetThinking }`, the exact shape `src/constants.ts`
   reads.
-  `anthropicBeta` is their ordered intersection; the current common base has
-  15 flags, with `per-turn-control-2026-07-01` immediately after
-  `mid-conversation-system-2026-04-07` and `thinking-binding-controls-2026-08-01`
-  immediately after `effort-2025-11-24`. Exact model deltas remain byte-order-sensitive.
+  `anthropicBeta` is their ordered intersection; the 2.1.288 common base has
+  17 flags. `per-turn-control-2026-07-01`,
+  `mid-conversation-tool-changes-2026-07-01`, and `inline-tools-2026-09-15`
+  immediately follow `mid-conversation-system-2026-04-07` in that order;
+  `thinking-binding-controls-2026-08-01` follows `effort-2025-11-24`.
+  Exact model deltas remain byte-order-sensitive.
   `modelBeta` records each captured model's set **verbatim** (order included),
   and the extension prefers it over its built-in deltas. `modelMaxTokens` records
   the genuine request cap rather than Pi's larger catalog ceiling, while
@@ -256,9 +293,9 @@ Sonnet baselines, and writes:
 - `captures/fingerprint-report.md` — a per-model table, a **diff of the captured
   common set against the current `DEFAULT_ANTHROPIC_BETA`**, and a **per-model
   deviations** section. That last one matters: reporting only the base diff once
-  printed a confident "No change" on a run whose own table showed Fable sending a
-  14th flag. Both unambiguous Opus and Sonnet baselines are required — Haiku
-  sends a subset and Fable a superset. Mixed versions/profiles, duplicate flags
+  printed a confident "No change" on an older run whose own table showed Fable
+  sending a 14th flag. Both unambiguous Opus and Sonnet baselines are required;
+  other models can differ from their shared set. Mixed versions/profiles, duplicate flags
   and `context-1m` baselines are rejected before `--apply`.
 
 The run sidecar records every requested alias/id and its matching main request.
@@ -326,28 +363,28 @@ emits.
 
 For the non-interactive profile, the default is the **ordered common set captured
 from the current `claude -p` capture**
-(`src/constants.ts` `DEFAULT_ANTHROPIC_BETA`): 15 flags shared by Opus 5.5 and
+(`src/constants.ts` `DEFAULT_ANTHROPIC_BETA`): 17 flags shared by Opus 5.5 and
 Sonnet 5.5, including `advanced-tool-use-2025-11-20`, `afk-mode-2026-01-31`, and
 `cache-diagnosis-2026-04-07`, with `per-turn-control-2026-07-01` immediately after
-`mid-conversation-system-2026-04-07` and `thinking-binding-controls-2026-08-01`
+`mid-conversation-system-2026-04-07`, then `mid-conversation-tool-changes-2026-07-01`
+and `inline-tools-2026-09-15`, and with `thinking-binding-controls-2026-08-01`
 immediately after `effort-2025-11-24` (but **not** `context-1m-2025-08-07` — see "The 1M /
 long-context trap" below). The final set is per-model in BOTH directions:
 
-- **Sonnet 5.5** emits 15 flags — the common set, with no deviation.
-- **Sonnet 5** emits 14: the common set minus `per-turn-control-2026-07-01`.
-- **Opus 5.5 and Fable 5.1** emit 17: the common set plus
-  `mid-conversation-tool-changes-2026-07-01` and `inline-tools-2026-09-15`, in
-  that order.
-- **Opus 5, Opus 4.8 and Fable 5** emit 16: those same two additions, but minus
-  `per-turn-control-2026-07-01`, with the additions placed directly after
-  `mid-conversation-system-2026-04-07`.
+- **Opus 5.5, Sonnet 5.5, and Fable 5.1** emit the 17-flag common set.
+- **Sonnet 5** emits 14: the common set minus `per-turn-control-2026-07-01`,
+  `mid-conversation-tool-changes-2026-07-01`, and `inline-tools-2026-09-15`.
+- **Opus 5, Opus 4.8, and Fable 5** emit 16: the common set minus
+  `per-turn-control-2026-07-01`.
 - **Haiku 4.5** emits 11 flags in the same run, omitting
   `mid-conversation-system-2026-04-07`, `per-turn-control-2026-07-01`,
+  `mid-conversation-tool-changes-2026-07-01`, `inline-tools-2026-09-15`,
   `effort-2025-11-24` and `afk-mode-2026-01-31` — it *keeps* `advisor-tool`.
 - **Opus 4.7/4.6 and Sonnet 4.6** remain at 13, **Opus 4.5** at 12, and
   **Sonnet 4.5/Haiku 4.5** at 11.
 
-Every addition is keyed by exact id. Sending it wider risks a 400.
+The two new flags entered the common base only after both Opus 5.5 and Sonnet 5.5
+sent them. Other deviations are keyed by exact id; sending those wider risks a 400.
 
 The provider applies each through a model header. An explicit `PI_CLAUDE_NATIVE_ANTHROPIC_BETA`
 remains byte-for-byte and is never reduced. The set is **version-specific** and

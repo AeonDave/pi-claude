@@ -4,6 +4,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from 
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
 import { test } from "node:test";
+import { pathToFileURL } from "node:url";
 import { coerceFingerprint, SERVER_CLASSIFIER_BETA } from "../src/fingerprint.ts";
 
 /**
@@ -435,6 +436,151 @@ test("a newer partial fingerprint leaves uncaptured max_tokens alone but applies
 	}
 });
 
+test("PI_CODING_AGENT_DIR normalizes Pi's tilde, file URL, and Windows shell paths before state paths are built", async () => {
+	const home = mkdtempSync(join(tmpdir(), "claude-native-agent-path-"));
+	const saved = {
+		HOME: process.env.HOME,
+		USERPROFILE: process.env.USERPROFILE,
+		agent: process.env.PI_CODING_AGENT_DIR,
+		state: process.env.PI_CLAUDE_NATIVE_STATE_DIR,
+		fp: process.env.PI_CLAUDE_NATIVE_FINGERPRINT,
+		cache: process.env.PI_CLAUDE_NATIVE_MODELS_CACHE,
+	};
+	process.env.HOME = home;
+	process.env.USERPROFILE = home;
+	delete process.env.PI_CLAUDE_NATIVE_STATE_DIR;
+	delete process.env.PI_CLAUDE_NATIVE_FINGERPRINT;
+	delete process.env.PI_CLAUDE_NATIVE_MODELS_CACHE;
+	try {
+		const constants = await reload();
+		const { getAgentDir: getPiAgentDir } = await import("@earendil-works/pi-coding-agent");
+		const winShellHome = process.platform === "win32"
+			? home.replaceAll("\\", "/").replace(/^([a-z]):/i, (_drive, letter: string) => `/${letter.toLowerCase()}`)
+			: "";
+		for (const [envDir, expected] of [
+			["~", home],
+			["~/sandbox/pi", join(home, "sandbox", "pi")],
+			...(process.platform === "win32" ? [["~\\sandbox\\pi", join(home, "sandbox", "pi")]] : []),
+			[pathToFileURL(join(home, "URL dir")).href, join(home, "URL dir")],
+			...(process.platform === "win32"
+				? [
+					[`${winShellHome}/shell`, join(home, "shell")],
+					[`/mnt${winShellHome}/shell`, join(home, "shell")],
+					[`/cygdrive${winShellHome}/shell`, join(home, "shell")],
+				]
+				: []),
+			[join(home, "plain agent"), join(home, "plain agent")],
+		] as const) {
+			process.env.PI_CODING_AGENT_DIR = envDir;
+			assert.equal(constants.getAgentDir(), expected, `agent dir for ${envDir}`);
+			assert.equal(constants.getAgentDir(), getPiAgentDir(), `agent dir matches the installed Pi for ${envDir}`);
+			assert.equal(constants.getStateDir(), join(expected, "claude-native"));
+			assert.equal(constants.getFingerprintPath(), join(expected, "claude-native", "fingerprint.json"));
+			assert.equal(constants.getModelCachePath(), join(expected, "claude-native", "models.json"));
+		}
+		process.env.PI_CODING_AGENT_DIR = "~another-user";
+		assert.equal(constants.getAgentDir(), "~another-user", "only Pi's supported tilde prefixes expand");
+		assert.equal(constants.getAgentDir(), getPiAgentDir());
+		process.env.PI_CODING_AGENT_DIR = "   ";
+		assert.equal(constants.getAgentDir(), "   ", "Pi keeps non-empty env values verbatim");
+		assert.equal(constants.getAgentDir(), getPiAgentDir());
+		process.env.PI_CODING_AGENT_DIR = "";
+		assert.equal(constants.getAgentDir(), join(home, ".pi", "agent"), "empty env uses Pi's default");
+		assert.equal(constants.getAgentDir(), getPiAgentDir());
+	} finally {
+		for (const [key, value] of [
+			["HOME", saved.HOME],
+			["USERPROFILE", saved.USERPROFILE],
+			["PI_CODING_AGENT_DIR", saved.agent],
+			["PI_CLAUDE_NATIVE_STATE_DIR", saved.state],
+			["PI_CLAUDE_NATIVE_FINGERPRINT", saved.fp],
+			["PI_CLAUDE_NATIVE_MODELS_CACHE", saved.cache],
+		] as const) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+		(await import("../src/fingerprint.ts")).resetStateCaches();
+	}
+});
+
+test("custom state roots neither migrate nor read the default home's legacy fingerprint and model cache", async () => {
+	const home = mkdtempSync(join(tmpdir(), "claude-native-isolated-state-"));
+	const legacyDir = join(home, ".pi");
+	const legacyFingerprint = join(legacyDir, "claude-native-fingerprint.json");
+	const legacyModels = join(legacyDir, "claude-native-models.json");
+	const fingerprintData = JSON.stringify({ version: await bundledVersion(), anthropicBeta: "legacy-only" });
+	const modelsData = JSON.stringify({ version: 1, models: [{ id: "legacy-only" }] });
+	mkdirSync(legacyDir, { recursive: true });
+	writeFileSync(legacyFingerprint, fingerprintData, "utf8");
+	writeFileSync(legacyModels, modelsData, "utf8");
+	const savedCwd = process.cwd();
+	const saved = {
+		HOME: process.env.HOME,
+		USERPROFILE: process.env.USERPROFILE,
+		agent: process.env.PI_CODING_AGENT_DIR,
+		state: process.env.PI_CLAUDE_NATIVE_STATE_DIR,
+		fp: process.env.PI_CLAUDE_NATIVE_FINGERPRINT,
+		cache: process.env.PI_CLAUDE_NATIVE_MODELS_CACHE,
+	};
+	process.chdir(home);
+	process.env.HOME = home;
+	process.env.USERPROFILE = home;
+	delete process.env.PI_CLAUDE_NATIVE_FINGERPRINT;
+	delete process.env.PI_CLAUDE_NATIVE_MODELS_CACHE;
+	try {
+		const state = await import("../src/fingerprint.ts");
+		process.env.PI_CODING_AGENT_DIR = "~/isolated-agent";
+		delete process.env.PI_CLAUDE_NATIVE_STATE_DIR;
+		let constants = await reload();
+		const customAgentState = join(home, "isolated-agent", "claude-native");
+		assert.equal(constants.getStateDir(), customAgentState);
+		constants.migrateLegacyState();
+		assert.equal(state.readFingerprint(), null);
+		assert.deepEqual(constants.getModelCacheReadPaths(), [join(customAgentState, "models.json")]);
+		assert.ok(!existsSync(customAgentState));
+		assert.equal(readFileSync(legacyFingerprint, "utf8"), fingerprintData);
+		assert.equal(readFileSync(legacyModels, "utf8"), modelsData);
+
+		delete process.env.PI_CODING_AGENT_DIR;
+		process.env.PI_CLAUDE_NATIVE_STATE_DIR = join(home, "isolated-state");
+		constants = await reload();
+		constants.migrateLegacyState();
+		assert.equal(state.readFingerprint(), null);
+		assert.deepEqual(constants.getModelCacheReadPaths(), [join(home, "isolated-state", "models.json")]);
+		assert.equal(readFileSync(legacyFingerprint, "utf8"), fingerprintData);
+		assert.equal(readFileSync(legacyModels, "utf8"), modelsData);
+
+		process.env.PI_CODING_AGENT_DIR = "~/.pi/agent";
+		delete process.env.PI_CLAUDE_NATIVE_STATE_DIR;
+		constants = await reload();
+		assert.equal(constants.getStateDir(), join(home, ".pi", "agent", "claude-native"));
+		assert.deepEqual(constants.getModelCacheReadPaths(), [
+			join(home, ".pi", "agent", "claude-native", "models.json"),
+			legacyModels,
+		]);
+		constants.migrateLegacyState();
+		assert.equal(state.readFingerprint()?.anthropicBeta, "legacy-only");
+		assert.equal(readFileSync(constants.getFingerprintPath(), "utf8"), fingerprintData);
+		assert.equal(readFileSync(constants.getModelCachePath(), "utf8"), modelsData);
+		assert.ok(!existsSync(legacyFingerprint));
+		assert.ok(!existsSync(legacyModels));
+	} finally {
+		for (const [key, value] of [
+			["HOME", saved.HOME],
+			["USERPROFILE", saved.USERPROFILE],
+			["PI_CODING_AGENT_DIR", saved.agent],
+			["PI_CLAUDE_NATIVE_STATE_DIR", saved.state],
+			["PI_CLAUDE_NATIVE_FINGERPRINT", saved.fp],
+			["PI_CLAUDE_NATIVE_MODELS_CACHE", saved.cache],
+		] as const) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+		process.chdir(savedCwd);
+		(await import("../src/fingerprint.ts")).resetStateCaches();
+	}
+});
+
 test("state lives under Pi's agent dir, and a pre-1.5.0 loose file is MOVED there", async () => {
 	// Pi keeps every extension's state in `<agent dir>/<name>/` (auth.json,
 	// settings.json, skill-optimizer/…). This extension used to drop loose
@@ -450,6 +596,7 @@ test("state lives under Pi's agent dir, and a pre-1.5.0 loose file is MOVED ther
 	const saved = {
 		HOME: process.env.HOME,
 		USERPROFILE: process.env.USERPROFILE,
+		agent: process.env.PI_CODING_AGENT_DIR,
 		fp: process.env.PI_CLAUDE_NATIVE_FINGERPRINT,
 		state: process.env.PI_CLAUDE_NATIVE_STATE_DIR,
 		cache: process.env.PI_CLAUDE_NATIVE_MODELS_CACHE,
@@ -457,6 +604,7 @@ test("state lives under Pi's agent dir, and a pre-1.5.0 loose file is MOVED ther
 	// os.homedir() reads USERPROFILE on Windows and HOME elsewhere.
 	process.env.HOME = home;
 	process.env.USERPROFILE = home;
+	delete process.env.PI_CODING_AGENT_DIR;
 	delete process.env.PI_CLAUDE_NATIVE_FINGERPRINT;
 	delete process.env.PI_CLAUDE_NATIVE_STATE_DIR;
 	delete process.env.PI_CLAUDE_NATIVE_MODELS_CACHE;
@@ -478,6 +626,7 @@ test("state lives under Pi's agent dir, and a pre-1.5.0 loose file is MOVED ther
 		for (const [key, value] of [
 			["HOME", saved.HOME],
 			["USERPROFILE", saved.USERPROFILE],
+			["PI_CODING_AGENT_DIR", saved.agent],
 			["PI_CLAUDE_NATIVE_FINGERPRINT", saved.fp],
 			["PI_CLAUDE_NATIVE_STATE_DIR", saved.state],
 			["PI_CLAUDE_NATIVE_MODELS_CACHE", saved.cache],
@@ -506,10 +655,20 @@ test("migration never overwrites a file already at the current path", async () =
 		"utf8",
 	);
 
-	const saved = { HOME: process.env.HOME, USERPROFILE: process.env.USERPROFILE, fp: process.env.PI_CLAUDE_NATIVE_FINGERPRINT };
+	const saved = {
+		HOME: process.env.HOME,
+		USERPROFILE: process.env.USERPROFILE,
+		agent: process.env.PI_CODING_AGENT_DIR,
+		fp: process.env.PI_CLAUDE_NATIVE_FINGERPRINT,
+		state: process.env.PI_CLAUDE_NATIVE_STATE_DIR,
+		cache: process.env.PI_CLAUDE_NATIVE_MODELS_CACHE,
+	};
 	process.env.HOME = home;
 	process.env.USERPROFILE = home;
+	delete process.env.PI_CODING_AGENT_DIR;
 	delete process.env.PI_CLAUDE_NATIVE_FINGERPRINT;
+	delete process.env.PI_CLAUDE_NATIVE_STATE_DIR;
+	delete process.env.PI_CLAUDE_NATIVE_MODELS_CACHE;
 	try {
 		const constants = await reload();
 		constants.migrateLegacyState();
@@ -519,7 +678,10 @@ test("migration never overwrites a file already at the current path", async () =
 		for (const [key, value] of [
 			["HOME", saved.HOME],
 			["USERPROFILE", saved.USERPROFILE],
+			["PI_CODING_AGENT_DIR", saved.agent],
 			["PI_CLAUDE_NATIVE_FINGERPRINT", saved.fp],
+			["PI_CLAUDE_NATIVE_STATE_DIR", saved.state],
+			["PI_CLAUDE_NATIVE_MODELS_CACHE", saved.cache],
 		] as const) {
 			if (value === undefined) delete process.env[key];
 			else process.env[key] = value;

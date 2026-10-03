@@ -119,7 +119,7 @@ test("Opus 5.5 and Sonnet 5.5 are visible at load with a stale cache, while olde
 		assert.deepEqual(opus55.cost, { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 });
 		assert.deepEqual(opus55.compat, { forceAdaptiveThinking: true, supportsTemperature: false });
 		assert.deepEqual(opus55.thinkingLevelMap, { xhigh: "xhigh", max: "max", off: null });
-		assert.equal((opus55.headers as Record<string, string>)["anthropic-beta"].split(",").length, 17);
+		assert.equal(opus55.headers, undefined, "Opus 5.5 uses the captured 17-flag provider base");
 		const sonnet55 = models?.find((model) => model.id === "claude-sonnet-5-5");
 		assert.ok(sonnet55, "cold listing must include the verified bundled Sonnet 5.5 snapshot without session_start");
 		assert.equal(sonnet55.contextWindow, 1_000_000);
@@ -127,10 +127,9 @@ test("Opus 5.5 and Sonnet 5.5 are visible at load with a stale cache, while olde
 		assert.deepEqual(sonnet55.cost, { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 });
 		assert.deepEqual(sonnet55.compat, { forceAdaptiveThinking: true, supportsTemperature: false });
 		assert.deepEqual(sonnet55.thinkingLevelMap, { xhigh: "xhigh", max: "max", off: null });
-		// Sonnet 5.5 is the common base verbatim, so it carries no per-model header
-		// override and inherits the provider-level 15-flag base.
+		// Both flagship models use the captured 17-flag provider base verbatim.
 		assert.equal(sonnet55.headers, undefined);
-		assert.equal((registrations[0]?.headers as Record<string, string> | undefined)?.["anthropic-beta"].split(",").length, 15);
+		assert.equal((registrations[0]?.headers as Record<string, string> | undefined)?.["anthropic-beta"].split(",").length, 17);
 	} finally {
 		if (previous === undefined) delete process.env.PI_CLAUDE_NATIVE_MODELS_CACHE;
 		else process.env.PI_CLAUDE_NATIVE_MODELS_CACHE = previous;

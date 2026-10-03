@@ -152,7 +152,20 @@ if (genuineBillingOk) {
 }
 
 // --- Headers ----------------------------------------------------------------
-check("authorization is Bearer OAuth", String(header(pi, "authorization")).startsWith("Bearer "), header(pi, "authorization"));
+const claudeBearer = /^Bearer \S+$/.test(String(header(claude, "authorization")));
+const piBearer = /^Bearer \S+$/.test(String(header(pi, "authorization")));
+check(
+	"authorization is Bearer OAuth on both captures",
+	claudeBearer && piBearer,
+	`claude=${claudeBearer ? "Bearer" : "missing/non-Bearer"} | pi=${piBearer ? "Bearer" : "missing/non-Bearer"}`,
+);
+const claudeApiKey = header(claude, "x-api-key") !== "(absent)";
+const piApiKey = header(pi, "x-api-key") !== "(absent)";
+check(
+	"x-api-key is absent on both OAuth captures",
+	!claudeApiKey && !piApiKey,
+	`claude=${claudeApiKey ? "present" : "absent"} | pi=${piApiKey ? "present" : "absent"}`,
+);
 const claudeUserAgent = String(header(claude, "user-agent"));
 const piUserAgent = String(header(pi, "user-agent"));
 const claudeUa = claudeUserAgent.match(USER_AGENT_RE);

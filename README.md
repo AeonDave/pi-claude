@@ -23,8 +23,9 @@ the `x-anthropic-billing-header`, `metadata.user_id`, captured per-model request
 
 ## Install
 
-Requires **Pi >= 0.80.5** — that is where the `before_provider_headers` hook
-landed, which this extension uses to send Claude Code's `x-client-request-id`.
+Requires **Pi >= 1.0.0**. This release was tested on Node.js 26.3. The extension
+uses Pi's `before_provider_headers` hook to send Claude Code's
+`x-client-request-id`.
 
 Install straight from GitHub and verify:
 
@@ -33,7 +34,7 @@ pi install git:github.com/AeonDave/pi-claude
 pi list
 ```
 
-Pin a release with `@<ref>` (e.g. `git:github.com/AeonDave/pi-claude@v1.1.0`).
+Pin a release with `@<ref>` (e.g. `git:github.com/AeonDave/pi-claude@v1.8.0`).
 
 To hack on it instead, install from a local checkout — `pi install <path>`
 registers the extension the same way, but lets you edit `src/` and reinstall:
@@ -53,12 +54,11 @@ Useful follow-ups (pass the **same source** you installed with):
 `pi install`/`pi remove` write to `~/.pi/agent/settings.json`; add `-l` to scope
 them to the project's `.pi/settings.json` instead.
 
-You do **not** need `npm install` to use the extension, and installing it pulls
-**no dependencies at all**: Pi loads `src/` through jiti (no build step) and
-supplies the `@earendil-works/*` peer dependencies itself. The published package
-is 15 files / ~61 kB — `src` plus this file and `VERIFY.md`. `npm install` is
-only for development, and Pi installs git packages with `--omit=dev`, so those
-dev tools never land on a user's machine.
+You do **not** need `npm install` to use the extension. Install it from GitHub:
+the `pi-claude` npm name belongs to another publisher. The extension has no
+runtime dependencies: Pi loads `src/` through jiti (no build step) and supplies
+the `@earendil-works/*` peer dependencies. `npm install` is only for development;
+Pi installs git packages with `--omit=dev`, so dev tools do not reach users.
 
 ## Usage
 
@@ -101,14 +101,16 @@ Sonnet 5.5, so both are available before a live refresh:
 | `claude-opus-5-5` | 1M | 128K | `xhigh`, `max` | adaptive-only |
 | `claude-sonnet-5-5` | 1M | 128K | `xhigh`, `max` | adaptive-only |
 
-The latest 17/17 print capture (Claude Code 2.1.284) confirmed that
+The 2026-10-03 print capture collected 17/17 matching main requests from Claude
+Code 2.1.288 (13 exact ids and four moving aliases). It confirmed that
 `claude --model opus` resolves to `claude-opus-5-5` and that `claude --model
-sonnet` now resolves to `claude-sonnet-5-5`. Opus 5.5's 17-flag beta header adds
-`mid-conversation-tool-changes-2026-07-01` and then
-`inline-tools-2026-09-15` on top of the common 15-flag base — 2.1.284 moved
-`per-turn-control-2026-07-01` into that base — while Sonnet 5.5 is the common
-base verbatim. The captured print effort was `medium` for both, and both record
-`max_tokens: 128000`. Anthropic lists Opus 5.5 at $4/$20 per million
+sonnet` resolves to `claude-sonnet-5-5`; `fable` resolves to
+`claude-fable-5-1`. Opus 5.5 and Sonnet 5.5 now share the same 17-flag base:
+`mid-conversation-tool-changes-2026-07-01` and
+`inline-tools-2026-09-15` are present on both. Their captured print effort was
+`medium` and both request `max_tokens: 128000`. All 17 Claude processes exited
+with the account's weekly usage limit, so these captures establish request shape,
+not successful responses. Anthropic lists Opus 5.5 at $4/$20 per million
 input/output tokens, with cache writes at $5 and cache reads at $0.20
 ([official model details](https://platform.claude.com/docs/en/models/opus-5-5/overview)),
 and Sonnet 5.5 at $2/$10, with cache writes at $2.50 and cache reads at $0.20
@@ -118,8 +120,13 @@ These are fallback snapshots; live discovery and Pi's catalog take precedence.
 At Claude Code 2.1.281, an interactive capture separately verified one Opus 5.5
 TUI request: 17 beta flags (that version's 16 print flags plus the display
 flag), `max_tokens: 128000`, adaptive thinking with display updates, effort
-`medium`, and 21 tools. The 2.1.284 TUI profile has not been recaptured; the
-complete 13-model TUI suite remains unverified.
+`medium`, and 21 tools. On 2.1.288, first-turn TUI captures covered Sonnet 5.5
+and Opus 5.5 (18 beta flags, 128K cap, adaptive thinking at medium effort) plus
+Haiku 4.5 (12 beta flags, 32K cap, 31,999 thinking tokens). All used display
+updates and billing indices `(1, 1)`. Repacked Pi 1.0.0 TUI requests passed
+35/35 wire checks against each genuine capture, with Pi thinking `high` for
+Haiku. Account quota prevented a successful live response. The complete
+13-model TUI suite remains unverified.
 
 Fable 5.2 remains unseeded. Discovery can expose it when the endpoint or Pi
 catalog lists it; its beta set and request cap remain unclaimed until captured.
@@ -175,8 +182,8 @@ bundled profile can claim wire fidelity.
 
 ## How it works
 
-The current Claude Code capture has two distinct wire profiles, and the extension follows Pi's
-runtime mode instead of mixing them:
+Historical Claude Code captures show two wire profiles, and the extension follows
+Pi's runtime mode:
 
 | Pi mode | Genuine counterpart | Entrypoint / user-agent | `system[1]` identity | `thinking.display` |
 |---------|---------------------|-------------------------|----------------------|--------------------|
@@ -187,12 +194,12 @@ runtime mode instead of mixing them:
 |--------------------|--------|
 | Bearer OAuth, `x-app: cli`, initial identity, PascalCase tool-name mapping/round-trip | Pi built-in (triggered by the OAuth token) |
 | mode-specific identity, `user-agent`, billing `cc_entrypoint`, thinking display | this extension (`ctx.mode`) |
-| captured `anthropic-beta` sets (no `context-1m`) | this extension; 17/17 non-interactive requests (13 exact ids plus four moving aliases); one Opus 5.5 TUI request was captured separately; the complete TUI suite remains 11/11 |
+| captured `anthropic-beta` sets (no `context-1m`) | this extension; 17/17 non-interactive 2.1.288 requests (13 exact ids plus four moving aliases); separate 2.1.288 TUI requests for Opus 5.5, Sonnet 5.5, and Haiku 4.5; the latest complete TUI suite remains 11/11 on 2.1.278 |
 | `x-client-request-id` (fresh UUID per request) | this extension (`before_provider_headers`; Pi sets it only on its OpenAI/Codex paths) |
 | `x-claude-code-request-class: main` in both captured modes | this extension (`before_provider_headers`) |
 | `x-anthropic-billing-header` as `system[0]`, including `cc_prompt_id` | this extension (`before_provider_request`) |
 | billing `cc_turn_origin=sdk` / `human` for `sdk-cli` / `cli` | this extension (`before_provider_request`) |
-| billing `cc_prompt_index` / `cc_turn_index` on a verified first 2.1.284 prompt | this extension (checks Pi's active session branch; omits unproven later positions) |
+| billing `cc_prompt_index` / `cc_turn_index` on a verified first print or TUI prompt | this extension (checks Pi's active session branch; omits unproven later positions) |
 | `metadata.user_id` (device/account/session ids) | this extension (read from `~/.claude.json`) |
 | `thinking.display: "updates"` in TUI, `"omitted"` otherwise (adaptive and budget) | this extension (`before_provider_request`) |
 | captured request `max_tokens` (128K for Opus 5.5 and Sonnet 5.5; 64K/32K for the other captured ids) | this extension (`before_provider_request`; catalog ceilings remain intact) |
@@ -202,15 +209,18 @@ runtime mode instead of mixing them:
 The billing header's `cc_version` is kept consistent with the `user-agent`
 version, and the `anthropic-beta` value is captured from a real `claude` request
 rather than guessed (Anthropic returns 400 on unexpected beta flags). The default
-is the ordered 15-flag intersection of genuine Opus 5.5/Sonnet 5.5 **normal
-turns** (no `context-1m`), with `per-turn-control-2026-07-01` immediately after
-`mid-conversation-system-2026-04-07` and `thinking-binding-controls-2026-08-01`
-immediately after `effort-2025-11-24`; exact model additions/removals are
-layered afterward, and
-the natively-1M models expose their window without the long-context beta. TUI
-adds `thinking-display-updates-2026-08-18` immediately after the binding flag.
-The historical Opus 5.5 TUI request confirmed the display flag's position;
-the complete 11-model suite is historical evidence, where no model sent
+is the ordered 17-flag intersection of genuine Opus 5.5/Sonnet 5.5 **normal
+turns** (no `context-1m`) from the 2.1.288 print capture. The two flags added
+since 2.1.284 are `mid-conversation-tool-changes-2026-07-01` and
+`inline-tools-2026-09-15`, immediately after `per-turn-control-2026-07-01`.
+`thinking-binding-controls-2026-08-01` follows `effort-2025-11-24`. Exact model
+deviations are layered afterward. The natively-1M models expose their window
+without the long-context beta. The
+historical TUI captures add `thinking-display-updates-2026-08-18` immediately
+after the binding flag. The 2.1.288 Opus 5.5, Sonnet 5.5, and Haiku 4.5 TUI
+requests confirm the same placement, with 18, 18, and 12 flags respectively.
+The complete 11-model suite is historical evidence,
+where no model sent
 `fallback-credit-2026-06-01`.
 The request path also mirrors Claude's `context_management` controls: the
 `clear_thinking_20251015` edit is injected only when thinking is enabled/adaptive.
@@ -236,7 +246,7 @@ env vars below pin them when you want full control.
 | `PI_CLAUDE_NATIVE_CC_ENTRYPOINT` | _(mode-derived: `cli` in TUI, `sdk-cli` otherwise)_ | Pins the **whole** wire profile, not just billing/user-agent: entrypoint, identity, thinking display and the mode-specific beta flags all follow it. Set it only to force one profile everywhere. |
 | `PI_CLAUDE_NATIVE_USER_AGENT` | `claude-cli/<v> (external, <mode profile>)` | Full `user-agent` override. |
 | `PI_CLAUDE_NATIVE_ANTHROPIC_BETA` | _(fingerprint, else captured normal-turn set, no `context-1m`)_ | Verbatim `anthropic-beta` override (including on Haiku). Set to a value **captured** from your `claude` — never guess. Capture it with `CLAUDE_CODE_AUTO_MODE_SERVER=0`: in auto mode `claude` otherwise adds `dangerous-tool-use-2026-09-03`, and this override is not filtered. |
-| `PI_CLAUDE_NATIVE_STATE_DIR` | `<agent dir>/claude-native` | Where this extension keeps its state. `<agent dir>` is `PI_CODING_AGENT_DIR`, else `~/.pi/agent` — the same directory Pi uses for `auth.json`, `settings.json` and every other extension's state. |
+| `PI_CLAUDE_NATIVE_STATE_DIR` | `<agent dir>/claude-native` | Where this extension keeps its state. `<agent dir>` is `PI_CODING_AGENT_DIR` (including `~/...`), else `~/.pi/agent`, matching Pi's `auth.json` and `settings.json` location. Legacy files under `~/.pi/` are read or moved only for the default state directory; a custom root stays isolated. |
 | `PI_CLAUDE_NATIVE_FINGERPRINT` | `<agent dir>/claude-native/fingerprint.json` | Path to a non-interactive capture `{ version, entrypoint, userAgent, anthropicBeta, modelBeta, modelMaxTokens, modelBudgetThinking }` (written by `capture:fingerprint --apply`). Per-model maps preserve beta, request cap, and legacy thinking profiles. An older/versionless fingerprint cannot override captured fields; a newer partial fingerprint never inherits older exact-id rules. |
 | `PI_CLAUDE_NATIVE_BASE_URL` | `https://api.anthropic.com` | Route through a proxy/gateway (e.g. the capture proxy). |
 | `PI_CLAUDE_NATIVE_DEBUG` | _(off)_ | JSONL path; logs the transformed body per request. |
@@ -271,22 +281,29 @@ rest:
   `<agent dir>/claude-native/notices.json` after it was shown in a terminal),
   not on every Pi start.
 - **The captured wire profile still has its own freshness gate.** This release
-  bundles the reviewed Claude Code **2.1.284** print capture: 17/17 requested
-  runs (13 exact ids plus four moving aliases), including Opus 5.5 and the new
-  Sonnet 5.5. The client version itself is picked up automatically from the
-  installed `claude`; what an update can actually break is the wire, and
-  2.1.284 did change it: `per-turn-control-2026-07-01` joined the common base
-  (now 15 flags), `inline-tools-2026-09-15` was added to the Opus/Fable
-  flagships, and the `sonnet` alias now resolves to `claude-sonnet-5-5` (the
-  base verbatim, 15 flags, with a 128K request cap). Request caps,
-  budget-thinking shapes and the remaining per-model sets are unchanged. The
-  live Pi first-prompt print request for Sonnet 5.5 passed 34/34 wire checks
-  against its genuine 2.1.284 capture. Anthropic returned HTTP 429 for the
-  account limit, so a successful response is unverified. At 2.1.281 one Opus
-  5.5 TUI request passed 32/32 checks.
-  The complete TUI suite remains 11/11 on 2.1.278, so this does not establish a
-  full new TUI profile. Recapture both profiles after a client update that
-  changes the wire.
+  bundles the Claude Code **2.1.288** print capture: 17/17 matching main
+  requests (13 exact ids plus four moving aliases). Relative to 2.1.284,
+  `mid-conversation-tool-changes-2026-07-01` and
+  `inline-tools-2026-09-15` joined the Opus 5.5/Sonnet 5.5 common base, now 17
+  flags. The `fable` alias resolves to `claude-fable-5-1`; caps and legacy
+  budget-thinking shapes were unchanged in the captured requests. All 17
+  Claude subprocesses exited 1 because the account had exhausted its weekly
+  usage limit. The earlier 2.1.284 Sonnet 5.5 Pi print request passed 34/34
+  wire checks and received HTTP 429; the 2.1.281 Opus 5.5 TUI request passed
+  32/32 checks and returned a response. Fresh Pi 1.0.0 print requests passed
+  35/35 comparisons for Sonnet 5.5, Opus 5.5, and Haiku 4.5 at
+  thinking `high`, against the genuine 2.1.288 captures. An isolated Pi
+  loader run from the packed archive with `PI_CODING_AGENT_DIR=~/agent`, a
+  synthetic OAuth credential, and a local SSE mock returned `blackbox-ok`.
+  These checks do not establish a live Anthropic response with the exhausted
+  account. Separate 2.1.288 first-turn TUI captures for Opus 5.5, Sonnet 5.5,
+  and Haiku 4.5 matched repacked Pi 1.0.0 requests on 35/35 wire checks each.
+  Opus/Sonnet use 18 beta flags, adaptive display updates, medium effort, and
+  128K caps; Haiku uses 12 flags, 31,999 budget tokens at Pi thinking `high`,
+  and a 32K cap. All three have billing indices `(1, 1)`. The same quota
+  prevented successful live responses. The latest full TUI suite remains 11/11
+  on 2.1.278.
+  Recapture both profiles after a client update that changes the wire.
 - **Auto mode's server classifier is left off.** With
   `permissions.defaultMode: "auto"`, Claude Code 2.1.283+ adds the
   `dangerous-tool-use-2026-09-03` beta plus a `safeguards` body that describes

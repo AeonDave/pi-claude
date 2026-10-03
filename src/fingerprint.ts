@@ -14,9 +14,10 @@
  *     moved onto the convention by `migrateLegacyState()`.
  */
 
-import { copyFileSync, existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from "node:fs";
+import { constants as fsConstants, copyFileSync, existsSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 import { warnConfig } from "./warn.ts";
 
 /**
@@ -146,19 +147,35 @@ export function coerceFingerprint(data: unknown): Fingerprint | null {
  * rely on across Pi versions. Keep in sync if Pi ever moves its agent dir.
  */
 export function getAgentDir(): string {
-	return process.env.PI_CODING_AGENT_DIR?.trim() || join(homedir(), ".pi", "agent");
+	let envDir = process.env.PI_CODING_AGENT_DIR;
+	if (!envDir) return join(homedir(), ".pi", "agent");
+	if (process.platform === "win32" && envDir.startsWith("/") && !envDir.startsWith("//") && !envDir.includes("\\")) {
+		const drivePath = envDir.match(/^\/(?:mnt\/|cygdrive\/)?([a-z])(?:\/(.*))?$/i);
+		if (drivePath) envDir = `${drivePath[1].toUpperCase()}:\\${drivePath[2]?.replaceAll("/", "\\") ?? ""}`;
+	}
+	if (envDir === "~") return homedir();
+	if (envDir.startsWith("~/") || (process.platform === "win32" && envDir.startsWith("~\\"))) {
+		return join(homedir(), envDir.slice(2));
+	}
+	if (/^file:\/\//.test(envDir)) return fileURLToPath(envDir);
+	return envDir;
 }
 
 /**
  * This extension's state directory — `<agent dir>/claude-native/`, matching how
  * every other Pi extension namespaces its state (e.g. `skill-optimizer/` holds
  * `config.json` / `profile.json` / `stats.json`). Before 1.5.0 this extension
- * dropped loose `claude-native-*.json` files directly into `~/.pi/`, which is not
- * where Pi keeps anything else; those legacy paths are still READ so an existing
- * install keeps working. Override with `PI_CLAUDE_NATIVE_STATE_DIR`.
+ * dropped loose `claude-native-*.json` files directly into `~/.pi/`. They are
+ * migrated/read only when using Pi's default state root. Override with
+ * `PI_CLAUDE_NATIVE_STATE_DIR`.
  */
 export function getStateDir(): string {
 	return process.env.PI_CLAUDE_NATIVE_STATE_DIR?.trim() || join(getAgentDir(), "claude-native");
+}
+
+/** A custom state root must not absorb files from the default home profile. */
+function usesDefaultStateDir(): boolean {
+	return resolve(getStateDir()) === resolve(homedir(), ".pi", "agent", "claude-native");
 }
 
 /** Pre-1.5.0 loose-file location. */
@@ -183,10 +200,10 @@ let migrated = false;
  * path always wins, and nothing is ever overwritten. Entirely best-effort: a
  * read-only home, a permission error or a cross-device rename must never break
  * the session, and the read path falls back to the legacy location anyway.
- * Skipped when the user pinned an explicit path via env.
+ * Skipped for custom state roots and pinned fingerprint/cache paths.
  */
 export function migrateLegacyState(): void {
-	if (migrated) return;
+	if (migrated || !usesDefaultStateDir()) return;
 	migrated = true;
 	if (process.env.PI_CLAUDE_NATIVE_FINGERPRINT?.trim() || process.env.PI_CLAUDE_NATIVE_MODELS_CACHE?.trim()) return;
 	const dir = getStateDir();
@@ -196,13 +213,10 @@ export function migrateLegacyState(): void {
 		try {
 			if (!existsSync(from) || existsSync(to)) continue;
 			mkdirSync(dir, { recursive: true });
-			try {
-				renameSync(from, to);
-			} catch {
-				// Different volume, or a lock: copy then drop the original.
-				copyFileSync(from, to);
-				unlinkSync(from);
-			}
+			// An exclusive destination avoids overwriting a current file created by
+			// another Pi process after the existsSync check above.
+			copyFileSync(from, to, fsConstants.COPYFILE_EXCL);
+			unlinkSync(from);
 			warnConfig(`moved ${from} → ${to} (Pi's per-extension state convention)`);
 		} catch {
 			// Leave the legacy file alone; it is still read as a fallback.
@@ -228,7 +242,9 @@ export function readFingerprint(): Fingerprint | null {
 	const explicit = process.env.PI_CLAUDE_NATIVE_FINGERPRINT?.trim();
 	const candidates = explicit
 		? [explicit]
-		: [getFingerprintPath(), legacyStatePath("claude-native-fingerprint.json")];
+		: usesDefaultStateDir()
+			? [getFingerprintPath(), legacyStatePath("claude-native-fingerprint.json")]
+			: [getFingerprintPath()];
 	for (const path of candidates) {
 		try {
 			fingerprintCache = coerceFingerprint(readJsonFile(path));
@@ -317,10 +333,12 @@ export function getModelCachePath(): string {
 
 /**
  * Read order for the discovery cache: the current path, then the pre-1.5.0 loose
- * file. Writes always go to `getModelCachePath()`, so the legacy copy simply ages
- * out. An explicit env path is used alone.
+ * file only under Pi's default state root. An explicit env path is used alone.
  */
 export function getModelCacheReadPaths(): string[] {
 	const explicit = process.env.PI_CLAUDE_NATIVE_MODELS_CACHE?.trim();
-	return explicit ? [explicit] : [getModelCachePath(), legacyStatePath("claude-native-models.json")];
+	if (explicit) return [explicit];
+	return usesDefaultStateDir()
+		? [getModelCachePath(), legacyStatePath("claude-native-models.json")]
+		: [getModelCachePath()];
 }

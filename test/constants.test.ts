@@ -60,6 +60,8 @@ test("default beta set matches the bundled Opus/Sonnet 5.5 common capture", () =
 		"prompt-caching-scope-2026-01-05",
 		"mid-conversation-system-2026-04-07",
 		"per-turn-control-2026-07-01",
+		"mid-conversation-tool-changes-2026-07-01",
+		"inline-tools-2026-09-15",
 		"advisor-tool-2026-03-01",
 		"advanced-tool-use-2025-11-20",
 		"effort-2025-11-24",
@@ -76,11 +78,13 @@ test("default beta set matches the bundled Opus/Sonnet 5.5 common capture", () =
 				![
 					"mid-conversation-system-2026-04-07",
 					"per-turn-control-2026-07-01",
+					"mid-conversation-tool-changes-2026-07-01",
+					"inline-tools-2026-09-15",
 					"effort-2025-11-24",
 					"afk-mode-2026-01-31",
 				].includes(flag),
 		),
-		"the bundled Haiku capture omits mid-conversation-system, per-turn-control, effort, and afk-mode",
+		"the bundled Haiku capture omits the six unsupported conversation/tool/effort flags",
 	);
 });
 
@@ -141,34 +145,23 @@ test("bundled per-model deviations match the captured clean models exactly", () 
 	const advisor = "advisor-tool-2026-03-01";
 	const base = DEFAULT_ANTHROPIC_BETA.split(",");
 
-	// Sonnet 5.5 IS the current common base: no deviation at all.
-	assert.deepEqual(getAnthropicBetaForModel("claude-sonnet-5-5").split(","), base);
-
-	// Opus 5.5 and Fable 5.1 share the two-addition chain. The anchors lock the
-	// captured order: mid-conversation-system → per-turn-control → tool-changes →
-	// inline-tools → advisor.
-	for (const id of ["claude-opus-5-5", "claude-fable-5-1"]) {
+	// Opus 5.5, Sonnet 5.5 and Fable 5.1 share the 17-flag captured base.
+	for (const id of ["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1"]) {
 		const flags = getAnthropicBetaForModel(id).split(",");
 		assert.equal(flags.length, 17, id);
 		assert.deepEqual(flags.slice(6, 11), [midConvo, perTurn, toolChanges, inlineTools, advisor], id);
-		assert.deepEqual(flags.filter((flag) => flag !== toolChanges && flag !== inlineTools), base, id);
+		assert.deepEqual(flags, base, id);
 	}
 
-	// Opus 5 / Fable 5 / Opus 4.8 carry the same additions but drop
-	// per-turn-control from the base: mid-conversation-system → tool-changes →
-	// inline-tools → advisor.
+	// Opus 5 / Fable 5 / Opus 4.8 drop only per-turn-control.
 	for (const id of ["claude-opus-5", "claude-fable-5", "claude-opus-4-8"]) {
 		const flags = getAnthropicBetaForModel(id).split(",");
 		assert.equal(flags.length, 16, id);
 		assert.deepEqual(flags.slice(6, 10), [midConvo, toolChanges, inlineTools, advisor], id);
-		assert.deepEqual(
-			flags.filter((flag) => flag !== toolChanges && flag !== inlineTools),
-			base.filter((flag) => flag !== perTurn),
-			id,
-		);
+		assert.deepEqual(flags, base.filter((flag) => flag !== perTurn), id);
 	}
 
-	// Every remaining captured model keeps the already-known shape.
+	// Every remaining captured model keeps its already-known flag count.
 	assert.equal(getAnthropicBetaForModel("claude-sonnet-5").split(",").length, 14);
 	assert.equal(getAnthropicBetaForModel("claude-haiku-4-5").split(",").length, 11);
 	assert.equal(getAnthropicBetaForModel("claude-sonnet-4-5").split(",").length, 11);
@@ -176,17 +169,14 @@ test("bundled per-model deviations match the captured clean models exactly", () 
 	for (const id of ["claude-opus-4-7", "claude-opus-4-6", "claude-sonnet-4-6"]) {
 		assert.equal(getAnthropicBetaForModel(id).split(",").length, 13, id);
 	}
-	assert.deepEqual(
-		Object.entries(MODEL_BETA_DELTAS)
-			.filter(([, delta]) => (delta.add?.length ?? 0) > 0)
-			.map(([id]) => id)
-			.sort(),
-		["claude-fable-5", "claude-fable-5-1", "claude-opus-4-8", "claude-opus-5", "claude-opus-5-5"],
-		"only exact captured ids gain flags",
+	assert.equal(
+		Object.values(MODEL_BETA_DELTAS).some((delta) => (delta.add?.length ?? 0) > 0),
+		false,
+		"the 2.1.288 common base includes all captured additions",
 	);
 });
 
-test("TUI beta headers derive the display overlay for all thirteen bundled clean models", () => {
+test("all thirteen 2.1.288 print beta headers match captured flag order; TUI overlays the prior display signal", () => {
 	withEnvCleared(["PI_CLAUDE_NATIVE_ANTHROPIC_BETA", "PI_CLAUDE_NATIVE_CC_ENTRYPOINT"], () => {
 		const cc = "claude-code-20250219";
 		const oauth = "oauth-2025-04-20";
@@ -218,7 +208,7 @@ test("TUI beta headers derive the display overlay for all thirteen bundled clean
 			],
 			"claude-sonnet-5-5": [
 				cc, oauth, interleaved, tokenCount, context, cacheScope, midConversation, perTurn,
-				advisor, advanced, effort, thinkingBinding, displayUpdates, afk, cacheTtl, cacheDiagnosis,
+				toolChanges, inlineTools, advisor, advanced, effort, thinkingBinding, displayUpdates, afk, cacheTtl, cacheDiagnosis,
 			],
 			"claude-sonnet-5": [
 				cc, oauth, interleaved, tokenCount, context, cacheScope, midConversation, advisor,
@@ -265,6 +255,7 @@ test("TUI beta headers derive the display overlay for all thirteen bundled clean
 
 		assert.equal(Object.keys(expected).length, 13);
 		for (const [id, flags] of Object.entries(expected)) {
+			assert.deepEqual(getAnthropicBetaForModel(id, "print").split(","), flags.filter((flag) => flag !== displayUpdates), `${id}: print capture`);
 			assert.deepEqual(getAnthropicBetaForModel(id, "tui").split(","), flags, id);
 			assert.equal(flags.filter((flag) => flag === displayUpdates).length, 1, `${id}: one mode-wide signal`);
 		}
@@ -299,10 +290,12 @@ test("an unknown discovered budget model gets the non-effort base while adaptive
 		for (const flag of [
 			"mid-conversation-system-2026-04-07",
 			"per-turn-control-2026-07-01",
+			"mid-conversation-tool-changes-2026-07-01",
+			"inline-tools-2026-09-15",
 			"effort-2025-11-24",
 			"afk-mode-2026-01-31",
 		]) {
-			assert.equal(budget.includes(flag), false, `${flag} is adaptive/effort-only`);
+			assert.equal(budget.includes(flag), false, `${flag} is unsupported by the captured budget model`);
 		}
 
 		const tui = getAnthropicBetaForModel(id, "tui", false).split(",");
@@ -353,7 +346,7 @@ test("bundled budget-thinking profiles are limited to the three captured exact i
 	);
 });
 
-test("an explicit beta override stays verbatim even for a model with an addition", () => {
+test("an explicit beta override stays verbatim even for a model with all base flags", () => {
 	const previous = process.env.PI_CLAUDE_NATIVE_ANTHROPIC_BETA;
 	process.env.PI_CLAUDE_NATIVE_ANTHROPIC_BETA = "only-this-flag";
 	try {
