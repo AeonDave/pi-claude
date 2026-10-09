@@ -650,7 +650,16 @@ test("classifier resolves auth.json through PI_CODING_AGENT_DIR before any live 
 		const missingDump = join(dir, "missing-prompt-dump.json");
 		const result = spawnSync(process.execPath, ["--import", "tsx", BISECT, "auto", "--dump", missingDump], {
 			encoding: "utf8",
-			env: { ...process.env, PI_CODING_AGENT_DIR: dir },
+			env: {
+				...process.env,
+				HOME: dir,
+				USERPROFILE: dir,
+				PI_CODING_AGENT_DIR: dir,
+				PI_CLAUDE_NATIVE_STATE_DIR: join(dir, "claude-native"),
+				PI_CLAUDE_NATIVE_FINGERPRINT: join(dir, "absent-fingerprint.json"),
+				PI_CLAUDE_NATIVE_MODELS_CACHE: join(dir, "absent-models.json"),
+				PI_CLAUDE_NATIVE_LIVE_DISCOVERY: "0",
+			},
 		});
 		assert.equal(result.status, 1, result.stdout + result.stderr);
 		assert.ok(result.stderr.includes(join(dir, "auth.json")), result.stderr);

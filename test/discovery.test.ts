@@ -150,6 +150,68 @@ test("live capabilities derive the effort ceiling, adaptive-only flags and windo
 	assert.ok(!("cost" in fable.catalog), "the endpoint carries no pricing — Pi's catalog must win it");
 });
 
+test("disabled thinking is independent from manual budget support", () => {
+	for (const disabled of [true, false]) {
+		const [haiku] = normalizeModelsResponse({ data: [liveModel({
+			id: "claude-haiku-5-5",
+			capabilities: {
+				thinking: { supported: true, types: {
+					enabled: { supported: false }, adaptive: { supported: true }, disabled: { supported: disabled },
+				} },
+				effort: { supported: true, xhigh: { supported: true }, max: { supported: true } },
+			},
+		})] });
+		assert.equal(haiku.catalog.supportsDisabledThinking, disabled);
+		const model = buildNativeModels({ extraIds: [haiku.id], catalog: new Map([[haiku.id, haiku.catalog]]) })
+			.find((m) => m.id === haiku.id);
+		assert.ok(model);
+		assert.equal(model.thinkingLevelMap?.off, disabled ? undefined : null);
+		assert.equal(model.thinkingLevelMap?.xhigh, "xhigh");
+		assert.equal(model.thinkingLevelMap?.max, "max");
+		assert.deepEqual(model.compat, { forceAdaptiveThinking: true, supportsTemperature: false });
+	}
+});
+
+test("disabled capability is read without an effort ladder; missing or malformed values retain the old fallback", () => {
+	for (const disabled of [true, false, undefined, "true"]) {
+		const [model] = normalizeModelsResponse({ data: [liveModel({
+			capabilities: {
+				thinking: { supported: true, types: {
+					enabled: { supported: false }, adaptive: { supported: true }, disabled: { supported: disabled },
+				} },
+				effort: { supported: false },
+			},
+		})] });
+		assert.equal(model.catalog.supportsDisabledThinking, typeof disabled === "boolean" ? disabled : undefined);
+	}
+	const [legacy] = normalizeModelsResponse({ data: [liveModel()] });
+	assert.equal(legacy.catalog.supportsDisabledThinking, undefined);
+	assert.equal(legacy.catalog.thinkingLevelMap?.off, null);
+});
+
+test("partial thinking types do not turn omitted support into false", () => {
+	for (const types of [{}, { adaptive: { supported: "true" } }, { disabled: { supported: true } }]) {
+		const [model] = normalizeModelsResponse({ data: [liveModel({
+			capabilities: { thinking: { supported: true, types } },
+		})] });
+		assert.equal(model.catalog.forceAdaptiveThinking, undefined);
+		assert.equal(model.catalog.supportsTemperature, undefined);
+	}
+	const [adaptive] = normalizeModelsResponse({ data: [liveModel({
+		capabilities: {
+			thinking: { supported: true, types: { adaptive: { supported: true } } },
+			effort: { supported: true },
+		},
+	})] });
+	assert.equal(adaptive.catalog.forceAdaptiveThinking, true);
+	assert.equal(adaptive.catalog.supportsTemperature, undefined, "no explicit manual-budget veto");
+	assert.equal(adaptive.catalog.thinkingLevelMap?.off, undefined);
+	const [budget] = normalizeModelsResponse({ data: [liveModel({
+		capabilities: { thinking: { supported: true, types: { adaptive: { supported: false } } } },
+	})] });
+	assert.equal(budget.catalog.forceAdaptiveThinking, false, "preserve an explicit false");
+});
+
 test("a model that tops out at max maps xhigh down; one with no effort ladder gets no map", () => {
 	const [capped] = normalizeModelsResponse({
 		data: [

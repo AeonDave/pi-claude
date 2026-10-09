@@ -14,7 +14,11 @@ import {
 	buildClaudeCaptureEnv,
 	CAPTURE_CLAUDE_ENV,
 	captureWireFlags,
+	classifyClaudeCaptureFailure,
 	computeBetaDeviations,
+	computeModelWireDrift,
+	diffBetaFlags,
+	describeClaudeCaptureFailure,
 	DEFAULT_CAPTURE_MODELS,
 	DEFAULT_TUI_CAPTURE_MODELS,
 	isCaptureProxyHealthResponse,
@@ -54,7 +58,7 @@ function candidate(
 	};
 }
 
-test("default capture covers moving aliases before every currently exposed exact model id", () => {
+test("default capture covers moving aliases before every bundled exact model id", () => {
 	assert.deepEqual(DEFAULT_CAPTURE_MODELS, [
 		"opus",
 		"sonnet",
@@ -73,8 +77,11 @@ test("default capture covers moving aliases before every currently exposed exact
 		"claude-opus-4-5",
 		"claude-sonnet-4-5",
 		"claude-haiku-4-5",
+		"claude-haiku-5-5",
 	]);
-	assert.equal(DEFAULT_CAPTURE_MODELS.length, 17);
+	assert.equal(DEFAULT_CAPTURE_MODELS.length, 18);
+	assert.equal(DEFAULT_TUI_CAPTURE_MODELS.length, 14);
+	assert.equal(DEFAULT_TUI_CAPTURE_MODELS.at(-1), "claude-haiku-5-5");
 });
 
 test("reuse rejects a manifest from an older capture plan", () => {
@@ -83,6 +90,11 @@ test("reuse rejects a manifest from an older capture plan", () => {
 	assert.throws(
 		() => assertCapturePlanMatches(current.filter((model) => model !== "claude-sonnet-5-5"), DEFAULT_CAPTURE_MODELS),
 		/manifest model list differs from --models/,
+	);
+	assert.throws(
+		() => assertCapturePlanMatches(current.filter((model) => model !== "claude-haiku-5-5"), DEFAULT_CAPTURE_MODELS),
+		/manifest model list differs from --models/,
+		"a 17-run manifest from the previous default capture plan must not be reused",
 	);
 	assert.throws(
 		() => assertCapturePlanMatches([...current].reverse(), DEFAULT_CAPTURE_MODELS),
@@ -336,6 +348,10 @@ test("TUI capture validation rejects a missing id, profile mismatch, duplicate b
 	}));
 
 	assert.throws(() => selectTuiCaptureCandidates(base.slice(1)), /missing TUI capture/i);
+	assert.throws(
+		() => selectTuiCaptureCandidates(base.filter((capture) => capture.wireModel !== "claude-haiku-5-5")),
+		/missing TUI capture\(s\): claude-haiku-5-5/,
+	);
 	assert.throws(() => selectTuiCaptureCandidates([{ ...base[0], entrypoint: "sdk-cli" }, ...base.slice(1)]), /expected cli/i);
 	assert.throws(
 		() => selectTuiCaptureCandidates([...base, { ...base[0], entrypoint: "sdk-cli", userAgent: userAgentFor("sdk-cli") }]),
@@ -431,6 +447,69 @@ test("per-model beta strings and deviations preserve captured order verbatim", (
 	assert.deepEqual(computeBetaDeviations(candidates, ["base-a", "base-b"]), [
 		{ wireModel: "claude-fable-5-1", adds: ["per-turn", "new-tool"], drops: [], reordered: false },
 	]);
+});
+
+test("beta diff reports order-only drift and shared-order drift alongside added flags", () => {
+	assert.deepEqual(diffBetaFlags(["base-a", "base-b"], ["base-b", "base-a"]), {
+		adds: [], drops: [], reordered: true,
+	});
+	assert.deepEqual(diffBetaFlags(["base-a", "base-b"], ["base-b", "base-a", "new"]), {
+		adds: ["new"], drops: [], reordered: true,
+	});
+	assert.deepEqual(diffBetaFlags(["base-a", "base-b"], ["base-a", "new", "base-b"]), {
+		adds: ["new"], drops: [], reordered: false,
+	});
+	assert.equal(computeBetaDeviations([candidate("claude-opus-5", ["base-b", "base-a", "new"], ["opus"])], ["base-a", "base-b"])[0].reordered, true);
+});
+
+test("model drift compares captured beta and caps with existing provider values independently of the base", () => {
+	const models = [
+		candidate("claude-opus-5", ["base-a", "base-b"], ["opus"]),
+		candidate("claude-fable-5", ["base-a", "base-b"], ["claude-fable-5"], { maxTokens: 128_000 }),
+	];
+	assert.deepEqual(computeBetaDeviations(models, ["base-a", "base-b"]), [], "both captured models agree with the new common base");
+	const drift = computeModelWireDrift(models, (model) => ({
+		beta: model.wireModel === "claude-fable-5" ? "base-a,old-model-flag,base-b" : "base-a,base-b",
+		maxTokens: 64_000,
+	}));
+	assert.equal(drift.length, 1);
+	assert.equal(drift[0].wireModel, "claude-fable-5");
+	assert.deepEqual(drift[0].drops, ["old-model-flag"]);
+	assert.equal(drift[0].current.maxTokens, 64_000);
+	assert.equal(drift[0].captured.maxTokens, 128_000);
+});
+
+test("model drift detects exact ordering, newly captured caps and budget profile changes", () => {
+	const reordered = candidate("claude-opus-5", ["base-b", "base-a"], ["opus"]);
+	const unknown = candidate("claude-future-5", ["base-a", "base-b"], ["claude-future-5"]);
+	const budget = candidate("claude-opus-4-5", ["base-a", "base-b"], ["claude-opus-4-5"], {
+		thinkingType: "enabled", budgetTokens: 31_999, effort: "high",
+	});
+	const drift = computeModelWireDrift([reordered, unknown, budget], (model) => ({
+		beta: "base-a,base-b",
+		maxTokens: model === unknown ? undefined : 64_000,
+		budgetThinking: model === budget ? { budgetTokens: 8192 } : undefined,
+	}));
+	assert.equal(drift.length, 3);
+	assert.equal(drift[0].reordered, true);
+	assert.equal(drift[1].current.maxTokens, undefined, "unknown caps remain unknown");
+	assert.equal(drift[1].captured.maxTokens, 64_000);
+	assert.deepEqual(drift[2].captured.budgetThinking, { budgetTokens: 31_999, effort: "high" });
+	assert.deepEqual(computeModelWireDrift([budget], () => ({ beta: "base-a,base-b", maxTokens: 64_000, budgetThinking: { effort: "high", budgetTokens: 31_999 } })), [], "object property order is not wire profile drift");
+});
+
+test("capture auth diagnostics retain only an allowlisted code and actionable static text", () => {
+	const secret = "sk-ant-secret-must-not-be-reported";
+	const failure = classifyClaudeCaptureFailure(`${secret}\nFailed to authenticate: OAuth session expired and could not be refreshed`);
+	assert.equal(failure, "auth_expired");
+	assert.equal(classifyClaudeCaptureFailure(`${secret}: unrelated failure`), undefined);
+	assert.equal(describeClaudeCaptureFailure(secret), undefined);
+	assert.throws(() => assertRequestedCapturesComplete([{ model: "opus", captures: 0, mainCaptures: 0, failure }]), (error: unknown) => {
+		assert.ok(error instanceof Error);
+		assert.match(error.message, /auth_expired.*OAuth session expired.*claude auth login/);
+		assert.ok(!error.message.includes(secret));
+		return true;
+	});
 });
 
 test("per-model max_tokens values are preserved and must be positive integers", () => {

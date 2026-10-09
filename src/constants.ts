@@ -81,8 +81,8 @@ export const TOKEN_USER_AGENT = "axios/1.13.6";
 // so this constant must never lag the newest generation the provider exposes.
 // The one version literal that advances with a reviewed capture. Tests and
 // runtime freshness checks consume this export instead of copying the value.
-// Current evidence: `claude` 2.1.288, captured 2026-10-03.
-export const BUNDLED_CC_VERSION = "2.1.288";
+// Current evidence: `claude` 2.1.295, captured 2026-10-09.
+export const BUNDLED_CC_VERSION = "2.1.295";
 export const DEFAULT_CC_ENTRYPOINT = "sdk-cli";
 export const DEFAULT_PRINT_THINKING_DISPLAY = "omitted";
 
@@ -282,6 +282,7 @@ export function getBaseUrl(): string {
  *
  * The set still varies by model:
  *   Opus 5.5 / Sonnet 5.5 / Fable 5.1 — this base, 17 flags;
+ *   Haiku 5.5 — the same 17-flag set with its captured distinct order;
  *   Opus 5 / Opus 4.8 / Fable 5 — base minus `per-turn-control` = 16;
  *   Sonnet 5 — base minus `per-turn-control`, tool changes and inline tools = 14;
  *   Haiku 4.5 — base minus six unsupported flags = 11;
@@ -340,7 +341,7 @@ const BUDGET_CONSERVATIVE_REMOVALS = new Set([
 	"afk-mode-2026-01-31",
 ]);
 
-/** Re-captured at 2.1.288: Haiku keeps `advisor-tool` but drops the six
+/** Re-captured at 2.1.295: Haiku 4.5 keeps `advisor-tool` but drops the six
  * flags above. The same subset is conservative for uncaptured budget models. */
 export const DEFAULT_NON_EFFORT_ANTHROPIC_BETA = DEFAULT_ANTHROPIC_BETA.split(",")
 	.filter((flag) => !BUDGET_CONSERVATIVE_REMOVALS.has(flag))
@@ -348,9 +349,10 @@ export const DEFAULT_NON_EFFORT_ANTHROPIC_BETA = DEFAULT_ANTHROPIC_BETA.split(",
 
 /**
  * How each model's `anthropic-beta` differs from the common base set — captured
- * across every clean id in the bundled capture (13 models). The exact sets are:
+ * across every clean id in the bundled capture (14 models). The exact sets are:
  *
  *   opus 5.5 / sonnet 5.5 / fable 5.1     — the common base 17 (no delta)
+ *   haiku 5.5                             — the common set 17, distinct order
  *   opus 5 / opus 4.8 / fable 5           — 16 (drops `per-turn-control`)
  *   sonnet 5                              — 14 (also drops tool changes and inline tools)
  *   opus 4.7 / opus 4.6 / sonnet 4.6      — 13 (drops all four conversation/tool flags)
@@ -375,6 +377,7 @@ export interface ModelBetaDelta {
 export const MODEL_BETA_DELTAS: Record<string, ModelBetaDelta> = {
 	"claude-opus-5-5": {},
 	"claude-sonnet-5-5": {},
+	"claude-haiku-5-5": {},
 	"claude-opus-5": { remove: [PER_TURN_CONTROL] },
 	"claude-sonnet-5": { remove: [PER_TURN_CONTROL, MID_CONVO_TOOL_CHANGES, INLINE_TOOLS] },
 	"claude-fable-5-1": {},
@@ -389,22 +392,41 @@ export const MODEL_BETA_DELTAS: Record<string, ModelBetaDelta> = {
 };
 
 /**
- * The complete 2.1.278 TUI capture adds `thinking-display-updates` after
- * `thinking-binding-controls` on every captured model; a 2.1.281 Opus 5.5
- * request and 2.1.288 Opus 5.5, Sonnet 5.5, and Haiku 4.5 requests confirm it.
+ * The complete 14-id Claude Code 2.1.295 TUI capture adds
+ * `thinking-display-updates` after `thinking-binding-controls`.
  * It is a mode-wide signal applied below, including to newly-discovered
- * families. The full 2.1.288 TUI model suite has not been captured.
+ * families.
  */
 
 /**
- * The genuine flag ORDER for models that do not order like the base — Haiku sends
- * `claude-code-20250219` sixth, not first, and filtering the base can only ever
+ * The genuine flag ORDER for models that do not order like the base — Haiku 4.5
+ * sends `claude-code-20250219` sixth and Haiku 5.5 seventh, while the base places
+ * it first. Filtering the base can only ever
  * reproduce the base's order. Applied only when it holds exactly the same flags
  * the delta above derives, so it self-invalidates: if the base set is ever
  * re-captured differently, the sets stop matching and we emit the derived value
  * (right flags, base order) instead of a stale captured string.
  */
 const GENUINE_FLAG_ORDER: Record<string, readonly string[]> = {
+	"claude-haiku-5-5": [
+		"oauth-2025-04-20",
+		"interleaved-thinking-2025-05-14",
+		"thinking-token-count-2026-05-13",
+		"context-management-2025-06-27",
+		"prompt-caching-scope-2026-01-05",
+		"mid-conversation-system-2026-04-07",
+		"claude-code-20250219",
+		"per-turn-control-2026-07-01",
+		"mid-conversation-tool-changes-2026-07-01",
+		"inline-tools-2026-09-15",
+		"advisor-tool-2026-03-01",
+		"advanced-tool-use-2025-11-20",
+		"effort-2025-11-24",
+		"thinking-binding-controls-2026-08-01",
+		"afk-mode-2026-01-31",
+		"extended-cache-ttl-2025-04-11",
+		"cache-diagnosis-2026-04-07",
+	],
 	"claude-haiku-4-5": [
 		"oauth-2025-04-20",
 		"interleaved-thinking-2025-05-14",
@@ -525,9 +547,10 @@ export function getAnthropicBetaForModel(
 		if (delta?.remove) {
 			const drop = new Set(delta.remove);
 			flags = flags.filter((flag) => !drop.has(flag));
-		} else if (!delta && cleanModelId.startsWith("claude-haiku-")) {
-			// Family fallback for a Haiku id we have not captured: every Haiku observed
-			// so far omits the six conversation/tool/effort flags above.
+		} else if (!delta && forceAdaptiveThinking !== true && cleanModelId.startsWith("claude-haiku-")) {
+			// Legacy Haiku fallback only without a positive exact adaptive signal.
+			// A new adaptive Haiku follows the common fallback like any discovered id;
+			// its exact wire set still requires a capture.
 			flags = flags.filter((flag) => !BUDGET_CONSERVATIVE_REMOVALS.has(flag));
 		}
 		for (const addition of delta?.add ?? []) {
@@ -539,7 +562,7 @@ export function getAnthropicBetaForModel(
 	}
 
 	// `modelBeta` is captured by `claude -p`. Interactive mode adds one signal on
-	// every model in the previous full TUI capture and separate 5.5 captures.
+	// every model in the complete 14-id 2.1.295 TUI capture.
 	// Treat the repeated signal as part of the mode
 	// profile so a newly-discovered family remains immediately usable.
 	if (getClaudeCodeEntrypoint(mode) === "cli") {
@@ -549,10 +572,10 @@ export function getAnthropicBetaForModel(
 }
 
 /**
- * Genuine request caps from the bundled capture across all thirteen clean
+ * Genuine request caps from the bundled capture across all fourteen clean
  * model ids. These are intentionally distinct from `/v1/models.max_tokens` and
  * Pi's catalog `maxTokens`: those advertise the API ceiling, while the CLI
- * puts 128K on Opus 5.5 and Sonnet 5.5 and 64K/32K on the other captured ids. Keep the catalog
+ * puts 128K on Opus, Sonnet and Haiku 5.5 and 64K/32K on the other captured ids. Keep the catalog
  * values for model metadata and clamp only the serialized request in
  * `before_provider_request`.
  * Unknown models are left untouched until a real capture records their value.
@@ -560,6 +583,7 @@ export function getAnthropicBetaForModel(
 export const DEFAULT_MODEL_MAX_TOKENS: Readonly<Record<string, number>> = {
 	"claude-opus-5-5": 128_000,
 	"claude-sonnet-5-5": 128_000,
+	"claude-haiku-5-5": 128_000,
 	"claude-opus-5": 64_000,
 	"claude-sonnet-5": 64_000,
 	"claude-fable-5-1": 64_000,

@@ -1,7 +1,9 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import { getSupportedThinkingLevels, type Model } from "@earendil-works/pi-ai";
-import { ALLOWLIST_RE, buildNativeModels, NATIVE_MODELS, parseModelId } from "../src/models.ts";
+import {
+	ALLOWLIST_RE, buildNativeModels, type CatalogEntry, type ModelOverride, NATIVE_MODELS, type NativeModel, parseModelId,
+} from "../src/models.ts";
 
 const OPUS_COST = { input: 5, output: 25, cacheRead: 0.5, cacheWrite: 6.25 };
 const SONNET_COST = { input: 3, output: 15, cacheRead: 0.3, cacheWrite: 3.75 };
@@ -431,4 +433,62 @@ test("the curated seed always survives discovery and allowlist defaults", () => 
 		assert.ok(models.some((m) => m.id === id), `seed id ${id} must remain`);
 	}
 	assert.ok(!models.some((m) => m.id === "garbage-id"));
+});
+
+test("Haiku 5.5 keeps exact catalog capabilities and request-wide pricing tiers", () => {
+	const cost: NativeModel["cost"] = {
+		input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125,
+		tiers: [{ inputTokensAbove: 100000, input: 0.5, output: 2.5, cacheRead: 0.05, cacheWrite: 0.625 }],
+	};
+	const entry: CatalogEntry = {
+		cost, contextWindow: 1000000, maxTokens: 128000, reasoning: true, input: ["text", "image"],
+		forceAdaptiveThinking: true, supportsTemperature: false, supportsDisabledThinking: true,
+		thinkingLevelMap: { off: null, minimal: null, xhigh: "xhigh", max: "max" },
+	};
+	const models = buildNativeModels({ extraIds: ["claude-haiku-5-5"], catalog: new Map([["claude-haiku-5-5", entry]]) });
+	const haiku = models.find((m) => m.id === "claude-haiku-5-5");
+	assert.ok(haiku);
+	assert.equal(haiku.contextWindow, 1000000);
+	assert.equal(haiku.maxTokens, 128000);
+	assert.equal(haiku.cost, cost, "keep the full cost object, including tiers");
+	assert.deepEqual(haiku.thinkingLevelMap, { minimal: null, xhigh: "xhigh", max: "max" });
+	const levels = getSupportedThinkingLevels(haiku as Model<"anthropic-messages">);
+	assert.ok(levels.includes("off"), "Pi must offer the supported disabled mode");
+	assert.ok(levels.includes("xhigh") && levels.includes("max"));
+	assert.equal(entry.thinkingLevelMap?.off, null, "never mutate the source catalog");
+	assert.deepEqual(haiku.compat, { forceAdaptiveThinking: true, supportsTemperature: false });
+	assert.equal(NATIVE_MODELS.some((m) => m.id === haiku.id), false, "a current generation stays discovered, not seeded");
+});
+
+test("explicit disabled capability corrects stale maps while user overrides stay authoritative", () => {
+	for (const supportsDisabledThinking of [true, false, undefined]) {
+		const id = "claude-mythos-5";
+		const models = buildNativeModels({ extraIds: [id], catalog: new Map([[id, {
+			forceAdaptiveThinking: true, supportsDisabledThinking,
+			thinkingLevelMap: supportsDisabledThinking === false ? { xhigh: "xhigh" } : { off: null },
+		}]]) });
+		const model = models.find((m) => m.id === id);
+		assert.equal(model?.thinkingLevelMap?.off, supportsDisabledThinking === true ? undefined : null);
+		if (supportsDisabledThinking === true) assert.equal(model?.thinkingLevelMap, undefined, "omit an empty map");
+	}
+	const id = "claude-haiku-5-5";
+	const model = buildNativeModels({ extraIds: [id], catalog: new Map([[id, { supportsDisabledThinking: true }]]),
+		overrides: [{ id, thinkingLevelMap: { off: null } }],
+	}).find((m) => m.id === id);
+	assert.equal(model?.thinkingLevelMap?.off, null);
+});
+
+test("only the obsolete Sonnet 5.5 price tuple is corrected; newer prices, tiers and overrides survive", () => {
+	const id = "claude-sonnet-5-5";
+	const stale = { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 };
+	const build = (cost: NativeModel["cost"], modelId = id, overrides?: ModelOverride[]) =>
+		buildNativeModels({ extraIds: [modelId], catalog: new Map([[modelId, { cost }]]), overrides })
+			.find((m) => m.id === modelId);
+	assert.deepEqual(build(stale)?.cost, { ...stale, cacheRead: 0.1 });
+	assert.equal(stale.cacheRead, 0.2, "the source price is unchanged");
+	assert.equal(build(stale, "claude-sonnet-5")?.cost, stale, "the correction is exact-id only");
+	for (const cost of [{ ...stale, cacheRead: 0.15 }, { ...stale, input: 1 }, { ...stale, tiers: [] }]) {
+		assert.equal(build(cost)?.cost, cost, "a different catalog price remains authoritative");
+	}
+	assert.equal(build(stale, id, [{ id, cost: stale }])?.cost, stale, "an explicit user price still wins");
 });

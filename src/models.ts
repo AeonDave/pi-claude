@@ -43,7 +43,7 @@ export interface NativeModel {
 	name: string;
 	reasoning: boolean;
 	input: ("text" | "image")[];
-	cost: { input: number; output: number; cacheRead: number; cacheWrite: number };
+	cost: Model<Api>["cost"];
 	contextWindow: number;
 	maxTokens: number;
 	compat?: Model<Api>["compat"];
@@ -75,6 +75,8 @@ export interface CatalogEntry {
 	 * ceiling must NOT be inherited, or Pi would offer a level the model rejects.
 	 */
 	supportsEffort?: boolean;
+	/** Exact `/v1/models` signal: disabling thinking is independent from manual budgets. */
+	supportsDisabledThinking?: boolean;
 	/** `false` for adaptive-ONLY models, which reject `temperature`. */
 	supportsTemperature?: boolean;
 	/**
@@ -277,6 +279,13 @@ function displayName(family: string, versionLabel: string): string {
 	return `Claude ${fam} ${versionLabel}`;
 }
 
+/** Correct Pi 1.1's pre-2026-10-07 Sonnet 5.5 price; any changed tuple wins as usual. */
+function correctStaleSonnet55Cost(id: string, cost: NativeModel["cost"]): NativeModel["cost"] {
+	if (id !== "claude-sonnet-5-5" || cost.input !== 2 || cost.output !== 10 ||
+		cost.cacheRead !== 0.2 || cost.cacheWrite !== 2.5 || cost.tiers !== undefined) return cost;
+	return { ...cost, cacheRead: 0.1 };
+}
+
 /**
  * Expand a single id into its native model entry. Known families use their
  * curated `FAMILY_DEFAULTS` (+ any `ID_OVERRIDES`), so the seed is byte-stable;
@@ -292,7 +301,7 @@ function buildFamilyModels(id: string, fromCatalog?: CatalogEntry, isSeed = fals
 	const known = isKnownFamily(family) ? FAMILY_DEFAULTS[family] : undefined;
 	const overlay = ID_OVERRIDES[id];
 
-	const cost = fromCatalog?.cost ?? known?.cost ?? FALLBACK_COST;
+	const cost = correctStaleSonnet55Cost(id, fromCatalog?.cost ?? known?.cost ?? FALLBACK_COST);
 	const maxTokens = fromCatalog?.maxTokens ?? known?.maxTokens ?? 64000;
 	const reasoning = fromCatalog?.reasoning ?? true;
 	const input = fromCatalog?.input ?? ["text", "image"];
@@ -335,7 +344,15 @@ function buildFamilyModels(id: string, fromCatalog?: CatalogEntry, isSeed = fals
 	// (effort: low/medium/high, NO xhigh, NO max) would keep the opus family's
 	// `xhigh → max` and Pi would offer a level the model rejects.
 	const familyLevels = isSeed && fromCatalog?.supportsEffort === undefined ? known?.thinkingLevelMap : undefined;
-	const thinkingLevelMap = mergeThinkingLevels(familyLevels, fromCatalog?.thinkingLevelMap, overlay?.thinkingLevelMap);
+	let thinkingLevelMap = mergeThinkingLevels(familyLevels, fromCatalog?.thinkingLevelMap, overlay?.thinkingLevelMap);
+	// A positive exact disabled signal supersedes older adaptive-only inference,
+	// including stale `off: null` in Pi's catalog. User overrides still apply later.
+	if (fromCatalog?.supportsDisabledThinking === false) {
+		thinkingLevelMap = { ...thinkingLevelMap, off: null };
+	} else if (fromCatalog?.supportsDisabledThinking === true && thinkingLevelMap) {
+		delete thinkingLevelMap.off;
+		if (Object.keys(thinkingLevelMap).length === 0) thinkingLevelMap = undefined;
+	}
 
 	const make = (contextWindow: number): NativeModel => ({
 		id,

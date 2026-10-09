@@ -1,11 +1,61 @@
 import assert from "node:assert/strict";
 import { randomUUID } from "node:crypto";
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { dirname, join } from "node:path";
-import { test } from "node:test";
+import { after, test } from "node:test";
 import { pathToFileURL } from "node:url";
-import { coerceFingerprint, SERVER_CLASSIFIER_BETA } from "../src/fingerprint.ts";
+import { coerceFingerprint, getLegacyFingerprintRetirementPath, SERVER_CLASSIFIER_BETA } from "../src/fingerprint.ts";
+
+// Most cases replace only the fingerprint; version resolution can still read
+// Claude's state. Keep the suite baseline and every fixture in a temporary home.
+const testHome = mkdtempSync(join(tmpdir(), "pi-claude-fingerprint-test-"));
+const isolatedEnvKeys = [
+	"HOME", "USERPROFILE", "PI_CODING_AGENT_DIR", "PI_CLAUDE_NATIVE_STATE_DIR",
+	"PI_CLAUDE_NATIVE_FINGERPRINT", "PI_CLAUDE_NATIVE_MODELS_CACHE", "PI_CLAUDE_NATIVE_LIVE_DISCOVERY",
+] as const;
+const originalEnv = isolatedEnvKeys.map((key) => [key, process.env[key]] as const);
+process.env.HOME = testHome;
+process.env.USERPROFILE = testHome;
+process.env.PI_CODING_AGENT_DIR = join(testHome, "agent");
+process.env.PI_CLAUDE_NATIVE_STATE_DIR = join(testHome, "agent", "claude-native");
+process.env.PI_CLAUDE_NATIVE_FINGERPRINT = join(testHome, "absent-fingerprint.json");
+process.env.PI_CLAUDE_NATIVE_MODELS_CACHE = join(testHome, "absent-models.json");
+process.env.PI_CLAUDE_NATIVE_LIVE_DISCOVERY = "0";
+after(() => {
+	for (const [key, value] of originalEnv) {
+		if (value === undefined) delete process.env[key];
+		else process.env[key] = value;
+	}
+	rmSync(testHome, { recursive: true, force: true });
+});
+
+test("capture apply can retire the home legacy fingerprint only for the effective default state directory", () => {
+	const keys = ["HOME", "USERPROFILE", "PI_CODING_AGENT_DIR", "PI_CLAUDE_NATIVE_STATE_DIR"] as const;
+	const saved = keys.map((key) => [key, process.env[key]] as const);
+	const temporaryHome = join(testHome, `claude-native-retirement-${randomUUID()}`);
+	process.env.HOME = temporaryHome;
+	process.env.USERPROFILE = temporaryHome;
+	delete process.env.PI_CODING_AGENT_DIR;
+	delete process.env.PI_CLAUDE_NATIVE_STATE_DIR;
+	try {
+		const expectedLegacy = join(temporaryHome, ".pi", "claude-native-fingerprint.json");
+		assert.equal(getLegacyFingerprintRetirementPath(), expectedLegacy);
+		process.env.PI_CODING_AGENT_DIR = "~/.pi/agent";
+		assert.equal(getLegacyFingerprintRetirementPath(), expectedLegacy, "an equivalent explicit default directory still belongs to the home profile");
+		process.env.PI_CODING_AGENT_DIR = join(temporaryHome, "custom-agent");
+		assert.equal(getLegacyFingerprintRetirementPath(), undefined, "a custom Pi agent keeps home legacy state untouched");
+		process.env.PI_CLAUDE_NATIVE_STATE_DIR = join(temporaryHome, "custom-state");
+		assert.equal(getLegacyFingerprintRetirementPath(), undefined, "a custom extension state directory keeps home legacy state untouched");
+		process.env.PI_CLAUDE_NATIVE_STATE_DIR = join(temporaryHome, ".pi", "agent", "claude-native", ".");
+		assert.equal(getLegacyFingerprintRetirementPath(), expectedLegacy, "effective path identity determines the profile");
+	} finally {
+		for (const [key, value] of saved) {
+			if (value === undefined) delete process.env[key];
+			else process.env[key] = value;
+		}
+	}
+});
 
 /**
  * The fingerprint file is read once and memoized per process, so each case points
@@ -14,7 +64,7 @@ import { coerceFingerprint, SERVER_CLASSIFIER_BETA } from "../src/fingerprint.ts
  * `fingerprint.ts` instance holding the cache.)
  */
 async function withFingerprint(contents: string): Promise<typeof import("../src/constants.ts")> {
-	const dir = mkdtempSync(join(tmpdir(), "claude-native-fp-"));
+	const dir = mkdtempSync(join(testHome, "claude-native-fp-"));
 	const path = join(dir, "fingerprint.json");
 	writeFileSync(path, contents, "utf8");
 	process.env.PI_CLAUDE_NATIVE_FINGERPRINT = path;
@@ -117,7 +167,7 @@ test("fingerprint advisories are claimed once per state, only for the state-dir 
 		});
 
 		// A fingerprint outside the state dir never gets a notices.json beside it.
-		const elsewhere = mkdtempSync(join(tmpdir(), "claude-native-fp-elsewhere-"));
+		const elsewhere = mkdtempSync(join(testHome, "claude-native-fp-elsewhere-"));
 		process.env.PI_CLAUDE_NATIVE_FINGERPRINT = join(elsewhere, "fp.json");
 		writeFileSync(process.env.PI_CLAUDE_NATIVE_FINGERPRINT, JSON.stringify({ version: "2.1.1" }), "utf8");
 		fp.resetStateCaches();
@@ -177,7 +227,7 @@ test("an explicit env override outranks a captured per-model set", async () => {
 test("a hand-edited fingerprint with wrong types degrades instead of crashing the session", async () => {
 	// Regression: every field used to be trusted, so a non-string `version` threw
 	// `version?.trim is not a function` at load and took the whole provider down.
-	const home = mkdtempSync(join(tmpdir(), "claude-native-no-install-"));
+	const home = mkdtempSync(join(testHome, "claude-native-no-install-"));
 	const saved = {
 		HOME: process.env.HOME,
 		USERPROFILE: process.env.USERPROFILE,
@@ -437,7 +487,7 @@ test("a newer partial fingerprint leaves uncaptured max_tokens alone but applies
 });
 
 test("PI_CODING_AGENT_DIR normalizes Pi's tilde, file URL, and Windows shell paths before state paths are built", async () => {
-	const home = mkdtempSync(join(tmpdir(), "claude-native-agent-path-"));
+	const home = mkdtempSync(join(testHome, "claude-native-agent-path-"));
 	const saved = {
 		HOME: process.env.HOME,
 		USERPROFILE: process.env.USERPROFILE,
@@ -504,7 +554,7 @@ test("PI_CODING_AGENT_DIR normalizes Pi's tilde, file URL, and Windows shell pat
 });
 
 test("custom state roots neither migrate nor read the default home's legacy fingerprint and model cache", async () => {
-	const home = mkdtempSync(join(tmpdir(), "claude-native-isolated-state-"));
+	const home = mkdtempSync(join(testHome, "claude-native-isolated-state-"));
 	const legacyDir = join(home, ".pi");
 	const legacyFingerprint = join(legacyDir, "claude-native-fingerprint.json");
 	const legacyModels = join(legacyDir, "claude-native-models.json");
@@ -586,7 +636,7 @@ test("state lives under Pi's agent dir, and a pre-1.5.0 loose file is MOVED ther
 	// settings.json, skill-optimizer/…). This extension used to drop loose
 	// `claude-native-*.json` into `~/.pi/` instead. An existing install must not
 	// merely keep reading the wrong place — the file gets relocated.
-	const home = mkdtempSync(join(tmpdir(), "claude-native-home-"));
+	const home = mkdtempSync(join(testHome, "claude-native-home-"));
 	const agentDir = join(home, ".pi", "agent");
 	const legacy = join(home, ".pi", "claude-native-fingerprint.json");
 	const currentVersion = await bundledVersion();
@@ -638,7 +688,7 @@ test("state lives under Pi's agent dir, and a pre-1.5.0 loose file is MOVED ther
 });
 
 test("migration never overwrites a file already at the current path", async () => {
-	const home = mkdtempSync(join(tmpdir(), "claude-native-keep-"));
+	const home = mkdtempSync(join(testHome, "claude-native-keep-"));
 	const agentDir = join(home, ".pi", "agent");
 	const stateDir = join(agentDir, "claude-native");
 	const currentVersion = await bundledVersion();

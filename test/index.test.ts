@@ -97,7 +97,7 @@ test("session refresh re-registers when catalog fields change without an id/wind
 	}
 });
 
-test("Opus 5.5 and Sonnet 5.5 are visible at load with a stale cache, while older discovered generations stay visible", () => {
+test("Opus, Sonnet and Haiku 5.5 are visible at load with a stale cache, while older generations stay visible", () => {
 	const previous = process.env.PI_CLAUDE_NATIVE_MODELS_CACHE;
 	const dir = mkdtempSync(join(tmpdir(), "claude-native-cold-list-"));
 	const cachePath = join(dir, "models.json");
@@ -124,17 +124,42 @@ test("Opus 5.5 and Sonnet 5.5 are visible at load with a stale cache, while olde
 		assert.ok(sonnet55, "cold listing must include the verified bundled Sonnet 5.5 snapshot without session_start");
 		assert.equal(sonnet55.contextWindow, 1_000_000);
 		assert.equal(sonnet55.maxTokens, 128_000);
-		assert.deepEqual(sonnet55.cost, { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 });
+		assert.deepEqual(sonnet55.cost, { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 });
 		assert.deepEqual(sonnet55.compat, { forceAdaptiveThinking: true, supportsTemperature: false });
 		assert.deepEqual(sonnet55.thinkingLevelMap, { xhigh: "xhigh", max: "max", off: null });
 		// Both flagship models use the captured 17-flag provider base verbatim.
 		assert.equal(sonnet55.headers, undefined);
 		assert.equal((registrations[0]?.headers as Record<string, string> | undefined)?.["anthropic-beta"].split(",").length, 17);
+		const haiku55 = models?.find((model) => model.id === "claude-haiku-5-5");
+		assert.ok(haiku55, "Haiku 5.5 is available before an authenticated session refresh");
+		assert.equal(haiku55.contextWindow, 1_000_000);
+		assert.equal(haiku55.maxTokens, 128_000);
+		assert.deepEqual(haiku55.cost, {
+			input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125,
+			tiers: [{ inputTokensAbove: 100000, input: 0.5, output: 2.5, cacheRead: 0.05, cacheWrite: 0.625 }],
+		});
+		assert.deepEqual(haiku55.thinkingLevelMap, { minimal: null, xhigh: "xhigh", max: "max" });
 	} finally {
 		if (previous === undefined) delete process.env.PI_CLAUDE_NATIVE_MODELS_CACHE;
 		else process.env.PI_CLAUDE_NATIVE_MODELS_CACHE = previous;
 		rmSync(dir, { recursive: true, force: true });
 	}
+});
+
+test("Pi's stale Haiku off map and Sonnet cache price do not override verified exact metadata", () => {
+	const registrations: Array<{ models: Array<Record<string, unknown>> }> = [];
+	const { pi, handlers } = harness((_id, config) => registrations.push(config as never));
+	claudeProMaxNative(pi as never);
+	const staleSonnetCost = { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 };
+	handlers.get("session_start")?.({}, context(() => [
+		{ ...fableModel(), id: "claude-haiku-5-5", thinkingLevelMap: { off: null, minimal: null, xhigh: "xhigh", max: "max" } },
+		{ ...fableModel(staleSonnetCost), id: "claude-sonnet-5-5" },
+	]));
+	const models = registrations.at(-1)?.models;
+	assert.deepEqual(models?.find((m) => m.id === "claude-haiku-5-5")?.thinkingLevelMap,
+		{ minimal: null, xhigh: "xhigh", max: "max" });
+	assert.deepEqual(models?.find((m) => m.id === "claude-sonnet-5-5")?.cost, { ...staleSonnetCost, cacheRead: 0.1 });
+	assert.equal(staleSonnetCost.cacheRead, 0.2);
 });
 
 test("a later catalog price and partial effort map retain Opus 5.5's adaptive-only marker", () => {
@@ -372,7 +397,7 @@ test("request and header hooks emit coherent TUI and print Claude profiles", () 
 
 test("first-turn billing indices require a matching uncompacted session branch", () => {
 	const previousVersion = process.env.PI_CLAUDE_NATIVE_CC_VERSION;
-	process.env.PI_CLAUDE_NATIVE_CC_VERSION = "2.1.284";
+	process.env.PI_CLAUDE_NATIVE_CC_VERSION = "2.1.295";
 	try {
 		const { pi, handlers } = harness(() => {});
 		claudeProMaxNative(pi as never);
@@ -382,9 +407,9 @@ test("first-turn billing indices require a matching uncompacted session branch",
 		const system = { type: "message", message: { role: "system", content: "instructions" } };
 		const assistant = { type: "message", message: { role: "assistant", content: "working" } };
 		const toolResult = { type: "message", message: { role: "toolResult", content: "ok" } };
-		const billing = (branch: unknown[], text = "hi") => {
+		const billing = (mode: "print" | "tui", branch: unknown[], text = "hi") => {
 			const ctx = {
-				mode: "print",
+				mode,
 				model: { provider: PROVIDER_ID, id: "claude-opus-5" },
 				modelRegistry: { isUsingOAuth: () => true },
 				sessionManager: { getBranch: () => branch },
@@ -394,19 +419,26 @@ test("first-turn billing indices require a matching uncompacted session branch",
 			};
 			return out.system[0].text;
 		};
-		assert.match(billing([system, user]), / cc_prompt_index=0; cc_turn_index=1;$/);
-		assert.match(billing([user, assistant, toolResult]), / cc_prompt_index=0; cc_turn_index=1;$/);
-		for (const branch of [
-			[],
-			[assistant, user],
-			[user, assistant, { ...user, message: { role: "user", content: "again" } }],
-			[user, { type: "compaction" }],
-			[user, { type: "branch_summary" }],
-			[user, { type: "custom_message" }],
-		]) {
-			assert.ok(!billing(branch).includes("cc_prompt_index"));
+		for (const [mode, indices] of [
+			["print", / cc_prompt_index=0; cc_turn_index=1;$/],
+			["tui", / cc_prompt_index=1; cc_turn_index=1;$/],
+		] as const) {
+			assert.match(billing(mode, [system, user]), indices);
+			assert.match(billing(mode, [user, assistant, toolResult]), indices);
+			for (const branch of [
+				[],
+				[assistant, user],
+				[user, assistant, { ...user, message: { role: "user", content: "again" } }],
+				[user, { type: "compaction" }],
+				[user, { type: "branch_summary" }],
+				[user, { type: "custom_message" }],
+			]) {
+				const value = billing(mode, branch);
+				assert.ok(!value.includes("cc_prompt_index"));
+				assert.ok(!value.includes("cc_turn_index"));
+			}
+			assert.ok(!billing(mode, [user], "rewritten").includes("cc_prompt_index"));
 		}
-		assert.ok(!billing([user], "rewritten").includes("cc_prompt_index"));
 	} finally {
 		if (previousVersion === undefined) delete process.env.PI_CLAUDE_NATIVE_CC_VERSION;
 		else process.env.PI_CLAUDE_NATIVE_CC_VERSION = previousVersion;

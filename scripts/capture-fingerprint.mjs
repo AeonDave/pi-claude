@@ -34,7 +34,6 @@ import { spawn } from "node:child_process";
 import { randomBytes } from "node:crypto";
 import { existsSync, mkdirSync, readdirSync, readFileSync, statSync, unlinkSync, writeFileSync } from "node:fs";
 import http from "node:http";
-import { homedir } from "node:os";
 import { delimiter, dirname, extname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 // Imported, never duplicated: the state-dir resolution and the hardcoded default
@@ -46,8 +45,11 @@ import {
 	DEFAULT_ANTHROPIC_BETA,
 	DEFAULT_CC_ENTRYPOINT,
 	DEFAULT_PRINT_THINKING_DISPLAY,
+	getAnthropicBetaForModel,
+	getClaudeCodeBudgetThinkingProfileForModel,
+	getClaudeCodeMaxTokensForModel,
 } from "../src/constants.ts";
-import { getStateDir } from "../src/fingerprint.ts";
+import { getLegacyFingerprintRetirementPath, getStateDir } from "../src/fingerprint.ts";
 import {
 	assertConsistentFingerprintCandidate,
 	assertCapturePlanMatches,
@@ -60,7 +62,11 @@ import {
 	buildClaudeCaptureEnv,
 	buildTuiFingerprint,
 	captureWireFlags,
+	classifyClaudeCaptureFailure,
 	computeBetaDeviations,
+	computeModelWireDrift,
+	diffBetaFlags,
+	describeClaudeCaptureFailure,
 	DEFAULT_CAPTURE_MODELS,
 	DEFAULT_TUI_CAPTURE_MODELS,
 	isCaptureProxyHealthResponse,
@@ -265,21 +271,28 @@ function runClaude(model, baseUrl) {
 		const commandArgs = isWindowsShim ? ["/d", "/s", "/c", executable, ...claudeArgs] : claudeArgs;
 		const child = spawn(command, commandArgs, {
 			env: buildClaudeCaptureEnv(process.env, baseUrl),
-			stdio: "ignore",
+			stdio: ["ignore", "pipe", "pipe"],
 		});
+		// Keep a bounded in-memory diagnostic tail, then persist only an allowlisted code.
+		let diagnosticOutput = "";
+		const collectDiagnostic = (chunk) => { diagnosticOutput = (diagnosticOutput + chunk.toString("utf8")).slice(-8192); };
+		child.stdout.on("data", collectDiagnostic);
+		child.stderr.on("data", collectDiagnostic);
 		let timedOut = false;
 		let settled = false;
 		const finish = (result) => {
 			if (settled) return;
 			settled = true;
 			clearTimeout(timer);
-			resolveP(result);
+			const failure = result.code !== 0 ? classifyClaudeCaptureFailure(diagnosticOutput) : undefined;
+			diagnosticOutput = "";
+			resolveP({ ...result, failure });
 		};
 		const timer = setTimeout(() => {
 			timedOut = true;
 			child.kill();
 		}, 90000);
-		child.on("exit", (code, signal) => finish({ code, signal, timedOut }));
+		child.on("close", (code, signal) => finish({ code, signal, timedOut }));
 		child.on("error", (error) => finish({ code: null, signal: null, timedOut, error }));
 	});
 }
@@ -437,6 +450,7 @@ async function captureFromClaude(captureOwner, runResults) {
 				code: run.code,
 				signal: run.signal,
 				timedOut: run.timedOut,
+				failure: run.failure,
 				error: run.error?.message,
 			})),
 		}, null, 2), "utf8");
@@ -592,13 +606,18 @@ async function distill(captureOwner, runResults, runManifest) {
 
 	// Diff vs the current hardcoded default.
 	const current = DEFAULT_ANTHROPIC_BETA.split(",");
-	const added = fingerprintBeta.filter((b) => !current.includes(b));
-	const removed = current.filter((b) => !fingerprintBeta.includes(b));
+	const { adds: added, drops: removed, reordered: baseReordered } = diffBetaFlags(current, fingerprintBeta);
 
 	// Per-model deviations from the BASE set. Reporting only the base diff used to
 	// print a confident "No change" on a run whose own table showed Fable sending
 	// an extra flag — the drift was captured, displayed, and then thrown away.
 	const deviations = computeBetaDeviations(candidates, fingerprintBeta);
+	const modelDrift = computeModelWireDrift(candidates, (candidate) => ({
+		beta: getAnthropicBetaForModel(candidate.wireModel, "print",
+			candidate.thinkingType === "adaptive" ? true : candidate.thinkingType === "enabled" ? false : undefined),
+		maxTokens: getClaudeCodeMaxTokensForModel(candidate.wireModel),
+		budgetThinking: getClaudeCodeBudgetThinkingProfileForModel(candidate.wireModel),
+	}));
 
 	const applyDest = join(getStateDir(), "fingerprint.json");
 	let removedLegacy = null;
@@ -634,9 +653,10 @@ async function distill(captureOwner, runResults, runManifest) {
 		``,
 		added.length ? `- ➕ ADDED: ${added.join(", ")}` : `- ➕ ADDED: (none)`,
 		removed.length ? `- ➖ REMOVED: ${removed.join(", ")}` : `- ➖ REMOVED: (none)`,
-		added.length || removed.length
-			? `\n**The base beta set changed — update \`DEFAULT_ANTHROPIC_BETA\` (or \`--apply\` this fingerprint).**`
-			: `\n**Base set unchanged — the hardcoded default still matches your \`claude\`.**`,
+		baseReordered ? `- REORDERED: shared flags changed order. Previous: \`${current.join(",")}\`; captured: \`${fingerprintBeta.join(",")}\`.` : `- REORDERED: (none)`,
+		added.length || removed.length || baseReordered
+			? `\n**The ordered base beta changed — update \`DEFAULT_ANTHROPIC_BETA\` (or \`--apply\` this fingerprint).**`
+			: `\n**Ordered base beta unchanged — the hardcoded base matches your \`claude\`; check per-model drift below.**`,
 		``,
 		`## Per-model deviations from the base set`,
 		``,
@@ -644,11 +664,29 @@ async function distill(captureOwner, runResults, runManifest) {
 			? [`- (none — every captured model sends the base set verbatim)`]
 			: deviations.map(
 					(d) =>
-						`- \`${d.wireModel}\`: ${d.adds.length ? `➕ ${d.adds.join(", ")}` : ""}${d.adds.length && d.drops.length ? " / " : ""}${d.drops.length ? `➖ ${d.drops.join(", ")}` : ""}${d.reordered ? " (same set, different order)" : ""}`,
+						`- \`${d.wireModel}\`: ${d.adds.length ? `➕ ${d.adds.join(", ")}` : ""}${d.adds.length && d.drops.length ? " / " : ""}${d.drops.length ? `➖ ${d.drops.join(", ")}` : ""}${d.reordered ? " (shared flags reordered)" : ""}`,
 				)),
 		deviations.length
 			? `\n**${deviations.length} model(s) deviate.** \`--apply\` records each verbatim under the fingerprint's \`modelBeta\`, which the extension prefers over its built-in deltas — so this needs no code change.`
 			: ``,
+		``,
+		`## Changes vs currently resolved provider values`,
+		``,
+		`Compared with the src resolvers in print mode before apply, including the existing environment/fingerprint and the capture's observed thinking capability. Uncaptured caps/budget profiles are shown explicitly; fallback beta equality alone is not exact-id evidence.`,
+		``,
+		...(modelDrift.length === 0
+			? [`- (none — every captured beta, request cap and budget profile matches the resolved provider values)`]
+			: modelDrift.map((d) => {
+				const changes = [];
+				if (d.adds.length) changes.push(`beta added: ${d.adds.join(", ")}`);
+				if (d.drops.length) changes.push(`beta removed: ${d.drops.join(", ")}`);
+				if (d.reordered) changes.push(`beta reordered: \`${d.current.beta}\` → \`${d.captured.beta}\``);
+				if (d.current.maxTokens !== d.captured.maxTokens) changes.push(`max_tokens: ${d.current.maxTokens ?? "uncaptured"} → ${d.captured.maxTokens}`);
+				if (d.current.budgetThinking?.budgetTokens !== d.captured.budgetThinking?.budgetTokens || d.current.budgetThinking?.effort !== d.captured.budgetThinking?.effort) {
+					changes.push(`budget profile: \`${JSON.stringify(d.current.budgetThinking) ?? "uncaptured"}\` → \`${JSON.stringify(d.captured.budgetThinking) ?? "none"}\``);
+				}
+				return `- \`${d.wireModel}\`: ${changes.join("; ")}`;
+			})),
 		``,
 		`## Per model (wire)`,
 		``,
@@ -662,7 +700,7 @@ async function distill(captureOwner, runResults, runManifest) {
 		``,
 		`## Capture runs`,
 		``,
-		...runResults.map((r) => `- \`${r.model}\`: ${r.captures} request(s), ${r.mainCaptures} matching main request(s), ${r.timedOut ? "timed out" : r.error ? `spawn error: ${typeof r.error === "string" ? r.error : r.error.message}` : `exit ${r.code}${r.signal ? ` (${r.signal})` : ""}`}`),
+		...runResults.map((r) => `- \`${r.model}\`: ${r.captures} request(s), ${r.mainCaptures} matching main request(s), ${r.timedOut ? "timed out" : r.error ? `spawn error: ${typeof r.error === "string" ? r.error : r.error.message}` : `exit ${r.code}${r.signal ? ` (${r.signal})` : ""}`}${describeClaudeCaptureFailure(r.failure) ? `; ${describeClaudeCaptureFailure(r.failure)}` : ""}`),
 		``,
 		`Machine fingerprint written to \`${outJson}\`.`,
 		APPLY ? `Applied to \`${applyDest}\` — the extension will auto-adopt it.` : `Run again with \`--apply\` to install it for the extension to auto-adopt.`,
@@ -674,10 +712,10 @@ async function distill(captureOwner, runResults, runManifest) {
 	if (APPLY) {
 		mkdirSync(dirname(applyDest), { recursive: true });
 		writeFileSync(applyDest, `${JSON.stringify(fingerprint, null, 2)}\n`, "utf8");
-		// Retire the pre-1.5.0 loose file so there is exactly one source of truth.
-		const legacy = join(homedir(), ".pi", "claude-native-fingerprint.json");
+		// Retire the home legacy file only when applying to that same default profile.
+		const legacy = getLegacyFingerprintRetirementPath();
 		try {
-			if (existsSync(legacy)) {
+			if (legacy && existsSync(legacy)) {
 				unlinkSync(legacy);
 				removedLegacy = legacy;
 			}

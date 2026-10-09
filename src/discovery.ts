@@ -47,7 +47,13 @@ export interface DiscoveredModel {
  * Claude Sonnet 5.5: https://platform.claude.com/docs/en/models/sonnet-5-5/overview
  * Capabilities were also observed on `/v1/models` on 2026-09-30 (the `sonnet`
  * moving alias resolves here since Claude Code 2.1.284). Pricing from the
- * public overview: $2 / $10 per MTok, cache read $0.20, cache write $2.50.
+ * public overview: $2 / $10 per MTok, cache read $0.10 since 2026-10-07,
+ * cache write $2.50 (https://platform.claude.com/docs/en/release-notes/overview).
+ *
+ * Claude Haiku 5.5: https://platform.claude.com/docs/en/models/haiku-5-5/overview
+ * Public specs and Pi 1.1.0's catalog confirm the adaptive mode, effort ceiling,
+ * 1M/128K limits, and request-wide price tier above 100K input tokens. Disabled
+ * thinking is independent of manual budgets (see the public effort guide).
  */
 export const BUNDLED_MODEL_SNAPSHOT: readonly DiscoveredModel[] = [
 	{
@@ -67,7 +73,7 @@ export const BUNDLED_MODEL_SNAPSHOT: readonly DiscoveredModel[] = [
 	{
 		id: "claude-sonnet-5-5",
 		catalog: {
-			cost: { input: 2, output: 10, cacheRead: 0.2, cacheWrite: 2.5 },
+			cost: { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 },
 			contextWindow: 1_000_000,
 			maxTokens: 128_000,
 			reasoning: true,
@@ -76,6 +82,24 @@ export const BUNDLED_MODEL_SNAPSHOT: readonly DiscoveredModel[] = [
 			supportsEffort: true,
 			supportsTemperature: false,
 			thinkingLevelMap: { xhigh: "xhigh", max: "max", off: null },
+		},
+	},
+	{
+		id: "claude-haiku-5-5",
+		catalog: {
+			cost: {
+				input: 0.1, output: 0.5, cacheRead: 0.01, cacheWrite: 0.125,
+				tiers: [{ inputTokensAbove: 100000, input: 0.5, output: 2.5, cacheRead: 0.05, cacheWrite: 0.625 }],
+			},
+			contextWindow: 1_000_000,
+			maxTokens: 128_000,
+			reasoning: true,
+			input: ["text", "image"],
+			forceAdaptiveThinking: true,
+			supportsEffort: true,
+			supportsTemperature: false,
+			supportsDisabledThinking: true,
+			thinkingLevelMap: { minimal: null, xhigh: "xhigh", max: "max" },
 		},
 	},
 ];
@@ -91,7 +115,7 @@ interface ModelInfo {
 	max_input_tokens?: unknown;
 	max_tokens?: unknown;
 	capabilities?: {
-		thinking?: Supported & { types?: { enabled?: Supported; adaptive?: Supported } };
+		thinking?: Supported & { types?: { enabled?: Supported; adaptive?: Supported; disabled?: Supported } };
 		effort?: Supported & { xhigh?: Supported; max?: Supported };
 		image_input?: Supported;
 	};
@@ -132,7 +156,9 @@ function modelInfoToCatalog(m: ModelInfo): CatalogEntry {
 	const entry: CatalogEntry = {};
 	const caps = m.capabilities;
 	const adaptive = isSupported(caps?.thinking?.types?.adaptive);
-	const budget = isSupported(caps?.thinking?.types?.enabled);
+	const adaptiveOnly = adaptive && caps?.thinking?.types?.enabled?.supported === false;
+	const disabled = caps?.thinking?.types?.disabled?.supported;
+	if (typeof disabled === "boolean") entry.supportsDisabledThinking = disabled;
 
 	// A >200K window is safe only when the endpoint positively identifies the
 	// model as adaptive. An older/partial response that omits thinking types is not
@@ -155,7 +181,7 @@ function modelInfoToCatalog(m: ModelInfo): CatalogEntry {
 	}
 	if (typeof m.max_tokens === "number" && m.max_tokens > 0) entry.maxTokens = m.max_tokens;
 	if (typeof caps?.thinking?.supported === "boolean") entry.reasoning = caps.thinking.supported;
-	if (caps?.thinking?.types) entry.forceAdaptiveThinking = adaptive;
+	if (typeof caps?.thinking?.types?.adaptive?.supported === "boolean") entry.forceAdaptiveThinking = adaptive;
 	if (caps?.image_input) entry.input = isSupported(caps.image_input) ? ["text", "image"] : ["text"];
 
 	// Effort ceiling. `xhigh` is the fact that used to require a hand-written
@@ -166,13 +192,13 @@ function modelInfoToCatalog(m: ModelInfo): CatalogEntry {
 		if (isSupported(caps?.effort?.xhigh)) map.xhigh = "xhigh";
 		else if (isSupported(caps?.effort?.max)) map.xhigh = "max";
 		if (isSupported(caps?.effort?.max)) map.max = "max";
-		// Adaptive-ONLY models reject `thinking: {type: "disabled"}`. `off: null` is
-		// how Pi is told not to send it (see its anthropic-messages path).
-		if (adaptive && !budget) map.off = null;
+		// Since 2026-10-05 the endpoint states disabled support independently.
+		// Keep the historical conservative fallback only for older/partial responses.
+		if (disabled === false || (typeof disabled !== "boolean" && adaptiveOnly)) map.off = null;
 		if (Object.keys(map).length > 0) entry.thinkingLevelMap = map as CatalogEntry["thinkingLevelMap"];
 	}
 	// Adaptive-only models also reject `temperature`.
-	if (caps?.thinking?.types && adaptive && !budget) entry.supportsTemperature = false;
+	if (adaptiveOnly) entry.supportsTemperature = false;
 
 	return entry;
 }

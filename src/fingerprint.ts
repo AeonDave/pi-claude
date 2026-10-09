@@ -55,7 +55,7 @@ export interface Fingerprint {
 	/**
 	 * Per-model captured `anthropic-beta`, keyed by the WIRE model id, stored
 	 * verbatim (so flag ORDER matches the genuine client, which differs per model
-	 * — Haiku puts `claude-code-20250219` sixth, not first). Optional: an older
+	 * — Haiku 4.5 puts `claude-code-20250219` sixth, Haiku 5.5 seventh). Optional: an older
 	 * fingerprint without it still resolves through the global set + the built-in
 	 * deltas, and an older extension simply ignores the key.
 	 */
@@ -63,7 +63,7 @@ export interface Fingerprint {
 	/**
 	 * Per-model `max_tokens` observed on the genuine request. Anthropic's model
 	 * endpoint/catalog advertises the absolute API ceiling, but the bundled CLI
-	 * capture deliberately requests a lower cap (64K or 32K on captured models).
+	 * capture selects an exact per-model cap (128K, 64K or 32K).
 	 */
 	modelMaxTokens?: Record<string, number>;
 	/** Exact legacy budget-thinking body per captured wire id. */
@@ -181,6 +181,11 @@ function usesDefaultStateDir(): boolean {
 /** Pre-1.5.0 loose-file location. */
 function legacyStatePath(file: string): string {
 	return join(homedir(), ".pi", file);
+}
+
+/** Applying a fingerprint may retire home legacy state only for that same default profile. */
+export function getLegacyFingerprintRetirementPath(): string | undefined {
+	return usesDefaultStateDir() ? legacyStatePath("claude-native-fingerprint.json") : undefined;
 }
 
 /** Legacy file → its home under the state dir. */

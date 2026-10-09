@@ -1,12 +1,31 @@
 import assert from "node:assert/strict";
-import { randomUUID } from "node:crypto";
+import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { test } from "node:test";
+import { after, test } from "node:test";
 
-// Isolation: `getAnthropicBetaForModel` consults the fingerprint's per-model map,
-// so a real capture on the developer's machine must not reach these assertions.
-process.env.PI_CLAUDE_NATIVE_FINGERPRINT = join(tmpdir(), `claude-native-absent-fingerprint-${randomUUID()}.json`);
+// Version resolution reads Claude's state as well as the fingerprint. Isolate
+// every default path before importing constants or calling a state resolver.
+const testHome = mkdtempSync(join(tmpdir(), "pi-claude-constants-test-"));
+const isolatedEnvKeys = [
+	"HOME", "USERPROFILE", "PI_CODING_AGENT_DIR", "PI_CLAUDE_NATIVE_STATE_DIR",
+	"PI_CLAUDE_NATIVE_FINGERPRINT", "PI_CLAUDE_NATIVE_MODELS_CACHE", "PI_CLAUDE_NATIVE_LIVE_DISCOVERY",
+] as const;
+const originalEnv = isolatedEnvKeys.map((key) => [key, process.env[key]] as const);
+process.env.HOME = testHome;
+process.env.USERPROFILE = testHome;
+process.env.PI_CODING_AGENT_DIR = join(testHome, "agent");
+process.env.PI_CLAUDE_NATIVE_STATE_DIR = join(testHome, "agent", "claude-native");
+process.env.PI_CLAUDE_NATIVE_FINGERPRINT = join(testHome, "absent-fingerprint.json");
+process.env.PI_CLAUDE_NATIVE_MODELS_CACHE = join(testHome, "absent-models.json");
+process.env.PI_CLAUDE_NATIVE_LIVE_DISCOVERY = "0";
+after(() => {
+	for (const [key, value] of originalEnv) {
+		if (value === undefined) delete process.env[key];
+		else process.env[key] = value;
+	}
+	rmSync(testHome, { recursive: true, force: true });
+});
 
 const {
 	CLAUDE_AGENT_SDK_IDENTITY,
@@ -51,6 +70,7 @@ function withEnvCleared(names: readonly string[], run: () => void): void {
 }
 
 test("default beta set matches the bundled Opus/Sonnet 5.5 common capture", () => {
+	assert.equal(BUNDLED_CC_VERSION, "2.1.295");
 	assert.deepEqual(DEFAULT_ANTHROPIC_BETA.split(","), [
 		"claude-code-20250219",
 		"oauth-2025-04-20",
@@ -84,7 +104,7 @@ test("default beta set matches the bundled Opus/Sonnet 5.5 common capture", () =
 					"afk-mode-2026-01-31",
 				].includes(flag),
 		),
-		"the bundled Haiku capture omits the six unsupported conversation/tool/effort flags",
+		"the bundled Haiku 4.5 capture omits the six unsupported conversation/tool/effort flags",
 	);
 });
 
@@ -137,6 +157,17 @@ test("an explicit beta override remains verbatim on Haiku", () => {
 	}
 });
 
+test("a positively adaptive discovered Haiku does not inherit the old budget-only family fallback", () => {
+	withEnvCleared(["PI_CLAUDE_NATIVE_ANTHROPIC_BETA"], () => {
+		assert.equal(getAnthropicBetaForModel("claude-haiku-6", "print", true), DEFAULT_ANTHROPIC_BETA);
+		assert.equal(getAnthropicBetaForModel("claude-haiku-6", "print", false).includes("effort-2025-11-24"), false);
+		assert.equal(getAnthropicBetaForModel("claude-haiku-4-5", "print", true).split(",").length, 11,
+			"captured exact-id evidence still wins over a capability argument");
+		assert.equal(getAnthropicBetaForModel("claude-haiku-5-5", "print", false).split(",").length, 17,
+			"captured adaptive Haiku evidence also wins over a capability argument");
+	});
+});
+
 test("bundled per-model deviations match the captured clean models exactly", () => {
 	const toolChanges = "mid-conversation-tool-changes-2026-07-01";
 	const inlineTools = "inline-tools-2026-09-15";
@@ -172,11 +203,11 @@ test("bundled per-model deviations match the captured clean models exactly", () 
 	assert.equal(
 		Object.values(MODEL_BETA_DELTAS).some((delta) => (delta.add?.length ?? 0) > 0),
 		false,
-		"the 2.1.288 common base includes all captured additions",
+		"the 2.1.295 common base includes all captured additions",
 	);
 });
 
-test("all thirteen 2.1.288 print beta headers match captured flag order; TUI overlays the prior display signal", () => {
+test("all fourteen 2.1.295 print and TUI beta headers match byte-exact captures", () => {
 	withEnvCleared(["PI_CLAUDE_NATIVE_ANTHROPIC_BETA", "PI_CLAUDE_NATIVE_CC_ENTRYPOINT"], () => {
 		const cc = "claude-code-20250219";
 		const oauth = "oauth-2025-04-20";
@@ -251,11 +282,16 @@ test("all thirteen 2.1.288 print beta headers match captured flag order; TUI ove
 				oauth, interleaved, tokenCount, context, cacheScope, cc, advisor, advanced,
 				thinkingBinding, displayUpdates, cacheTtl, cacheDiagnosis,
 			],
+			// Haiku 5.5 has the common set, with claude-code seventh on the wire.
+			"claude-haiku-5-5": [
+				oauth, interleaved, tokenCount, context, cacheScope, midConversation, cc, perTurn,
+				toolChanges, inlineTools, advisor, advanced, effort, thinkingBinding, displayUpdates, afk, cacheTtl, cacheDiagnosis,
+			],
 		};
 
-		assert.equal(Object.keys(expected).length, 13);
+		assert.equal(Object.keys(expected).length, 14);
 		for (const [id, flags] of Object.entries(expected)) {
-			assert.deepEqual(getAnthropicBetaForModel(id, "print").split(","), flags.filter((flag) => flag !== displayUpdates), `${id}: print capture`);
+			assert.equal(getAnthropicBetaForModel(id, "print"), flags.filter((flag) => flag !== displayUpdates).join(","), `${id}: print capture`);
 			assert.deepEqual(getAnthropicBetaForModel(id, "tui").split(","), flags, id);
 			assert.equal(flags.filter((flag) => flag === displayUpdates).length, 1, `${id}: one mode-wide signal`);
 		}
@@ -305,10 +341,11 @@ test("an unknown discovered budget model gets the non-effort base while adaptive
 	});
 });
 
-test("bundled request max_tokens matches all thirteen clean genuine captures", () => {
+test("bundled request max_tokens matches all fourteen clean genuine captures", () => {
 	const expected = {
 		"claude-opus-5-5": 128_000,
 		"claude-sonnet-5-5": 128_000,
+		"claude-haiku-5-5": 128_000,
 		"claude-opus-5": 64_000,
 		"claude-sonnet-5": 64_000,
 		"claude-fable-5-1": 64_000,

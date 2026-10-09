@@ -54,16 +54,48 @@ export interface BetaDeviation {
 	reordered: boolean;
 }
 
+export interface ModelWireValues {
+	beta: string;
+	maxTokens?: number;
+	budgetThinking?: { budgetTokens: number; effort?: "low" | "medium" | "high" | "xhigh" | "max" };
+}
+
+export interface ModelWireDrift extends BetaDeviation {
+	current: ModelWireValues;
+	captured: ModelWireValues;
+}
+
+/** Compare ordered beta lists, including the order of flags shared by changed sets. */
+export function diffBetaFlags(current: readonly string[], captured: readonly string[]): Omit<BetaDeviation, "wireModel"> {
+	const currentSet = new Set(current);
+	const capturedSet = new Set(captured);
+	return {
+		adds: captured.filter((flag) => !currentSet.has(flag)),
+		drops: current.filter((flag) => !capturedSet.has(flag)),
+		reordered: current.filter((flag) => capturedSet.has(flag)).join(",") !== captured.filter((flag) => currentSet.has(flag)).join(","),
+	};
+}
+
 export interface CaptureRunSummary {
 	model: string;
 	captures: number;
 	mainCaptures: number;
 	wireModels?: readonly string[];
+	failure?: "auth_expired";
+}
+
+/** Emit only known failure codes; CLI output itself must never reach logs or captures. */
+export function classifyClaudeCaptureFailure(output: string): CaptureRunSummary["failure"] {
+	return /OAuth session expired and could not be refreshed/i.test(output) ? "auth_expired" : undefined;
+}
+
+export function describeClaudeCaptureFailure(failure: unknown): string | undefined {
+	return failure === "auth_expired" ? "auth_expired: Claude OAuth session expired; run claude auth login" : undefined;
 }
 
 /**
  * Moving aliases discover the next flagship on rollover; exact ids retain full
- * coverage of every model currently exposed by the provider.
+ * coverage of the bundled models, including Haiku 5.5's new public snapshot.
  */
 export const DEFAULT_CAPTURE_MODELS = [
 	"opus",
@@ -83,9 +115,10 @@ export const DEFAULT_CAPTURE_MODELS = [
 	"claude-opus-4-5",
 	"claude-sonnet-4-5",
 	"claude-haiku-4-5",
+	"claude-haiku-5-5",
 ] as const;
 
-/** Exact clean ids currently exposed by the provider; aliases are not enough for a TUI overlay. */
+/** Bundled exact clean ids; aliases are not enough for a TUI overlay. */
 export const DEFAULT_TUI_CAPTURE_MODELS = DEFAULT_CAPTURE_MODELS.filter(
 	(model): model is Extract<typeof DEFAULT_CAPTURE_MODELS[number], `claude-${string}`> => model.startsWith("claude-"),
 );
@@ -189,7 +222,10 @@ export function isCaptureProxyHealthResponse(
 export function assertRequestedCapturesComplete(runs: readonly CaptureRunSummary[]): void {
 	const missing = runs
 		.filter((run) => !Number.isSafeInteger(run.mainCaptures) || run.mainCaptures <= 0)
-		.map((run) => run.model);
+		.map((run) => {
+			const failure = describeClaudeCaptureFailure(run.failure);
+			return failure ? `${run.model} (${failure})` : run.model;
+		});
 	if (missing.length > 0) {
 		throw new Error(`requested model run(s) produced no matching main capture: ${missing.join(", ")}`);
 	}
@@ -574,19 +610,30 @@ export function computeBetaDeviations(
 	candidates: readonly FingerprintCandidate[],
 	base: readonly string[],
 ): BetaDeviation[] {
-	const baseSet = new Set(base);
 	return candidates
-		.map((candidate) => {
-			const candidateSet = new Set(candidate.beta);
-			return {
-				wireModel: candidate.wireModel,
-				adds: candidate.beta.filter((flag) => !baseSet.has(flag)),
-				drops: base.filter((flag) => !candidateSet.has(flag)),
-				reordered:
-					candidate.beta.length === base.length &&
-					candidate.beta.every((flag) => baseSet.has(flag)) &&
-					candidate.beta.join(",") !== base.join(","),
-			};
-		})
+		.map((candidate) => ({ wireModel: candidate.wireModel, ...diffBetaFlags(base, candidate.beta) }))
 		.filter((deviation) => deviation.adds.length > 0 || deviation.drops.length > 0 || deviation.reordered);
+}
+
+/** Compare each observation with the provider's resolved values, rather than only the new common base. */
+export function computeModelWireDrift(
+	candidates: readonly FingerprintCandidate[],
+	resolveCurrent: (candidate: FingerprintCandidate) => ModelWireValues,
+): ModelWireDrift[] {
+	const caps = buildModelMaxTokens(candidates);
+	const budgets = buildModelBudgetThinking(candidates);
+	return candidates.map((candidate): ModelWireDrift => {
+		const current = resolveCurrent(candidate);
+		return {
+			wireModel: candidate.wireModel,
+			...diffBetaFlags(current.beta.split(",").map((flag) => flag.trim()).filter(Boolean), candidate.beta),
+			current,
+			captured: { beta: candidate.beta.join(","), maxTokens: caps[candidate.wireModel], budgetThinking: budgets[candidate.wireModel] },
+		};
+	}).filter((drift) =>
+		drift.adds.length > 0 || drift.drops.length > 0 || drift.reordered ||
+		drift.current.maxTokens !== drift.captured.maxTokens ||
+		drift.current.budgetThinking?.budgetTokens !== drift.captured.budgetThinking?.budgetTokens ||
+		drift.current.budgetThinking?.effort !== drift.captured.budgetThinking?.effort,
+	);
 }

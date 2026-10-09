@@ -134,9 +134,10 @@ export function turnOriginForEntrypoint(entrypoint: string): "human" | "sdk" | u
 }
 
 /**
- * Claude Code 2.1.284 and 2.1.288 stamp the first SDK prompt (0, 1) and first
- * interactive human prompt (1, 1). Later positions come from its internal transcript, which the serialized
- * Messages payload cannot reconstruct after compaction or session branching.
+ * Claude Code 2.1.284, 2.1.288 and 2.1.295 captures stamp the first SDK prompt
+ * (0, 1) and first interactive human prompt (1, 1). Later positions come from
+ * its internal transcript, which the serialized Messages payload cannot
+ * reconstruct after compaction or session branching.
  * The caller must also prove that Pi's complete session branch contains only
  * this first prompt. The serialized request alone can look fresh after context
  * compaction. Leave unproven turns unstamped instead of inventing a position.
@@ -184,7 +185,7 @@ export function buildBillingHeaderValue(
 	if (!sessionId) return base;
 	const promptId = derivePromptId(`${sessionId}\u0000${extractCurrentPromptText(messages)}`);
 	const turnOrigin = turnOriginForEntrypoint(entrypoint);
-	const capturedPositionProfile = version === "2.1.284" || version === "2.1.288";
+	const capturedPositionProfile = version === "2.1.284" || version === "2.1.288" || version === "2.1.295";
 	const position = capturedPositionProfile && firstPromptConfirmed ? initialTurnPosition(messages, entrypoint) : undefined;
 	const indexFields = position ? ` cc_prompt_index=${position.promptIndex}; cc_turn_index=${position.turnIndex};` : "";
 	return `${base} cc_prompt_id=${promptId};${turnOrigin ? ` cc_turn_origin=${turnOrigin};` : ""}${indexFields}`;
