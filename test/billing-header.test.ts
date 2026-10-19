@@ -115,6 +115,8 @@ test("golden: reproduces the suffix genuine claude 2.1.261 put on the wire", () 
 	assert.equal(computeVersionSuffix("reply with the single word ok", "2.1.266"), "9d8");
 	// Re-captured on every 2.1.278 print and TUI request.
 	assert.equal(computeVersionSuffix("reply with the single word ok", "2.1.278"), "02b");
+	// Genuine 2.1.303 print requests retain this suffix for the captured probe.
+	assert.equal(computeVersionSuffix("reply with the single word ok", "2.1.303"), "c24");
 });
 
 test("cc_prompt_id and cc_turn_origin match the bundled capture shape and mode", () => {
@@ -176,8 +178,8 @@ test("turn indices are stamped only for captured fresh prompts and their tool lo
 	assert.ok(!buildBillingHeaderValue([prompt], "2.1.289", "cli", "session-a", true).includes("cc_prompt_index"), "newer interactive positions need a new capture");
 });
 
-test("2.1.295 indices follow both captured modes only on confirmed first prompts", () => {
-	// All 14 exact-id genuine TUI captures stamp (1, 1); the print suite stamps
+test("2.1.295 and 2.1.303 indices follow both captured modes only on confirmed first prompts", () => {
+	// Both versions' complete exact-id TUI captures stamp (1, 1); print stamps
 	// (0, 1). These are independent captured positions, not an inferred offset.
 	const prompt: BillingMessage = { role: "user", content: "read the hello file" };
 	const toolLoop: BillingMessage[] = [
@@ -185,30 +187,36 @@ test("2.1.295 indices follow both captured modes only on confirmed first prompts
 		{ role: "assistant", content: [{ type: "tool_use", id: "t1" }] },
 		{ role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }] },
 	];
-	for (const messages of [[prompt], toolLoop]) {
-		assert.match(buildBillingHeaderValue(messages, "2.1.295", "sdk-cli", "session-a", true),
-			/ cc_turn_origin=sdk; cc_prompt_index=0; cc_turn_index=1;$/);
-		const interactive = buildBillingHeaderValue(messages, "2.1.295", "cli", "session-a", true);
-		assert.match(interactive, / cc_turn_origin=human; cc_prompt_index=1; cc_turn_index=1;$/);
-		for (const entrypoint of ["sdk-cli", "cli"]) {
-			const unproven = buildBillingHeaderValue(messages, "2.1.295", entrypoint, "session-a");
-			assert.ok(!unproven.includes("cc_prompt_index"), "the active branch must prove the first prompt");
-			assert.ok(!unproven.includes("cc_turn_index"));
+	for (const version of ["2.1.295", "2.1.303"]) {
+		for (const messages of [[prompt], toolLoop]) {
+			assert.match(buildBillingHeaderValue(messages, version, "sdk-cli", "session-a", true),
+				/ cc_turn_origin=sdk; cc_prompt_index=0; cc_turn_index=1;$/);
+			const interactive = buildBillingHeaderValue(messages, version, "cli", "session-a", true);
+			assert.match(interactive, / cc_turn_origin=human; cc_prompt_index=1; cc_turn_index=1;$/);
+			for (const entrypoint of ["sdk-cli", "cli"]) {
+				const unproven = buildBillingHeaderValue(messages, version, entrypoint, "session-a");
+				assert.ok(!unproven.includes("cc_prompt_index"), "the active branch must prove the first prompt");
+				assert.ok(!unproven.includes("cc_turn_index"));
+			}
 		}
 	}
 	const later = [prompt, { role: "assistant", content: "done" }, { role: "user", content: "next" }];
-	for (const entrypoint of ["sdk-cli", "cli"]) {
-		for (const messages of [later, [{ role: "assistant", content: "summary" }, prompt]]) {
-			const value = buildBillingHeaderValue(messages, "2.1.295", entrypoint, "session-a", true);
-			assert.ok(!value.includes("cc_prompt_index"));
-			assert.ok(!value.includes("cc_turn_index"));
+	for (const version of ["2.1.295", "2.1.303"]) {
+		for (const entrypoint of ["sdk-cli", "cli"]) {
+			for (const messages of [later, [{ role: "assistant", content: "summary" }, prompt]]) {
+				const value = buildBillingHeaderValue(messages, version, entrypoint, "session-a", true);
+				assert.ok(!value.includes("cc_prompt_index"));
+				assert.ok(!value.includes("cc_turn_index"));
+			}
 		}
 	}
 	for (const entrypoint of ["sdk-cli", "cli", "custom"]) {
 		assert.ok(!buildBillingHeaderValue([prompt], "2.1.296", entrypoint, "session-a", true).includes("cc_prompt_index"),
 			"a future version needs its own captured profile");
 	}
-	assert.ok(!buildBillingHeaderValue([prompt], "2.1.295", "custom", "session-a", true).includes("cc_prompt_index"));
+	assert.ok(!buildBillingHeaderValue([prompt], "2.1.303", "custom", "session-a", true).includes("cc_prompt_index"));
+	assert.ok(!buildBillingHeaderValue([prompt], "2.1.304", "cli", "session-a", true).includes("cc_prompt_index"),
+		"an uncaptured version must not inherit the interactive position profile");
 });
 
 test("cc_prompt_id is stable across a tool loop and changes on a new prompt", () => {

@@ -81,8 +81,8 @@ export const TOKEN_USER_AGENT = "axios/1.13.6";
 // so this constant must never lag the newest generation the provider exposes.
 // The one version literal that advances with a reviewed capture. Tests and
 // runtime freshness checks consume this export instead of copying the value.
-// Current evidence: `claude` 2.1.295, captured 2026-10-09.
-export const BUNDLED_CC_VERSION = "2.1.295";
+// Current evidence: `claude` 2.1.303, captured 2026-10-19.
+export const BUNDLED_CC_VERSION = "2.1.303";
 export const DEFAULT_CC_ENTRYPOINT = "sdk-cli";
 export const DEFAULT_PRINT_THINKING_DISPLAY = "omitted";
 
@@ -275,18 +275,17 @@ export function getBaseUrl(): string {
 /**
  * The `anthropic-beta` base shared verbatim by the bundled Opus 5.5 and
  * Sonnet 5.5 normal-turn captures (`claude -p`). The first-party capture proxy
- * preserves conditional beta flags. Claude Code 2.1.288 added
- * `mid-conversation-tool-changes` and `inline-tools` to Sonnet 5.5, so the
- * ordered intersection now contains 17 flags. Exact deviations for the other
- * captured models live in `MODEL_BETA_DELTAS`.
+ * preserves conditional beta flags. The 2.1.303 capture has a 16-flag ordered
+ * intersection. Exact deviations for the other captured models live in
+ * `MODEL_BETA_DELTAS`.
  *
  * The set still varies by model:
- *   Opus 5.5 / Sonnet 5.5 / Fable 5.1 — this base, 17 flags;
- *   Haiku 5.5 — the same 17-flag set with its captured distinct order;
- *   Opus 5 / Opus 4.8 / Fable 5 — base minus `per-turn-control` = 16;
- *   Sonnet 5 — base minus `per-turn-control`, tool changes and inline tools = 14;
- *   Haiku 4.5 — base minus six unsupported flags = 11;
- *   Opus 4.5 — base minus five unsupported flags = 12.
+ *   Opus 5.5 / Sonnet 5.5 / Fable 5.1 — this base, 16 flags;
+ *   Haiku 5.5 — the same 16-flag set with its captured distinct order;
+ *   Opus 5 / Opus 4.8 / Fable 5 — base minus `per-turn-control` = 15;
+ *   Sonnet 5 — base minus `per-turn-control`, tool changes and inline tools = 13;
+ *   Haiku 4.5 — base minus five unsupported flags = 11;
+ *   Opus 4.5 — base minus four unsupported flags = 12.
  *
  * `context-1m-2025-08-07` is intentionally NOT here: a subscription without
  * long-context access returns 400/429 on any request that advertises it, and
@@ -310,7 +309,6 @@ export const DEFAULT_ANTHROPIC_BETA = [
 	"thinking-token-count-2026-05-13",
 	"context-management-2025-06-27",
 	"prompt-caching-scope-2026-01-05",
-	"mid-conversation-system-2026-04-07",
 	"per-turn-control-2026-07-01",
 	"mid-conversation-tool-changes-2026-07-01",
 	"inline-tools-2026-09-15",
@@ -323,7 +321,6 @@ export const DEFAULT_ANTHROPIC_BETA = [
 	"cache-diagnosis-2026-04-07",
 ].join(",");
 
-const MID_CONVO = "mid-conversation-system-2026-04-07";
 const PER_TURN_CONTROL = "per-turn-control-2026-07-01";
 const MID_CONVO_TOOL_CHANGES = "mid-conversation-tool-changes-2026-07-01";
 const INLINE_TOOLS = "inline-tools-2026-09-15";
@@ -341,8 +338,8 @@ const BUDGET_CONSERVATIVE_REMOVALS = new Set([
 	"afk-mode-2026-01-31",
 ]);
 
-/** Re-captured at 2.1.295: Haiku 4.5 keeps `advisor-tool` but drops the six
- * flags above. The same subset is conservative for uncaptured budget models. */
+/** Haiku 4.5 keeps `advisor-tool` but drops the legacy conservative flags.
+ * The same subset is conservative for uncaptured budget models. */
 export const DEFAULT_NON_EFFORT_ANTHROPIC_BETA = DEFAULT_ANTHROPIC_BETA.split(",")
 	.filter((flag) => !BUDGET_CONSERVATIVE_REMOVALS.has(flag))
 	.join(",");
@@ -351,11 +348,11 @@ export const DEFAULT_NON_EFFORT_ANTHROPIC_BETA = DEFAULT_ANTHROPIC_BETA.split(",
  * How each model's `anthropic-beta` differs from the common base set — captured
  * across every clean id in the bundled capture (14 models). The exact sets are:
  *
- *   opus 5.5 / sonnet 5.5 / fable 5.1     — the common base 17 (no delta)
- *   haiku 5.5                             — the common set 17, distinct order
- *   opus 5 / opus 4.8 / fable 5           — 16 (drops `per-turn-control`)
- *   sonnet 5                              — 14 (also drops tool changes and inline tools)
- *   opus 4.7 / opus 4.6 / sonnet 4.6      — 13 (drops all four conversation/tool flags)
+ *   opus 5.5 / sonnet 5.5 / fable 5.1     — the common base 16 (no delta)
+ *   haiku 5.5                             — the common set 16, distinct order
+ *   opus 5 / opus 4.8 / fable 5           — 15 (drops `per-turn-control`)
+ *   sonnet 5                              — 13 (also drops tool changes and inline tools)
+ *   opus 4.7 / opus 4.6 / sonnet 4.6      — 13 (drops per-turn and tool-change flags)
  *   opus 4.5                              — 12 (also drops `afk-mode`)
  *   sonnet 4.5 / haiku 4.5                — 11 (also drops `effort`)
  *
@@ -383,16 +380,16 @@ export const MODEL_BETA_DELTAS: Record<string, ModelBetaDelta> = {
 	"claude-fable-5-1": {},
 	"claude-fable-5": { remove: [PER_TURN_CONTROL] },
 	"claude-opus-4-8": { remove: [PER_TURN_CONTROL] },
-	"claude-opus-4-7": { remove: [MID_CONVO, PER_TURN_CONTROL, MID_CONVO_TOOL_CHANGES, INLINE_TOOLS] },
-	"claude-opus-4-6": { remove: [MID_CONVO, PER_TURN_CONTROL, MID_CONVO_TOOL_CHANGES, INLINE_TOOLS] },
-	"claude-sonnet-4-6": { remove: [MID_CONVO, PER_TURN_CONTROL, MID_CONVO_TOOL_CHANGES, INLINE_TOOLS] },
-	"claude-opus-4-5": { remove: [MID_CONVO, PER_TURN_CONTROL, MID_CONVO_TOOL_CHANGES, INLINE_TOOLS, AFK_MODE] },
-	"claude-sonnet-4-5": { remove: [MID_CONVO, PER_TURN_CONTROL, MID_CONVO_TOOL_CHANGES, INLINE_TOOLS, EFFORT, AFK_MODE] },
-	"claude-haiku-4-5": { remove: [MID_CONVO, PER_TURN_CONTROL, MID_CONVO_TOOL_CHANGES, INLINE_TOOLS, EFFORT, AFK_MODE] },
+	"claude-opus-4-7": { remove: [PER_TURN_CONTROL, MID_CONVO_TOOL_CHANGES, INLINE_TOOLS] },
+	"claude-opus-4-6": { remove: [PER_TURN_CONTROL, MID_CONVO_TOOL_CHANGES, INLINE_TOOLS] },
+	"claude-sonnet-4-6": { remove: [PER_TURN_CONTROL, MID_CONVO_TOOL_CHANGES, INLINE_TOOLS] },
+	"claude-opus-4-5": { remove: [PER_TURN_CONTROL, MID_CONVO_TOOL_CHANGES, INLINE_TOOLS, AFK_MODE] },
+	"claude-sonnet-4-5": { remove: [PER_TURN_CONTROL, MID_CONVO_TOOL_CHANGES, INLINE_TOOLS, EFFORT, AFK_MODE] },
+	"claude-haiku-4-5": { remove: [PER_TURN_CONTROL, MID_CONVO_TOOL_CHANGES, INLINE_TOOLS, EFFORT, AFK_MODE] },
 };
 
 /**
- * The complete 14-id Claude Code 2.1.295 TUI capture adds
+ * The complete 14-id Claude Code 2.1.303 TUI capture adds
  * `thinking-display-updates` after `thinking-binding-controls`.
  * It is a mode-wide signal applied below, including to newly-discovered
  * families.
@@ -400,8 +397,8 @@ export const MODEL_BETA_DELTAS: Record<string, ModelBetaDelta> = {
 
 /**
  * The genuine flag ORDER for models that do not order like the base — Haiku 4.5
- * sends `claude-code-20250219` sixth and Haiku 5.5 seventh, while the base places
- * it first. Filtering the base can only ever
+ * and Haiku 5.5 send `claude-code-20250219` sixth, while the base places it
+ * first. Filtering the base can only ever
  * reproduce the base's order. Applied only when it holds exactly the same flags
  * the delta above derives, so it self-invalidates: if the base set is ever
  * re-captured differently, the sets stop matching and we emit the derived value
@@ -414,7 +411,6 @@ const GENUINE_FLAG_ORDER: Record<string, readonly string[]> = {
 		"thinking-token-count-2026-05-13",
 		"context-management-2025-06-27",
 		"prompt-caching-scope-2026-01-05",
-		"mid-conversation-system-2026-04-07",
 		"claude-code-20250219",
 		"per-turn-control-2026-07-01",
 		"mid-conversation-tool-changes-2026-07-01",
@@ -562,7 +558,7 @@ export function getAnthropicBetaForModel(
 	}
 
 	// `modelBeta` is captured by `claude -p`. Interactive mode adds one signal on
-	// every model in the complete 14-id 2.1.295 TUI capture.
+	// every model in the complete 14-id 2.1.303 TUI capture.
 	// Treat the repeated signal as part of the mode
 	// profile so a newly-discovered family remains immediately usable.
 	if (getClaudeCodeEntrypoint(mode) === "cli") {

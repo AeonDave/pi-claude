@@ -119,7 +119,7 @@ test("Opus, Sonnet and Haiku 5.5 are visible at load with a stale cache, while o
 		assert.deepEqual(opus55.cost, { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 });
 		assert.deepEqual(opus55.compat, { forceAdaptiveThinking: true, supportsTemperature: false });
 		assert.deepEqual(opus55.thinkingLevelMap, { xhigh: "xhigh", max: "max", off: null });
-		assert.equal(opus55.headers, undefined, "Opus 5.5 uses the captured 17-flag provider base");
+		assert.equal(opus55.headers, undefined, "Opus 5.5 uses the captured 16-flag provider base");
 		const sonnet55 = models?.find((model) => model.id === "claude-sonnet-5-5");
 		assert.ok(sonnet55, "cold listing must include the verified bundled Sonnet 5.5 snapshot without session_start");
 		assert.equal(sonnet55.contextWindow, 1_000_000);
@@ -127,9 +127,9 @@ test("Opus, Sonnet and Haiku 5.5 are visible at load with a stale cache, while o
 		assert.deepEqual(sonnet55.cost, { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 });
 		assert.deepEqual(sonnet55.compat, { forceAdaptiveThinking: true, supportsTemperature: false });
 		assert.deepEqual(sonnet55.thinkingLevelMap, { xhigh: "xhigh", max: "max", off: null });
-		// Both flagship models use the captured 17-flag provider base verbatim.
+		// Both flagship models use the captured 16-flag provider base verbatim.
 		assert.equal(sonnet55.headers, undefined);
-		assert.equal((registrations[0]?.headers as Record<string, string> | undefined)?.["anthropic-beta"].split(",").length, 17);
+		assert.equal((registrations[0]?.headers as Record<string, string> | undefined)?.["anthropic-beta"].split(",").length, 16);
 		const haiku55 = models?.find((model) => model.id === "claude-haiku-5-5");
 		assert.ok(haiku55, "Haiku 5.5 is available before an authenticated session refresh");
 		assert.equal(haiku55.contextWindow, 1_000_000);

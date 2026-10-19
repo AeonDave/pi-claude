@@ -55,7 +55,7 @@ export interface Fingerprint {
 	/**
 	 * Per-model captured `anthropic-beta`, keyed by the WIRE model id, stored
 	 * verbatim (so flag ORDER matches the genuine client, which differs per model
-	 * — Haiku 4.5 puts `claude-code-20250219` sixth, Haiku 5.5 seventh). Optional: an older
+	 * — Haiku 4.5 and Haiku 5.5 put `claude-code-20250219` sixth). Optional: an older
 	 * fingerprint without it still resolves through the global set + the built-in
 	 * deltas, and an older extension simply ignores the key.
 	 */

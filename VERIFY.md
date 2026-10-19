@@ -4,10 +4,10 @@ Use the local capture scripts to compare this provider with genuine Claude Code.
 The comparator checks selected request fields. It does not establish equality
 of the complete system prompt, tool schemas, dynamic metadata, or HTTP stack.
 
-Genuine **Claude Code 2.1.295** captures cover all 14 bundled exact model ids in
-print and TUI modes. The print Opus/Sonnet common base contains 17 ordered beta
-flags. Haiku 5.5 sends the same set with `claude-code-20250219` seventh, adaptive
-thinking at medium effort, and a 128,000-token request cap. TUI adds
+Genuine **Claude Code 2.1.303** captures cover all 14 bundled exact model ids in
+print and TUI modes. The print Opus/Sonnet common base contains 16 ordered beta
+flags. Haiku 5.5 sends the same set with `claude-code-20250219` sixth, adaptive
+thinking, and a 128,000-token request cap. TUI adds
 `thinking-display-updates-2026-08-18` after the thinking-binding flag.
 The scripts write distilled metadata to `captures/fingerprint-<version>.json`
 and `captures/fingerprint-tui-<version>.json`. Raw captures stay local. The batch

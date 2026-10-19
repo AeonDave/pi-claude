@@ -70,7 +70,7 @@ function withEnvCleared(names: readonly string[], run: () => void): void {
 }
 
 test("default beta set matches the bundled Opus/Sonnet 5.5 common capture", () => {
-	assert.equal(BUNDLED_CC_VERSION, "2.1.295");
+	assert.equal(BUNDLED_CC_VERSION, "2.1.303");
 	assert.deepEqual(DEFAULT_ANTHROPIC_BETA.split(","), [
 		"claude-code-20250219",
 		"oauth-2025-04-20",
@@ -78,7 +78,6 @@ test("default beta set matches the bundled Opus/Sonnet 5.5 common capture", () =
 		"thinking-token-count-2026-05-13",
 		"context-management-2025-06-27",
 		"prompt-caching-scope-2026-01-05",
-		"mid-conversation-system-2026-04-07",
 		"per-turn-control-2026-07-01",
 		"mid-conversation-tool-changes-2026-07-01",
 		"inline-tools-2026-09-15",
@@ -96,7 +95,6 @@ test("default beta set matches the bundled Opus/Sonnet 5.5 common capture", () =
 		DEFAULT_ANTHROPIC_BETA.split(",").filter(
 			(flag) =>
 				![
-					"mid-conversation-system-2026-04-07",
 					"per-turn-control-2026-07-01",
 					"mid-conversation-tool-changes-2026-07-01",
 					"inline-tools-2026-09-15",
@@ -104,7 +102,7 @@ test("default beta set matches the bundled Opus/Sonnet 5.5 common capture", () =
 					"afk-mode-2026-01-31",
 				].includes(flag),
 		),
-		"the bundled Haiku 4.5 capture omits the six unsupported conversation/tool/effort flags",
+		"the bundled Haiku 4.5 capture omits the five legacy flags still present in this base",
 	);
 });
 
@@ -163,7 +161,7 @@ test("a positively adaptive discovered Haiku does not inherit the old budget-onl
 		assert.equal(getAnthropicBetaForModel("claude-haiku-6", "print", false).includes("effort-2025-11-24"), false);
 		assert.equal(getAnthropicBetaForModel("claude-haiku-4-5", "print", true).split(",").length, 11,
 			"captured exact-id evidence still wins over a capability argument");
-		assert.equal(getAnthropicBetaForModel("claude-haiku-5-5", "print", false).split(",").length, 17,
+		assert.equal(getAnthropicBetaForModel("claude-haiku-5-5", "print", false).split(",").length, 16,
 			"captured adaptive Haiku evidence also wins over a capability argument");
 	});
 });
@@ -172,28 +170,27 @@ test("bundled per-model deviations match the captured clean models exactly", () 
 	const toolChanges = "mid-conversation-tool-changes-2026-07-01";
 	const inlineTools = "inline-tools-2026-09-15";
 	const perTurn = "per-turn-control-2026-07-01";
-	const midConvo = "mid-conversation-system-2026-04-07";
 	const advisor = "advisor-tool-2026-03-01";
 	const base = DEFAULT_ANTHROPIC_BETA.split(",");
 
-	// Opus 5.5, Sonnet 5.5 and Fable 5.1 share the 17-flag captured base.
+	// Opus 5.5, Sonnet 5.5 and Fable 5.1 share the 16-flag captured base.
 	for (const id of ["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1"]) {
 		const flags = getAnthropicBetaForModel(id).split(",");
-		assert.equal(flags.length, 17, id);
-		assert.deepEqual(flags.slice(6, 11), [midConvo, perTurn, toolChanges, inlineTools, advisor], id);
+		assert.equal(flags.length, 16, id);
+		assert.deepEqual(flags.slice(5, 10), ["prompt-caching-scope-2026-01-05", perTurn, toolChanges, inlineTools, advisor], id);
 		assert.deepEqual(flags, base, id);
 	}
 
 	// Opus 5 / Fable 5 / Opus 4.8 drop only per-turn-control.
 	for (const id of ["claude-opus-5", "claude-fable-5", "claude-opus-4-8"]) {
 		const flags = getAnthropicBetaForModel(id).split(",");
-		assert.equal(flags.length, 16, id);
-		assert.deepEqual(flags.slice(6, 10), [midConvo, toolChanges, inlineTools, advisor], id);
+		assert.equal(flags.length, 15, id);
+		assert.deepEqual(flags.slice(6, 9), [toolChanges, inlineTools, advisor], id);
 		assert.deepEqual(flags, base.filter((flag) => flag !== perTurn), id);
 	}
 
 	// Every remaining captured model keeps its already-known flag count.
-	assert.equal(getAnthropicBetaForModel("claude-sonnet-5").split(",").length, 14);
+	assert.equal(getAnthropicBetaForModel("claude-sonnet-5").split(",").length, 13);
 	assert.equal(getAnthropicBetaForModel("claude-haiku-4-5").split(",").length, 11);
 	assert.equal(getAnthropicBetaForModel("claude-sonnet-4-5").split(",").length, 11);
 	assert.equal(getAnthropicBetaForModel("claude-opus-4-5").split(",").length, 12);
@@ -203,11 +200,11 @@ test("bundled per-model deviations match the captured clean models exactly", () 
 	assert.equal(
 		Object.values(MODEL_BETA_DELTAS).some((delta) => (delta.add?.length ?? 0) > 0),
 		false,
-		"the 2.1.295 common base includes all captured additions",
+		"the 2.1.303 common base includes all captured additions",
 	);
 });
 
-test("all fourteen 2.1.295 print and TUI beta headers match byte-exact captures", () => {
+test("all fourteen 2.1.303 print and TUI beta headers match byte-exact captures", () => {
 	withEnvCleared(["PI_CLAUDE_NATIVE_ANTHROPIC_BETA", "PI_CLAUDE_NATIVE_CC_ENTRYPOINT"], () => {
 		const cc = "claude-code-20250219";
 		const oauth = "oauth-2025-04-20";
@@ -215,7 +212,6 @@ test("all fourteen 2.1.295 print and TUI beta headers match byte-exact captures"
 		const tokenCount = "thinking-token-count-2026-05-13";
 		const context = "context-management-2025-06-27";
 		const cacheScope = "prompt-caching-scope-2026-01-05";
-		const midConversation = "mid-conversation-system-2026-04-07";
 		const perTurn = "per-turn-control-2026-07-01";
 		const toolChanges = "mid-conversation-tool-changes-2026-07-01";
 		const inlineTools = "inline-tools-2026-09-15";
@@ -230,31 +226,31 @@ test("all fourteen 2.1.295 print and TUI beta headers match byte-exact captures"
 
 		const expected: Record<string, readonly string[]> = {
 			"claude-opus-5-5": [
-				cc, oauth, interleaved, tokenCount, context, cacheScope, midConversation, perTurn,
+				cc, oauth, interleaved, tokenCount, context, cacheScope, perTurn,
 				toolChanges, inlineTools, advisor, advanced, effort, thinkingBinding, displayUpdates, afk, cacheTtl, cacheDiagnosis,
 			],
 			"claude-opus-5": [
-				cc, oauth, interleaved, tokenCount, context, cacheScope, midConversation, toolChanges,
+				cc, oauth, interleaved, tokenCount, context, cacheScope, toolChanges,
 				inlineTools, advisor, advanced, effort, thinkingBinding, displayUpdates, afk, cacheTtl, cacheDiagnosis,
 			],
 			"claude-sonnet-5-5": [
-				cc, oauth, interleaved, tokenCount, context, cacheScope, midConversation, perTurn,
+				cc, oauth, interleaved, tokenCount, context, cacheScope, perTurn,
 				toolChanges, inlineTools, advisor, advanced, effort, thinkingBinding, displayUpdates, afk, cacheTtl, cacheDiagnosis,
 			],
 			"claude-sonnet-5": [
-				cc, oauth, interleaved, tokenCount, context, cacheScope, midConversation, advisor,
+				cc, oauth, interleaved, tokenCount, context, cacheScope, advisor,
 				advanced, effort, thinkingBinding, displayUpdates, afk, cacheTtl, cacheDiagnosis,
 			],
 			"claude-fable-5-1": [
-				cc, oauth, interleaved, tokenCount, context, cacheScope, midConversation, perTurn,
+				cc, oauth, interleaved, tokenCount, context, cacheScope, perTurn,
 				toolChanges, inlineTools, advisor, advanced, effort, thinkingBinding, displayUpdates, afk, cacheTtl, cacheDiagnosis,
 			],
 			"claude-fable-5": [
-				cc, oauth, interleaved, tokenCount, context, cacheScope, midConversation, toolChanges,
+				cc, oauth, interleaved, tokenCount, context, cacheScope, toolChanges,
 				inlineTools, advisor, advanced, effort, thinkingBinding, displayUpdates, afk, cacheTtl, cacheDiagnosis,
 			],
 			"claude-opus-4-8": [
-				cc, oauth, interleaved, tokenCount, context, cacheScope, midConversation, toolChanges,
+				cc, oauth, interleaved, tokenCount, context, cacheScope, toolChanges,
 				inlineTools, advisor, advanced, effort, thinkingBinding, displayUpdates, afk, cacheTtl, cacheDiagnosis,
 			],
 			"claude-opus-4-7": [
@@ -282,21 +278,20 @@ test("all fourteen 2.1.295 print and TUI beta headers match byte-exact captures"
 				oauth, interleaved, tokenCount, context, cacheScope, cc, advisor, advanced,
 				thinkingBinding, displayUpdates, cacheTtl, cacheDiagnosis,
 			],
-			// Haiku 5.5 has the common set, with claude-code seventh on the wire.
+			// Haiku 5.5 has the common set, with claude-code sixth on the wire.
 			"claude-haiku-5-5": [
-				oauth, interleaved, tokenCount, context, cacheScope, midConversation, cc, perTurn,
+				oauth, interleaved, tokenCount, context, cacheScope, cc, perTurn,
 				toolChanges, inlineTools, advisor, advanced, effort, thinkingBinding, displayUpdates, afk, cacheTtl, cacheDiagnosis,
 			],
 		};
 
 		assert.equal(Object.keys(expected).length, 14);
 		for (const [id, flags] of Object.entries(expected)) {
-			assert.equal(getAnthropicBetaForModel(id, "print"), flags.filter((flag) => flag !== displayUpdates).join(","), `${id}: print capture`);
-			assert.deepEqual(getAnthropicBetaForModel(id, "tui").split(","), flags, id);
-			assert.equal(flags.filter((flag) => flag === displayUpdates).length, 1, `${id}: one mode-wide signal`);
-		}
-		for (const [id, flags] of Object.entries(expected)) {
-			assert.equal(flags.includes("fallback-credit-2026-06-01"), false, `${id}: stale fallback-credit must be absent`);
+			assert.deepEqual(getAnthropicBetaForModel(id, "print").split(","), flags.filter((flag) => flag !== displayUpdates), id + ": 2.1.303 print capture");
+			assert.deepEqual(getAnthropicBetaForModel(id, "tui").split(","), flags, id + ": 2.1.303 TUI capture");
+			assert.equal(flags.filter((flag) => flag === displayUpdates).length, 1, id + ": one mode-wide signal");
+			assert.equal(flags.includes("mid-conversation-system-2026-04-07"), false, id + ": removed from 2.1.303");
+			assert.equal(flags.includes("fallback-credit-2026-06-01"), false, id + ": stale flag absent");
 		}
 	});
 });
