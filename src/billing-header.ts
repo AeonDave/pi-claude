@@ -27,7 +27,7 @@
  */
 
 import { createHash } from "node:crypto";
-import { CCH_POSITIONS, CCH_SALT } from "./constants.ts";
+import { CCH_POSITIONS, CCH_SALT, compareVersions } from "./constants.ts";
 
 export interface BillingMessage {
 	role?: string;
@@ -133,8 +133,25 @@ export function turnOriginForEntrypoint(entrypoint: string): "human" | "sdk" | u
 	return undefined;
 }
 
+/** Oldest capture that stamps first-prompt indices; every later capture matched it. */
+export const FIRST_PROMPT_POSITION_SINCE = "2.1.284";
+const SEMVER_RE = /^\d+\.\d+\.\d+$/;
+
 /**
- * Captures for Claude Code 2.1.284, 2.1.288, 2.1.295 and 2.1.303 stamp the first SDK prompt
+ * Whether a resolved Claude Code version carries the captured first-prompt
+ * position profile. Captures 2.1.284, 2.1.288, 2.1.295, 2.1.303 and 2.1.308 all
+ * stamp the same positions, and the resolved version already follows the
+ * installed `claude`, so versions at or above the floor inherit the profile
+ * instead of silently dropping the indices on every routine Claude update.
+ * Anything older, or a non-semver manual pin, stays unstamped.
+ */
+export function hasCapturedFirstPromptPosition(version: string): boolean {
+	const trimmed = version.trim();
+	return SEMVER_RE.test(trimmed) && compareVersions(trimmed, FIRST_PROMPT_POSITION_SINCE) >= 0;
+}
+
+/**
+ * Every capture since Claude Code 2.1.284 stamps the first SDK prompt
  * (0, 1) and first interactive human prompt (1, 1). Later positions come from
  * its internal transcript, which the serialized Messages payload cannot
  * reconstruct after compaction or session branching.
@@ -185,9 +202,7 @@ export function buildBillingHeaderValue(
 	if (!sessionId) return base;
 	const promptId = derivePromptId(`${sessionId}\u0000${extractCurrentPromptText(messages)}`);
 	const turnOrigin = turnOriginForEntrypoint(entrypoint);
-	const capturedPositionProfile =
-		version === "2.1.284" || version === "2.1.288" || version === "2.1.295" || version === "2.1.303";
-	const position = capturedPositionProfile && firstPromptConfirmed ? initialTurnPosition(messages, entrypoint) : undefined;
+	const position = hasCapturedFirstPromptPosition(version) && firstPromptConfirmed ? initialTurnPosition(messages, entrypoint) : undefined;
 	const indexFields = position ? ` cc_prompt_index=${position.promptIndex}; cc_turn_index=${position.turnIndex};` : "";
 	return `${base} cc_prompt_id=${promptId};${turnOrigin ? ` cc_turn_origin=${turnOrigin};` : ""}${indexFields}`;
 }

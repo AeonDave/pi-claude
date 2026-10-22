@@ -4,9 +4,10 @@ Use the local capture scripts to compare this provider with genuine Claude Code.
 The comparator checks selected request fields. It does not establish equality
 of the complete system prompt, tool schemas, dynamic metadata, or HTTP stack.
 
-Genuine **Claude Code 2.1.303** captures cover all 14 bundled exact model ids in
-print and TUI modes. The print Opus/Sonnet common base contains 16 ordered beta
-flags. Haiku 5.5 sends the same set with `claude-code-20250219` sixth, adaptive
+Genuine captures cover all 14 bundled exact model ids: **Claude Code 2.1.308**
+in print mode and **2.1.303** in TUI mode, with identical flag sets, order, caps
+and budgets across the two generations. The print Opus/Sonnet common base
+contains 16 ordered beta flags. Haiku 5.5 sends the same set with `claude-code-20250219` sixth, adaptive
 thinking, and a 128,000-token request cap. TUI adds
 `thinking-display-updates-2026-08-18` after the thinking-binding flag.
 The scripts write distilled metadata to `captures/fingerprint-<version>.json`
@@ -188,8 +189,9 @@ Billing and user-agent use the same resolved Claude version. `cch` uses
 reproduce Claude's value or prove server-side validation. Prompt UUIDs are
 derived from session id and prompt text, so repeating the same text in a session
 reuses the id. The captured first-prompt indices are `(0, 1)` for print and
-`(1, 1)` for TUI. They are emitted only when Pi's active branch proves a
-matching, uncompacted first prompt; later or ambiguous turns omit them.
+`(1, 1)` for TUI on every capture since 2.1.284; later versions inherit them.
+They are emitted only when Pi's active branch proves a matching, uncompacted
+first prompt; later or ambiguous turns omit them.
 
 Request `max_tokens` comes from the exact captured client cap, independently
 of the catalog output ceiling. User-selected budget thinking can differ from

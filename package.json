@@ -1,6 +1,6 @@
 {
   "name": "pi-claude",
-  "version": "1.9.1",
+  "version": "1.10.0",
   "private": false,
   "type": "module",
   "description": "Adds a Claude Pro/Max Native provider to Pi with mode-aware Claude Code and Agent SDK wire profiles, OAuth, live model discovery, and captured request signals.",
@@ -40,8 +40,8 @@
     }
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "1.3.0",
-    "@earendil-works/pi-coding-agent": "1.3.0",
+    "@earendil-works/pi-ai": "1.4.0",
+    "@earendil-works/pi-coding-agent": "1.4.0",
     "@types/node": "^26.0.0",
     "tsx": "^4.23.13",
     "typescript": "^5.6.0"

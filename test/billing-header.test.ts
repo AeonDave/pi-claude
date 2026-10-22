@@ -8,6 +8,8 @@ import {
 	computeVersionSuffix,
 	extractCurrentPromptText,
 	extractFirstUserMessageText,
+	FIRST_PROMPT_POSITION_SINCE,
+	hasCapturedFirstPromptPosition,
 	turnOriginForEntrypoint,
 	type BillingMessage,
 } from "../src/billing-header.ts";
@@ -117,6 +119,8 @@ test("golden: reproduces the suffix genuine claude 2.1.261 put on the wire", () 
 	assert.equal(computeVersionSuffix("reply with the single word ok", "2.1.278"), "02b");
 	// Genuine 2.1.303 print requests retain this suffix for the captured probe.
 	assert.equal(computeVersionSuffix("reply with the single word ok", "2.1.303"), "c24");
+	// All 18 genuine 2.1.308 print requests carry `cc_version=2.1.308.a56` for the same probe.
+	assert.equal(computeVersionSuffix("reply with the single word ok", "2.1.308"), "a56");
 });
 
 test("cc_prompt_id and cc_turn_origin match the bundled capture shape and mode", () => {
@@ -175,19 +179,30 @@ test("turn indices are stamped only for captured fresh prompts and their tool lo
 		assert.ok(!buildBillingHeaderValue([prompt], version, "cli", "session-a").includes("cc_prompt_index"), "interactive history alone is insufficient");
 	}
 	assert.ok(!buildBillingHeaderValue([prompt], "2.1.283", "sdk-cli", "session-a", true).includes("cc_prompt_index"));
-	assert.ok(!buildBillingHeaderValue([prompt], "2.1.289", "cli", "session-a", true).includes("cc_prompt_index"), "newer interactive positions need a new capture");
+	assert.match(buildBillingHeaderValue([prompt], "2.1.289", "cli", "session-a", true), / cc_prompt_index=1; cc_turn_index=1;$/,
+		"versions after the first captured profile inherit the interactive position");
 });
 
-test("2.1.295 and 2.1.303 indices follow both captured modes only on confirmed first prompts", () => {
-	// Both versions' complete exact-id TUI captures stamp (1, 1); print stamps
-	// (0, 1). These are independent captured positions, not an inferred offset.
+test("first-prompt positions are inherited from the captured floor, never from older or unparsable versions", () => {
+	assert.equal(FIRST_PROMPT_POSITION_SINCE, "2.1.284");
+	for (const version of ["2.1.284", "2.1.288", "2.1.295", "2.1.303", "2.1.308", "2.1.309", "2.2.0", "3.0.0", " 2.1.308 "]) {
+		assert.equal(hasCapturedFirstPromptPosition(version), true, version);
+	}
+	for (const version of ["2.1.283", "2.0.999", "1.9.9", "", "dev", "2.1.284-rc1", "2.1", "v2.1.308"]) {
+		assert.equal(hasCapturedFirstPromptPosition(version), false, JSON.stringify(version));
+	}
+});
+
+test("2.1.295, 2.1.303 and 2.1.308 indices follow both captured modes only on confirmed first prompts", () => {
+	// The complete exact-id TUI captures stamp (1, 1); print stamps (0, 1).
+	// These are independent captured positions, not an inferred offset.
 	const prompt: BillingMessage = { role: "user", content: "read the hello file" };
 	const toolLoop: BillingMessage[] = [
 		prompt,
 		{ role: "assistant", content: [{ type: "tool_use", id: "t1" }] },
 		{ role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }] },
 	];
-	for (const version of ["2.1.295", "2.1.303"]) {
+	for (const version of ["2.1.295", "2.1.303", "2.1.308"]) {
 		for (const messages of [[prompt], toolLoop]) {
 			assert.match(buildBillingHeaderValue(messages, version, "sdk-cli", "session-a", true),
 				/ cc_turn_origin=sdk; cc_prompt_index=0; cc_turn_index=1;$/);
@@ -201,7 +216,7 @@ test("2.1.295 and 2.1.303 indices follow both captured modes only on confirmed f
 		}
 	}
 	const later = [prompt, { role: "assistant", content: "done" }, { role: "user", content: "next" }];
-	for (const version of ["2.1.295", "2.1.303"]) {
+	for (const version of ["2.1.295", "2.1.303", "2.1.308", "2.1.400"]) {
 		for (const entrypoint of ["sdk-cli", "cli"]) {
 			for (const messages of [later, [{ role: "assistant", content: "summary" }, prompt]]) {
 				const value = buildBillingHeaderValue(messages, version, entrypoint, "session-a", true);
@@ -210,13 +225,20 @@ test("2.1.295 and 2.1.303 indices follow both captured modes only on confirmed f
 			}
 		}
 	}
-	for (const entrypoint of ["sdk-cli", "cli", "custom"]) {
-		assert.ok(!buildBillingHeaderValue([prompt], "2.1.296", entrypoint, "session-a", true).includes("cc_prompt_index"),
-			"a future version needs its own captured profile");
+	// A routine Claude update must not drop the indices: later versions inherit
+	// the captured first-prompt profile, while unknown entrypoints stay unstamped.
+	for (const version of ["2.1.296", "2.1.304", "2.1.309", "2.2.0"]) {
+		assert.match(buildBillingHeaderValue([prompt], version, "sdk-cli", "session-a", true), / cc_prompt_index=0; cc_turn_index=1;$/, version);
+		assert.match(buildBillingHeaderValue([prompt], version, "cli", "session-a", true), / cc_prompt_index=1; cc_turn_index=1;$/, version);
+		assert.ok(!buildBillingHeaderValue([prompt], version, "custom", "session-a", true).includes("cc_prompt_index"), version);
 	}
 	assert.ok(!buildBillingHeaderValue([prompt], "2.1.303", "custom", "session-a", true).includes("cc_prompt_index"));
-	assert.ok(!buildBillingHeaderValue([prompt], "2.1.304", "cli", "session-a", true).includes("cc_prompt_index"),
-		"an uncaptured version must not inherit the interactive position profile");
+	for (const version of ["2.1.283", "dev", "2.1.284-rc1"]) {
+		for (const entrypoint of ["sdk-cli", "cli"]) {
+			assert.ok(!buildBillingHeaderValue([prompt], version, entrypoint, "session-a", true).includes("cc_prompt_index"),
+				version + ": older or non-semver versions have no captured position profile");
+		}
+	}
 });
 
 test("cc_prompt_id is stable across a tool loop and changes on a new prompt", () => {

@@ -70,7 +70,7 @@ function withEnvCleared(names: readonly string[], run: () => void): void {
 }
 
 test("default beta set matches the bundled Opus/Sonnet 5.5 common capture", () => {
-	assert.equal(BUNDLED_CC_VERSION, "2.1.303");
+	assert.equal(BUNDLED_CC_VERSION, "2.1.308");
 	assert.deepEqual(DEFAULT_ANTHROPIC_BETA.split(","), [
 		"claude-code-20250219",
 		"oauth-2025-04-20",
@@ -200,11 +200,11 @@ test("bundled per-model deviations match the captured clean models exactly", () 
 	assert.equal(
 		Object.values(MODEL_BETA_DELTAS).some((delta) => (delta.add?.length ?? 0) > 0),
 		false,
-		"the 2.1.303 common base includes all captured additions",
+		"the 2.1.308 common base includes all captured additions",
 	);
 });
 
-test("all fourteen 2.1.303 print and TUI beta headers match byte-exact captures", () => {
+test("all fourteen print (2.1.308) and TUI (2.1.303) beta headers match byte-exact captures", () => {
 	withEnvCleared(["PI_CLAUDE_NATIVE_ANTHROPIC_BETA", "PI_CLAUDE_NATIVE_CC_ENTRYPOINT"], () => {
 		const cc = "claude-code-20250219";
 		const oauth = "oauth-2025-04-20";
@@ -287,7 +287,7 @@ test("all fourteen 2.1.303 print and TUI beta headers match byte-exact captures"
 
 		assert.equal(Object.keys(expected).length, 14);
 		for (const [id, flags] of Object.entries(expected)) {
-			assert.deepEqual(getAnthropicBetaForModel(id, "print").split(","), flags.filter((flag) => flag !== displayUpdates), id + ": 2.1.303 print capture");
+			assert.deepEqual(getAnthropicBetaForModel(id, "print").split(","), flags.filter((flag) => flag !== displayUpdates), id + ": 2.1.308 print capture");
 			assert.deepEqual(getAnthropicBetaForModel(id, "tui").split(","), flags, id + ": 2.1.303 TUI capture");
 			assert.equal(flags.filter((flag) => flag === displayUpdates).length, 1, id + ": one mode-wide signal");
 			assert.equal(flags.includes("mid-conversation-system-2026-04-07"), false, id + ": removed from 2.1.303");

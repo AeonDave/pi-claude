@@ -3,7 +3,7 @@
 Pi extension providing **Claude Pro/Max Native** through Claude subscription
 OAuth. TypeScript is loaded directly by Pi through jiti; there is no build step
 or runtime dependency. Runtime floor: Pi 1.0.0. Development types target Pi
-1.3.0; local checks use Node.js 26.3.
+1.4.0; local checks use Node.js 26.3.
 
 Releases are distributed through GitHub. The unscoped `pi-claude` npm name
 belongs to another publisher: never publish this repository under that name.
@@ -70,16 +70,18 @@ belongs to `pi-skill-optimizer`.
 
 ## Captured fingerprint
 
-The bundled print profile is Claude Code **2.1.303**: 14 exact model ids and a
+The bundled print profile is Claude Code **2.1.308**: 14 exact model ids and a
 16-flag common base derived from the ordered Opus/Sonnet intersection. Haiku
 5.5 has the same flag set with its own captured order and a 128K request cap.
 Exact sets, order, caps and budget profiles are pinned in
 `test/constants.test.ts`; change them only with fresh genuine captures.
 
-The complete 2.1.303 TUI suite covers the same 14 exact ids. Its captured
-interactive display overlay follows `thinking-binding-controls-2026-08-01`.
-First-turn billing indices are `(0, 1)` for print and `(1, 1)` for TUI; preserve
-the branch and version/mode gates rather than extrapolating to later turns.
+The complete 2.1.303 TUI suite covers the same 14 exact ids; its sets, order,
+caps and budgets match the 2.1.308 print capture. Its captured interactive
+display overlay follows `thinking-binding-controls-2026-08-01`. First-turn
+billing indices are `(0, 1)` for print and `(1, 1)` for TUI on every capture
+since 2.1.284, and versions at or above that floor inherit them; preserve the
+branch and mode gates rather than extrapolating to later turns.
 
 Resolve beta from explicit environment override, then a usable fingerprint,
 then bundled exact-id rules. `modelBeta` outranks `MODEL_BETA_DELTAS` and
@@ -155,9 +157,10 @@ before changing them. The `cch` value is a shape-preserving hash stand-in, not
 the genuine client's verified algorithm.
 
 Keep one prompt UUID across a tool loop. Emit prompt/turn indices only for a
-confirmed, uncompacted first prompt and a captured version/mode combination;
-omit later or ambiguous indices. Do not change the OAuth client id or weaken
-its scopes.
+confirmed, uncompacted first prompt, a known entrypoint and a semver version at
+or above `FIRST_PROMPT_POSITION_SINCE`; omit later or ambiguous indices. Raise
+that floor only with capture evidence. Do not change the OAuth client id or
+weaken its scopes.
 
 All state lives under `<PI_CODING_AGENT_DIR ?? ~/.pi/agent>/claude-native/`.
 Expand a leading `~` consistently for fingerprint, cache and notices. Only the
