@@ -107,12 +107,14 @@ The extension also adds the billing header, available Claude account metadata,
 request ids, and captured per-model limits. System-prompt sanitization removes
 the Pi documentation paragraph that can trigger a request rejection.
 
-The print profile is captured from **Claude Code 2.1.308** and the TUI profile
-from **Claude Code 2.1.303**, across all 14 bundled exact model ids; both
-generations share the same flag sets, order, caps and budgets. First-turn
-billing indices follow the captured mode on Claude Code 2.1.284 or newer, only
-when Pi can prove the matching first prompt. [VERIFY.md](VERIFY.md) describes
-the capture procedure and the scope of the comparison.
+The print profile is captured from **Claude Code 2.1.317** across all 14
+bundled exact model ids plus Claude Mythos 5.1 (restricted access); the TUI
+display overlay comes from the **Claude Code 2.1.303** TUI suite. 2.1.317 kept
+every flag set, cap and budget and only reordered the shared flags, so the
+newer order applies to both modes. First-turn billing indices follow the
+captured mode on Claude Code 2.1.284 or newer, only when Pi can prove the
+matching first prompt. [VERIFY.md](VERIFY.md) describes the capture procedure
+and the scope of the comparison.
 
 ## Configuration
 
@@ -216,7 +218,7 @@ anchor when adding a new one. See [VERIFY.md](VERIFY.md) for the full procedure.
 
 ## Development
 
-Development types target Pi 1.4.0; local checks use Node.js 26.3.
+Development types target Pi 1.5.0; local checks use Node.js 26.3.
 
 ```bash
 npm run typecheck

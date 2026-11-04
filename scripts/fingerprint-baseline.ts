@@ -371,7 +371,19 @@ export function buildTuiFingerprint(candidates: readonly FingerprintCandidate[],
 	};
 }
 
-/** Distinguish the requested normal turn from title/auxiliary traffic. */
+const FAMILY_ALIASES = ["opus", "sonnet", "haiku", "fable"] as const;
+
+/**
+ * Distinguish the requested normal turn from title/auxiliary traffic.
+ *
+ * Claude Code remaps the bare family aliases through
+ * `ANTHROPIC_DEFAULT_<FAMILY>_MODEL` (settings `env` or the shell), so an
+ * alias may legitimately resolve outside its family — `fable` pointing at
+ * `claude-mythos-5-1`, for example. The exact probe text already separates
+ * the normal turn from helpers, and the report's `triggered by` column shows
+ * where each alias resolved, so an alias accepts any first-party Claude wire id.
+ * Exact ids still have to match exactly.
+ */
 export function isRequestedMainCapture(
 	requestedModel: string,
 	wireModel: string,
@@ -381,8 +393,8 @@ export function isRequestedMainCapture(
 	if (firstUserText !== expectedPrompt) return false;
 	const requested = stripDateSuffix(requestedModel);
 	const wire = stripDateSuffix(wireModel);
-	if (["opus", "sonnet", "haiku", "fable"].includes(requested)) {
-		return wire.startsWith(`claude-${requested}-`);
+	if ((FAMILY_ALIASES as readonly string[]).includes(requested)) {
+		return wire.startsWith("claude-");
 	}
 	if (requested.startsWith("claude-")) return wire === requested;
 	// Claude supports additional moving aliases. Their resolved id is unknowable

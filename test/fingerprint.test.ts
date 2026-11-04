@@ -190,7 +190,7 @@ test("fingerprint advisories are claimed once per state, only for the state-dir 
 
 test("a captured per-model beta set is used verbatim, preserving the genuine flag order", async () => {
 	// Genuine Haiku does NOT order its flags like the base set — it sends
-	// claude-code-20250219 sixth, not first. Filtering the base can only ever
+	// claude-code-20250219 fifth, not first. Filtering the base can only ever
 	// produce the base's order, so a captured set has to win outright. This is
 	// what lets a re-capture make a NEW model exact with no code change.
 	const haiku = "oauth-2025-04-20,interleaved-thinking-2025-05-14,claude-code-20250219";

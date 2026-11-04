@@ -3,7 +3,7 @@
 Pi extension providing **Claude Pro/Max Native** through Claude subscription
 OAuth. TypeScript is loaded directly by Pi through jiti; there is no build step
 or runtime dependency. Runtime floor: Pi 1.0.0. Development types target Pi
-1.4.0; local checks use Node.js 26.3.
+1.5.0; local checks use Node.js 26.3.
 
 Releases are distributed through GitHub. The unscoped `pi-claude` npm name
 belongs to another publisher: never publish this repository under that name.
@@ -70,15 +70,18 @@ belongs to `pi-skill-optimizer`.
 
 ## Captured fingerprint
 
-The bundled print profile is Claude Code **2.1.308**: 14 exact model ids and a
-16-flag common base derived from the ordered Opus/Sonnet intersection. Haiku
-5.5 has the same flag set with its own captured order and a 128K request cap.
+The bundled print profile is Claude Code **2.1.317**: 14 exact model ids, plus
+Claude Mythos 5.1 as a restricted-access id captured through an explicit
+`--models` run, and a 16-flag common base derived from the ordered Opus/Sonnet
+intersection. Haiku 5.5 has the same flag set with its own captured order and a
+128K request cap.
 Exact sets, order, caps and budget profiles are pinned in
 `test/constants.test.ts`; change them only with fresh genuine captures.
 
-The complete 2.1.303 TUI suite covers the same 14 exact ids; its sets, order,
-caps and budgets match the 2.1.308 print capture. Its captured interactive
-display overlay follows `thinking-binding-controls-2026-08-01`. First-turn
+The complete 2.1.303 TUI suite covers the 14 bundled exact ids; its sets, caps
+and budgets match the 2.1.317 print capture, whose newer flag order applies to
+both modes. Its captured interactive display overlay follows
+`thinking-binding-controls-2026-08-01`. First-turn
 billing indices are `(0, 1)` for print and `(1, 1)` for TUI on every capture
 since 2.1.284, and versions at or above that floor inherit them; preserve the
 branch and mode gates rather than extrapolating to later turns.
@@ -118,6 +121,12 @@ duplicate-flag or auxiliary-only evidence before writes. The run manifest
 guards `--reuse --apply`. TUI validation consumes manual dumps, requires all
 bundled exact ids, accepts additional clean ids, and rejects `--apply`; it does
 not drive a TUI or fake a PTY.
+
+Claude's `ANTHROPIC_DEFAULT_<FAMILY>_MODEL` settings can point a bare family
+alias at another family on the capturing machine. The validator accepts any
+first-party Claude wire id for an alias run and the report shows where it
+resolved; exact ids must still match exactly. Never add a locally remapped or
+restricted-access id to the default capture plan; capture it with `--models`.
 
 ## Models and discovery
 

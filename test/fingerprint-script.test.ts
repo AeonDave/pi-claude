@@ -82,6 +82,9 @@ test("default capture covers moving aliases before every bundled exact model id"
 	assert.equal(DEFAULT_CAPTURE_MODELS.length, 18);
 	assert.equal(DEFAULT_TUI_CAPTURE_MODELS.length, 14);
 	assert.equal(DEFAULT_TUI_CAPTURE_MODELS.at(-1), "claude-haiku-5-5");
+	// Restricted-access ids such as claude-mythos-5-1 are captured with --models,
+	// never from the default plan that every maintainer runs.
+	assert.ok(!DEFAULT_CAPTURE_MODELS.includes("claude-mythos-5-1"));
 });
 
 test("reuse rejects a manifest from an older capture plan", () => {
@@ -95,6 +98,11 @@ test("reuse rejects a manifest from an older capture plan", () => {
 		() => assertCapturePlanMatches(current.filter((model) => model !== "claude-haiku-5-5"), DEFAULT_CAPTURE_MODELS),
 		/manifest model list differs from --models/,
 		"a 17-run manifest from the previous default capture plan must not be reused",
+	);
+	assert.throws(
+		() => assertCapturePlanMatches([...current, "claude-mythos-5-1"], DEFAULT_CAPTURE_MODELS),
+		/manifest model list differs from --models/,
+		"a manifest from an explicit --models run must not be reused for the default plan",
 	);
 	assert.throws(
 		() => assertCapturePlanMatches([...current].reverse(), DEFAULT_CAPTURE_MODELS),
@@ -129,14 +137,20 @@ test("an incomplete live capture is rejected before publish/apply", () => {
 	);
 });
 
-test("main capture matching requires the probe text and the requested exact id or family", () => {
+test("main capture matching requires the probe text and the requested exact id, while aliases may be remapped", () => {
 	const probe = "reply with the single word fingerprint";
 
 	assert.equal(isRequestedMainCapture("opus", "claude-opus-5-20260909", probe, probe), true);
 	assert.equal(isRequestedMainCapture("claude-opus-4-8", "claude-opus-4-8-20260909", probe, probe), true);
 	assert.equal(isRequestedMainCapture("opus", "claude-opus-5", "auxiliary title request", probe), false);
-	assert.equal(isRequestedMainCapture("opus", "claude-sonnet-5", probe, probe), false);
+	// `ANTHROPIC_DEFAULT_<FAMILY>_MODEL` can point a bare alias at another family;
+	// the probe text and the report's `triggered by` column keep that visible.
+	assert.equal(isRequestedMainCapture("fable", "claude-mythos-5-1", probe, probe), true);
+	assert.equal(isRequestedMainCapture("opus", "claude-sonnet-5", probe, probe), true);
+	assert.equal(isRequestedMainCapture("opus", "gpt-6-1-sol", probe, probe), false, "aliases never accept non-Claude wire ids");
+	assert.equal(isRequestedMainCapture("fable", "claude-mythos-5-1", "auxiliary title request", probe), false);
 	assert.equal(isRequestedMainCapture("claude-opus-4-8", "claude-opus-4-7", probe, probe), false);
+	assert.equal(isRequestedMainCapture("claude-fable-5-1", "claude-mythos-5-1", probe, probe), false, "exact ids are never remapped");
 });
 
 test("lastUserMessageText selects the current interactive prompt after history", () => {

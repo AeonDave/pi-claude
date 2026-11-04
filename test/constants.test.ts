@@ -70,18 +70,18 @@ function withEnvCleared(names: readonly string[], run: () => void): void {
 }
 
 test("default beta set matches the bundled Opus/Sonnet 5.5 common capture", () => {
-	assert.equal(BUNDLED_CC_VERSION, "2.1.308");
+	assert.equal(BUNDLED_CC_VERSION, "2.1.317");
 	assert.deepEqual(DEFAULT_ANTHROPIC_BETA.split(","), [
 		"claude-code-20250219",
 		"oauth-2025-04-20",
 		"interleaved-thinking-2025-05-14",
-		"thinking-token-count-2026-05-13",
 		"context-management-2025-06-27",
 		"prompt-caching-scope-2026-01-05",
 		"per-turn-control-2026-07-01",
 		"mid-conversation-tool-changes-2026-07-01",
 		"inline-tools-2026-09-15",
 		"advisor-tool-2026-03-01",
+		"thinking-token-count-2026-05-13",
 		"advanced-tool-use-2025-11-20",
 		"effort-2025-11-24",
 		"thinking-binding-controls-2026-08-01",
@@ -171,21 +171,22 @@ test("bundled per-model deviations match the captured clean models exactly", () 
 	const inlineTools = "inline-tools-2026-09-15";
 	const perTurn = "per-turn-control-2026-07-01";
 	const advisor = "advisor-tool-2026-03-01";
+	const tokenCount = "thinking-token-count-2026-05-13";
 	const base = DEFAULT_ANTHROPIC_BETA.split(",");
 
 	// Opus 5.5, Sonnet 5.5 and Fable 5.1 share the 16-flag captured base.
 	for (const id of ["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1"]) {
 		const flags = getAnthropicBetaForModel(id).split(",");
 		assert.equal(flags.length, 16, id);
-		assert.deepEqual(flags.slice(5, 10), ["prompt-caching-scope-2026-01-05", perTurn, toolChanges, inlineTools, advisor], id);
+		assert.deepEqual(flags.slice(4, 10), ["prompt-caching-scope-2026-01-05", perTurn, toolChanges, inlineTools, advisor, tokenCount], id);
 		assert.deepEqual(flags, base, id);
 	}
 
-	// Opus 5 / Fable 5 / Opus 4.8 drop only per-turn-control.
-	for (const id of ["claude-opus-5", "claude-fable-5", "claude-opus-4-8"]) {
+	// Opus 5 / Fable 5 / Opus 4.8 / Mythos 5.1 drop only per-turn-control.
+	for (const id of ["claude-opus-5", "claude-fable-5", "claude-opus-4-8", "claude-mythos-5-1"]) {
 		const flags = getAnthropicBetaForModel(id).split(",");
 		assert.equal(flags.length, 15, id);
-		assert.deepEqual(flags.slice(6, 9), [toolChanges, inlineTools, advisor], id);
+		assert.deepEqual(flags.slice(5, 9), [toolChanges, inlineTools, advisor, tokenCount], id);
 		assert.deepEqual(flags, base.filter((flag) => flag !== perTurn), id);
 	}
 
@@ -200,11 +201,11 @@ test("bundled per-model deviations match the captured clean models exactly", () 
 	assert.equal(
 		Object.values(MODEL_BETA_DELTAS).some((delta) => (delta.add?.length ?? 0) > 0),
 		false,
-		"the 2.1.308 common base includes all captured additions",
+		"the 2.1.317 common base includes all captured additions",
 	);
 });
 
-test("all fourteen print (2.1.308) and TUI (2.1.303) beta headers match byte-exact captures", () => {
+test("all captured print (2.1.317) beta headers match byte-exact captures and TUI adds the 2.1.303 display overlay", () => {
 	withEnvCleared(["PI_CLAUDE_NATIVE_ANTHROPIC_BETA", "PI_CLAUDE_NATIVE_CC_ENTRYPOINT"], () => {
 		const cc = "claude-code-20250219";
 		const oauth = "oauth-2025-04-20";
@@ -224,71 +225,78 @@ test("all fourteen print (2.1.308) and TUI (2.1.303) beta headers match byte-exa
 		const cacheTtl = "extended-cache-ttl-2025-04-11";
 		const cacheDiagnosis = "cache-diagnosis-2026-04-07";
 
+		// 2.1.317 moved thinking-token-count after advisor-tool; the display overlay
+		// position comes from the 2.1.303 TUI suite and the newer print order wins.
 		const expected: Record<string, readonly string[]> = {
 			"claude-opus-5-5": [
-				cc, oauth, interleaved, tokenCount, context, cacheScope, perTurn,
-				toolChanges, inlineTools, advisor, advanced, effort, thinkingBinding, displayUpdates, afk, cacheTtl, cacheDiagnosis,
+				cc, oauth, interleaved, context, cacheScope, perTurn, toolChanges, inlineTools,
+				advisor, tokenCount, advanced, effort, thinkingBinding, displayUpdates, afk, cacheTtl, cacheDiagnosis,
 			],
 			"claude-opus-5": [
-				cc, oauth, interleaved, tokenCount, context, cacheScope, toolChanges,
-				inlineTools, advisor, advanced, effort, thinkingBinding, displayUpdates, afk, cacheTtl, cacheDiagnosis,
+				cc, oauth, interleaved, context, cacheScope, toolChanges, inlineTools,
+				advisor, tokenCount, advanced, effort, thinkingBinding, displayUpdates, afk, cacheTtl, cacheDiagnosis,
 			],
 			"claude-sonnet-5-5": [
-				cc, oauth, interleaved, tokenCount, context, cacheScope, perTurn,
-				toolChanges, inlineTools, advisor, advanced, effort, thinkingBinding, displayUpdates, afk, cacheTtl, cacheDiagnosis,
+				cc, oauth, interleaved, context, cacheScope, perTurn, toolChanges, inlineTools,
+				advisor, tokenCount, advanced, effort, thinkingBinding, displayUpdates, afk, cacheTtl, cacheDiagnosis,
 			],
 			"claude-sonnet-5": [
-				cc, oauth, interleaved, tokenCount, context, cacheScope, advisor,
+				cc, oauth, interleaved, context, cacheScope, advisor, tokenCount,
 				advanced, effort, thinkingBinding, displayUpdates, afk, cacheTtl, cacheDiagnosis,
 			],
 			"claude-fable-5-1": [
-				cc, oauth, interleaved, tokenCount, context, cacheScope, perTurn,
-				toolChanges, inlineTools, advisor, advanced, effort, thinkingBinding, displayUpdates, afk, cacheTtl, cacheDiagnosis,
+				cc, oauth, interleaved, context, cacheScope, perTurn, toolChanges, inlineTools,
+				advisor, tokenCount, advanced, effort, thinkingBinding, displayUpdates, afk, cacheTtl, cacheDiagnosis,
 			],
 			"claude-fable-5": [
-				cc, oauth, interleaved, tokenCount, context, cacheScope, toolChanges,
-				inlineTools, advisor, advanced, effort, thinkingBinding, displayUpdates, afk, cacheTtl, cacheDiagnosis,
+				cc, oauth, interleaved, context, cacheScope, toolChanges, inlineTools,
+				advisor, tokenCount, advanced, effort, thinkingBinding, displayUpdates, afk, cacheTtl, cacheDiagnosis,
+			],
+			// Restricted-access id captured through an explicit --models run on 2.1.317.
+			"claude-mythos-5-1": [
+				cc, oauth, interleaved, context, cacheScope, toolChanges, inlineTools,
+				advisor, tokenCount, advanced, effort, thinkingBinding, displayUpdates, afk, cacheTtl, cacheDiagnosis,
 			],
 			"claude-opus-4-8": [
-				cc, oauth, interleaved, tokenCount, context, cacheScope, toolChanges,
-				inlineTools, advisor, advanced, effort, thinkingBinding, displayUpdates, afk, cacheTtl, cacheDiagnosis,
+				cc, oauth, interleaved, context, cacheScope, toolChanges, inlineTools,
+				advisor, tokenCount, advanced, effort, thinkingBinding, displayUpdates, afk, cacheTtl, cacheDiagnosis,
 			],
 			"claude-opus-4-7": [
-				cc, oauth, interleaved, tokenCount, context, cacheScope, advisor, advanced,
+				cc, oauth, interleaved, context, cacheScope, advisor, tokenCount, advanced,
 				effort, thinkingBinding, displayUpdates, afk, cacheTtl, cacheDiagnosis,
 			],
 			"claude-opus-4-6": [
-				cc, oauth, interleaved, tokenCount, context, cacheScope, advisor, advanced,
+				cc, oauth, interleaved, context, cacheScope, advisor, tokenCount, advanced,
 				effort, thinkingBinding, displayUpdates, afk, cacheTtl, cacheDiagnosis,
 			],
 			"claude-sonnet-4-6": [
-				cc, oauth, interleaved, tokenCount, context, cacheScope, advisor, advanced,
+				cc, oauth, interleaved, context, cacheScope, advisor, tokenCount, advanced,
 				effort, thinkingBinding, displayUpdates, afk, cacheTtl, cacheDiagnosis,
 			],
 			"claude-opus-4-5": [
-				cc, oauth, interleaved, tokenCount, context, cacheScope, advisor, advanced,
+				cc, oauth, interleaved, context, cacheScope, advisor, tokenCount, advanced,
 				effort, thinkingBinding, displayUpdates, cacheTtl, cacheDiagnosis,
 			],
 			"claude-sonnet-4-5": [
-				cc, oauth, interleaved, tokenCount, context, cacheScope, advisor, advanced,
+				cc, oauth, interleaved, context, cacheScope, advisor, tokenCount, advanced,
 				thinkingBinding, displayUpdates, cacheTtl, cacheDiagnosis,
 			],
-			// Haiku's wire order is genuinely different: claude-code is sixth.
+			// Haiku's wire order is genuinely different: claude-code is fifth.
 			"claude-haiku-4-5": [
-				oauth, interleaved, tokenCount, context, cacheScope, cc, advisor, advanced,
+				oauth, interleaved, context, cacheScope, cc, advisor, tokenCount, advanced,
 				thinkingBinding, displayUpdates, cacheTtl, cacheDiagnosis,
 			],
-			// Haiku 5.5 has the common set, with claude-code sixth on the wire.
+			// Haiku 5.5 has the common set, with claude-code fifth on the wire.
 			"claude-haiku-5-5": [
-				oauth, interleaved, tokenCount, context, cacheScope, cc, perTurn,
-				toolChanges, inlineTools, advisor, advanced, effort, thinkingBinding, displayUpdates, afk, cacheTtl, cacheDiagnosis,
+				oauth, interleaved, context, cacheScope, cc, perTurn, toolChanges, inlineTools,
+				advisor, tokenCount, advanced, effort, thinkingBinding, displayUpdates, afk, cacheTtl, cacheDiagnosis,
 			],
 		};
 
-		assert.equal(Object.keys(expected).length, 14);
+		assert.equal(Object.keys(expected).length, 15);
 		for (const [id, flags] of Object.entries(expected)) {
-			assert.deepEqual(getAnthropicBetaForModel(id, "print").split(","), flags.filter((flag) => flag !== displayUpdates), id + ": 2.1.308 print capture");
-			assert.deepEqual(getAnthropicBetaForModel(id, "tui").split(","), flags, id + ": 2.1.303 TUI capture");
+			assert.deepEqual(getAnthropicBetaForModel(id, "print").split(","), flags.filter((flag) => flag !== displayUpdates), id + ": 2.1.317 print capture");
+			assert.deepEqual(getAnthropicBetaForModel(id, "tui").split(","), flags, id + ": 2.1.317 print order with the 2.1.303 TUI display overlay");
 			assert.equal(flags.filter((flag) => flag === displayUpdates).length, 1, id + ": one mode-wide signal");
 			assert.equal(flags.includes("mid-conversation-system-2026-04-07"), false, id + ": removed from 2.1.303");
 			assert.equal(flags.includes("fallback-credit-2026-06-01"), false, id + ": stale flag absent");
@@ -336,7 +344,7 @@ test("an unknown discovered budget model gets the non-effort base while adaptive
 	});
 });
 
-test("bundled request max_tokens matches all fourteen clean genuine captures", () => {
+test("bundled request max_tokens matches all fifteen clean genuine captures", () => {
 	const expected = {
 		"claude-opus-5-5": 128_000,
 		"claude-sonnet-5-5": 128_000,
@@ -345,6 +353,7 @@ test("bundled request max_tokens matches all fourteen clean genuine captures", (
 		"claude-sonnet-5": 64_000,
 		"claude-fable-5-1": 64_000,
 		"claude-fable-5": 64_000,
+		"claude-mythos-5-1": 64_000,
 		"claude-opus-4-8": 64_000,
 		"claude-opus-4-7": 64_000,
 		"claude-opus-4-6": 64_000,

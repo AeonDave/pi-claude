@@ -139,7 +139,8 @@ const SEMVER_RE = /^\d+\.\d+\.\d+$/;
 
 /**
  * Whether a resolved Claude Code version carries the captured first-prompt
- * position profile. Captures 2.1.284, 2.1.288, 2.1.295, 2.1.303 and 2.1.308 all
+ * position profile. Captures 2.1.284, 2.1.288, 2.1.295, 2.1.303, 2.1.308 and
+ * 2.1.317 all
  * stamp the same positions, and the resolved version already follows the
  * installed `claude`, so versions at or above the floor inherit the profile
  * instead of silently dropping the indices on every routine Claude update.

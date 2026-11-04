@@ -4,11 +4,14 @@ Use the local capture scripts to compare this provider with genuine Claude Code.
 The comparator checks selected request fields. It does not establish equality
 of the complete system prompt, tool schemas, dynamic metadata, or HTTP stack.
 
-Genuine captures cover all 14 bundled exact model ids: **Claude Code 2.1.308**
-in print mode and **2.1.303** in TUI mode, with identical flag sets, order, caps
-and budgets across the two generations. The print Opus/Sonnet common base
-contains 16 ordered beta flags. Haiku 5.5 sends the same set with `claude-code-20250219` sixth, adaptive
-thinking, and a 128,000-token request cap. TUI adds
+Genuine captures cover all 14 bundled exact model ids: **Claude Code 2.1.317**
+in print mode, plus Claude Mythos 5.1 through an explicit `--models` run, and
+**2.1.303** in TUI mode. Flag sets, caps and budgets are identical across the
+two generations; 2.1.317 moved `thinking-token-count-2026-05-13` after
+`advisor-tool-2026-03-01`, and the newer print order applies to both modes.
+The print Opus/Sonnet common base contains 16 ordered beta flags. Haiku 5.5
+sends the same set with `claude-code-20250219` fifth, adaptive thinking, and a
+128,000-token request cap. TUI adds
 `thinking-display-updates-2026-08-18` after the thinking-binding flag.
 The scripts write distilled metadata to `captures/fingerprint-<version>.json`
 and `captures/fingerprint-tui-<version>.json`. Raw captures stay local. The batch
@@ -54,6 +57,14 @@ This starts the localhost proxy, marks it first-party for Claude, and runs tiny
 `claude -p` prompts for all 14 bundled exact ids plus `opus`, `sonnet`, `haiku`,
 and `fable`. The required ids are defined in
 [scripts/fingerprint-baseline.ts](https://github.com/AeonDave/pi-claude/blob/main/scripts/fingerprint-baseline.ts).
+Pass `--models` with the default list plus any extra id to capture a
+restricted-access model such as `claude-mythos-5-1`.
+
+A bare family alias follows Claude's `ANTHROPIC_DEFAULT_<FAMILY>_MODEL`
+settings on the capturing machine, so `fable` can resolve to a different
+family. The validator accepts any first-party Claude wire id for an alias run;
+the report's `triggered by` column shows where each alias resolved, and exact
+ids must still match exactly.
 
 Review `captures/fingerprint-report.md` and
 `captures/fingerprint-<version>.json`. The report compares the ordered common

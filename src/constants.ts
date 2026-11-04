@@ -81,8 +81,8 @@ export const TOKEN_USER_AGENT = "axios/1.13.6";
 // so this constant must never lag the newest generation the provider exposes.
 // The one version literal that advances with a reviewed capture. Tests and
 // runtime freshness checks consume this export instead of copying the value.
-// Current evidence: `claude` 2.1.308, captured 2026-10-22.
-export const BUNDLED_CC_VERSION = "2.1.308";
+// Current evidence: `claude` 2.1.317, captured 2026-11-04.
+export const BUNDLED_CC_VERSION = "2.1.317";
 export const DEFAULT_CC_ENTRYPOINT = "sdk-cli";
 export const DEFAULT_PRINT_THINKING_DISPLAY = "omitted";
 
@@ -275,8 +275,9 @@ export function getBaseUrl(): string {
 /**
  * The `anthropic-beta` base shared verbatim by the bundled Opus 5.5 and
  * Sonnet 5.5 normal-turn captures (`claude -p`). The first-party capture proxy
- * preserves conditional beta flags. The 2.1.308 capture has a 16-flag ordered
- * intersection, byte-identical to 2.1.303. Exact deviations for the other captured models live in
+ * preserves conditional beta flags. The 2.1.317 capture has a 16-flag ordered
+ * intersection: the same set as 2.1.303–2.1.308 with `thinking-token-count`
+ * moved after `advisor-tool`. Exact deviations for the other captured models live in
  * `MODEL_BETA_DELTAS`.
  *
  * The set still varies by model:
@@ -306,13 +307,13 @@ export const DEFAULT_ANTHROPIC_BETA = [
 	"claude-code-20250219",
 	"oauth-2025-04-20",
 	"interleaved-thinking-2025-05-14",
-	"thinking-token-count-2026-05-13",
 	"context-management-2025-06-27",
 	"prompt-caching-scope-2026-01-05",
 	"per-turn-control-2026-07-01",
 	"mid-conversation-tool-changes-2026-07-01",
 	"inline-tools-2026-09-15",
 	"advisor-tool-2026-03-01",
+	"thinking-token-count-2026-05-13",
 	"advanced-tool-use-2025-11-20",
 	"effort-2025-11-24",
 	"thinking-binding-controls-2026-08-01",
@@ -346,11 +347,13 @@ export const DEFAULT_NON_EFFORT_ANTHROPIC_BETA = DEFAULT_ANTHROPIC_BETA.split(",
 
 /**
  * How each model's `anthropic-beta` differs from the common base set — captured
- * across every clean id in the bundled capture (14 models). The exact sets are:
+ * across every clean id in the bundled capture (14 models) plus Claude Mythos
+ * 5.1, a restricted-access id captured through an explicit `--models` run on
+ * 2.1.317. The exact sets are:
  *
  *   opus 5.5 / sonnet 5.5 / fable 5.1     — the common base 16 (no delta)
  *   haiku 5.5                             — the common set 16, distinct order
- *   opus 5 / opus 4.8 / fable 5           — 15 (drops `per-turn-control`)
+ *   opus 5 / opus 4.8 / fable 5 / mythos 5.1 — 15 (drops `per-turn-control`)
  *   sonnet 5                              — 13 (also drops tool changes and inline tools)
  *   opus 4.7 / opus 4.6 / sonnet 4.6      — 13 (drops per-turn and tool-change flags)
  *   opus 4.5                              — 12 (also drops `afk-mode`)
@@ -379,6 +382,7 @@ export const MODEL_BETA_DELTAS: Record<string, ModelBetaDelta> = {
 	"claude-sonnet-5": { remove: [PER_TURN_CONTROL, MID_CONVO_TOOL_CHANGES, INLINE_TOOLS] },
 	"claude-fable-5-1": {},
 	"claude-fable-5": { remove: [PER_TURN_CONTROL] },
+	"claude-mythos-5-1": { remove: [PER_TURN_CONTROL] },
 	"claude-opus-4-8": { remove: [PER_TURN_CONTROL] },
 	"claude-opus-4-7": { remove: [PER_TURN_CONTROL, MID_CONVO_TOOL_CHANGES, INLINE_TOOLS] },
 	"claude-opus-4-6": { remove: [PER_TURN_CONTROL, MID_CONVO_TOOL_CHANGES, INLINE_TOOLS] },
@@ -397,7 +401,7 @@ export const MODEL_BETA_DELTAS: Record<string, ModelBetaDelta> = {
 
 /**
  * The genuine flag ORDER for models that do not order like the base — Haiku 4.5
- * and Haiku 5.5 send `claude-code-20250219` sixth, while the base places it
+ * and Haiku 5.5 send `claude-code-20250219` fifth, while the base places it
  * first. Filtering the base can only ever
  * reproduce the base's order. Applied only when it holds exactly the same flags
  * the delta above derives, so it self-invalidates: if the base set is ever
@@ -408,7 +412,6 @@ const GENUINE_FLAG_ORDER: Record<string, readonly string[]> = {
 	"claude-haiku-5-5": [
 		"oauth-2025-04-20",
 		"interleaved-thinking-2025-05-14",
-		"thinking-token-count-2026-05-13",
 		"context-management-2025-06-27",
 		"prompt-caching-scope-2026-01-05",
 		"claude-code-20250219",
@@ -416,6 +419,7 @@ const GENUINE_FLAG_ORDER: Record<string, readonly string[]> = {
 		"mid-conversation-tool-changes-2026-07-01",
 		"inline-tools-2026-09-15",
 		"advisor-tool-2026-03-01",
+		"thinking-token-count-2026-05-13",
 		"advanced-tool-use-2025-11-20",
 		"effort-2025-11-24",
 		"thinking-binding-controls-2026-08-01",
@@ -426,11 +430,11 @@ const GENUINE_FLAG_ORDER: Record<string, readonly string[]> = {
 	"claude-haiku-4-5": [
 		"oauth-2025-04-20",
 		"interleaved-thinking-2025-05-14",
-		"thinking-token-count-2026-05-13",
 		"context-management-2025-06-27",
 		"prompt-caching-scope-2026-01-05",
 		"claude-code-20250219",
 		"advisor-tool-2026-03-01",
+		"thinking-token-count-2026-05-13",
 		"advanced-tool-use-2025-11-20",
 		"thinking-binding-controls-2026-08-01",
 		"extended-cache-ttl-2025-04-11",
@@ -568,8 +572,8 @@ export function getAnthropicBetaForModel(
 }
 
 /**
- * Genuine request caps from the bundled capture across all fourteen clean
- * model ids. These are intentionally distinct from `/v1/models.max_tokens` and
+ * Genuine request caps from the bundled capture across the fourteen bundled
+ * clean ids plus Mythos 5.1. These are intentionally distinct from `/v1/models.max_tokens` and
  * Pi's catalog `maxTokens`: those advertise the API ceiling, while the CLI
  * puts 128K on Opus, Sonnet and Haiku 5.5 and 64K/32K on the other captured ids. Keep the catalog
  * values for model metadata and clamp only the serialized request in
@@ -584,6 +588,7 @@ export const DEFAULT_MODEL_MAX_TOKENS: Readonly<Record<string, number>> = {
 	"claude-sonnet-5": 64_000,
 	"claude-fable-5-1": 64_000,
 	"claude-fable-5": 64_000,
+	"claude-mythos-5-1": 64_000,
 	"claude-opus-4-8": 64_000,
 	"claude-opus-4-7": 64_000,
 	"claude-opus-4-6": 64_000,
