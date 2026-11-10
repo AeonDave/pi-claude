@@ -4,10 +4,11 @@ Use the local capture scripts to compare this provider with genuine Claude Code.
 The comparator checks selected request fields. It does not establish equality
 of the complete system prompt, tool schemas, dynamic metadata, or HTTP stack.
 
-Genuine captures cover all 14 bundled exact model ids: **Claude Code 2.1.317**
-in print mode, plus Claude Mythos 5.1 through an explicit `--models` run, and
-**2.1.303** in TUI mode. Flag sets, caps and budgets are identical across the
-two generations; 2.1.317 moved `thinking-token-count-2026-05-13` after
+Genuine print captures cover all 15 bundled exact model ids on **Claude Code
+2.1.322**, plus Claude Mythos 5.1 and 5.2 through explicit `--models` runs.
+The **2.1.303** TUI suite covers the 14 ids that existed then; Fable 5.2 has no
+TUI capture yet. Flag sets, caps and budgets are identical across the two
+generations; 2.1.317 moved `thinking-token-count-2026-05-13` after
 `advisor-tool-2026-03-01`, and the newer print order applies to both modes.
 The print Opus/Sonnet common base contains 16 ordered beta flags. Haiku 5.5
 sends the same set with `claude-code-20250219` fifth, adaptive thinking, and a
@@ -54,7 +55,7 @@ npm run capture:fingerprint
 ```
 
 This starts the localhost proxy, marks it first-party for Claude, and runs tiny
-`claude -p` prompts for all 14 bundled exact ids plus `opus`, `sonnet`, `haiku`,
+`claude -p` prompts for all 15 bundled exact ids plus `opus`, `sonnet`, `haiku`,
 and `fable`. The required ids are defined in
 [scripts/fingerprint-baseline.ts](https://github.com/AeonDave/pi-claude/blob/main/scripts/fingerprint-baseline.ts).
 Pass `--models` with the default list plus any extra id to capture a
@@ -174,7 +175,7 @@ Run both clients in a real terminal with their standard streams attached;
 piping them through a wrapper can select a non-interactive profile. When using
 RTK, use `rtk run` to preserve terminal I/O rather than `rtk proxy`.
 
-For a complete TUI fingerprint, manually capture all 14 bundled exact ids in
+For a complete TUI fingerprint, manually capture all 15 bundled exact ids in
 the fresh genuine directory, then run:
 
 ```bash

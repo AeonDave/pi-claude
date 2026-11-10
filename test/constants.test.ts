@@ -70,7 +70,7 @@ function withEnvCleared(names: readonly string[], run: () => void): void {
 }
 
 test("default beta set matches the bundled Opus/Sonnet 5.5 common capture", () => {
-	assert.equal(BUNDLED_CC_VERSION, "2.1.317");
+	assert.equal(BUNDLED_CC_VERSION, "2.1.322");
 	assert.deepEqual(DEFAULT_ANTHROPIC_BETA.split(","), [
 		"claude-code-20250219",
 		"oauth-2025-04-20",
@@ -174,8 +174,8 @@ test("bundled per-model deviations match the captured clean models exactly", () 
 	const tokenCount = "thinking-token-count-2026-05-13";
 	const base = DEFAULT_ANTHROPIC_BETA.split(",");
 
-	// Opus 5.5, Sonnet 5.5 and Fable 5.1 share the 16-flag captured base.
-	for (const id of ["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1"]) {
+	// Opus 5.5, Sonnet 5.5, Fable 5.1/5.2 and Mythos 5.2 share the 16-flag captured base.
+	for (const id of ["claude-opus-5-5", "claude-sonnet-5-5", "claude-fable-5-1", "claude-fable-5-2", "claude-mythos-5-2"]) {
 		const flags = getAnthropicBetaForModel(id).split(",");
 		assert.equal(flags.length, 16, id);
 		assert.deepEqual(flags.slice(4, 10), ["prompt-caching-scope-2026-01-05", perTurn, toolChanges, inlineTools, advisor, tokenCount], id);
@@ -201,11 +201,11 @@ test("bundled per-model deviations match the captured clean models exactly", () 
 	assert.equal(
 		Object.values(MODEL_BETA_DELTAS).some((delta) => (delta.add?.length ?? 0) > 0),
 		false,
-		"the 2.1.317 common base includes all captured additions",
+		"the 2.1.322 common base includes all captured additions",
 	);
 });
 
-test("all captured print (2.1.317) beta headers match byte-exact captures and TUI adds the 2.1.303 display overlay", () => {
+test("all captured print (2.1.322) beta headers match byte-exact captures and TUI adds the 2.1.303 display overlay", () => {
 	withEnvCleared(["PI_CLAUDE_NATIVE_ANTHROPIC_BETA", "PI_CLAUDE_NATIVE_CC_ENTRYPOINT"], () => {
 		const cc = "claude-code-20250219";
 		const oauth = "oauth-2025-04-20";
@@ -252,7 +252,15 @@ test("all captured print (2.1.317) beta headers match byte-exact captures and TU
 				cc, oauth, interleaved, context, cacheScope, toolChanges, inlineTools,
 				advisor, tokenCount, advanced, effort, thinkingBinding, displayUpdates, afk, cacheTtl, cacheDiagnosis,
 			],
-			// Restricted-access id captured through an explicit --models run on 2.1.317.
+			"claude-fable-5-2": [
+				cc, oauth, interleaved, context, cacheScope, perTurn, toolChanges, inlineTools,
+				advisor, tokenCount, advanced, effort, thinkingBinding, displayUpdates, afk, cacheTtl, cacheDiagnosis,
+			],
+			// Restricted-access ids captured through explicit --models runs.
+			"claude-mythos-5-2": [
+				cc, oauth, interleaved, context, cacheScope, perTurn, toolChanges, inlineTools,
+				advisor, tokenCount, advanced, effort, thinkingBinding, displayUpdates, afk, cacheTtl, cacheDiagnosis,
+			],
 			"claude-mythos-5-1": [
 				cc, oauth, interleaved, context, cacheScope, toolChanges, inlineTools,
 				advisor, tokenCount, advanced, effort, thinkingBinding, displayUpdates, afk, cacheTtl, cacheDiagnosis,
@@ -293,10 +301,10 @@ test("all captured print (2.1.317) beta headers match byte-exact captures and TU
 			],
 		};
 
-		assert.equal(Object.keys(expected).length, 15);
+		assert.equal(Object.keys(expected).length, 17);
 		for (const [id, flags] of Object.entries(expected)) {
-			assert.deepEqual(getAnthropicBetaForModel(id, "print").split(","), flags.filter((flag) => flag !== displayUpdates), id + ": 2.1.317 print capture");
-			assert.deepEqual(getAnthropicBetaForModel(id, "tui").split(","), flags, id + ": 2.1.317 print order with the 2.1.303 TUI display overlay");
+			assert.deepEqual(getAnthropicBetaForModel(id, "print").split(","), flags.filter((flag) => flag !== displayUpdates), id + ": 2.1.322 print capture");
+			assert.deepEqual(getAnthropicBetaForModel(id, "tui").split(","), flags, id + ": 2.1.322 print order with the 2.1.303 TUI display overlay");
 			assert.equal(flags.filter((flag) => flag === displayUpdates).length, 1, id + ": one mode-wide signal");
 			assert.equal(flags.includes("mid-conversation-system-2026-04-07"), false, id + ": removed from 2.1.303");
 			assert.equal(flags.includes("fallback-credit-2026-06-01"), false, id + ": stale flag absent");
@@ -344,15 +352,17 @@ test("an unknown discovered budget model gets the non-effort base while adaptive
 	});
 });
 
-test("bundled request max_tokens matches all fifteen clean genuine captures", () => {
+test("bundled request max_tokens matches all seventeen clean genuine captures", () => {
 	const expected = {
 		"claude-opus-5-5": 128_000,
 		"claude-sonnet-5-5": 128_000,
 		"claude-haiku-5-5": 128_000,
 		"claude-opus-5": 64_000,
 		"claude-sonnet-5": 64_000,
+		"claude-fable-5-2": 128_000,
 		"claude-fable-5-1": 64_000,
 		"claude-fable-5": 64_000,
+		"claude-mythos-5-2": 128_000,
 		"claude-mythos-5-1": 64_000,
 		"claude-opus-4-8": 64_000,
 		"claude-opus-4-7": 64_000,
@@ -367,7 +377,7 @@ test("bundled request max_tokens matches all fifteen clean genuine captures", ()
 		assert.equal(getClaudeCodeMaxTokensForModel(id), cap, id);
 	}
 	assert.equal(getClaudeCodeMaxTokensForModel("claude-mythos-6"), undefined, "unknown ids are never guessed");
-	assert.equal(getClaudeCodeMaxTokensForModel("claude-fable-5-2"), undefined, "an uncaptured future Fable cap is not extrapolated");
+	assert.equal(getClaudeCodeMaxTokensForModel("claude-fable-5-3"), undefined, "an uncaptured future Fable cap is not extrapolated");
 });
 
 test("bundled budget-thinking profiles are limited to the three captured exact ids", () => {

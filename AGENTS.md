@@ -3,7 +3,7 @@
 Pi extension providing **Claude Pro/Max Native** through Claude subscription
 OAuth. TypeScript is loaded directly by Pi through jiti; there is no build step
 or runtime dependency. Runtime floor: Pi 1.0.0. Development types target Pi
-1.5.0; local checks use Node.js 26.3.
+1.5.1; local checks use Node.js 26.3.
 
 Releases are distributed through GitHub. The unscoped `pi-claude` npm name
 belongs to another publisher: never publish this repository under that name.
@@ -68,19 +68,27 @@ triggers with the scripts in VERIFY.md or an explicit
 `PI_CLAUDE_NATIVE_SYSTEM_ANCHORS` override. General skill-catalog trimming
 belongs to `pi-skill-optimizer`.
 
+Carry only the catalog fields listed in `buildMergedModels`; never copy Pi's
+model `compat` or `promptCache` wholesale. `supportsMessageThreads`,
+`allowedFallbackModels`, the mid-conversation flags and `promptCache` make
+Pi add `thread`, `fallbacks`, per-message effort or cache-warming requests
+that genuine Claude Code does not send, and their betas would be dropped by the
+header hook.
+
 ## Captured fingerprint
 
-The bundled print profile is Claude Code **2.1.317**: 14 exact model ids, plus
-Claude Mythos 5.1 as a restricted-access id captured through an explicit
-`--models` run, and a 16-flag common base derived from the ordered Opus/Sonnet
+The bundled print profile is Claude Code **2.1.322**: 15 exact model ids, plus
+Claude Mythos 5.1 and 5.2 as restricted-access ids captured through explicit
+`--models` runs, and a 16-flag common base derived from the ordered Opus/Sonnet
 intersection. Haiku 5.5 has the same flag set with its own captured order and a
-128K request cap.
+128K request cap; Fable 5.2 and Mythos 5.2 send the full base with a 128K cap.
 Exact sets, order, caps and budget profiles are pinned in
 `test/constants.test.ts`; change them only with fresh genuine captures.
 
-The complete 2.1.303 TUI suite covers the 14 bundled exact ids; its sets, caps
-and budgets match the 2.1.317 print capture, whose newer flag order applies to
-both modes. Its captured interactive display overlay follows
+The complete 2.1.303 TUI suite covers the 14 exact ids that existed then; its
+sets, caps and budgets match the 2.1.322 print capture, whose newer flag order
+applies to both modes. Fable 5.2 has no TUI capture yet: its interactive header
+is the print capture plus the mode-wide overlay until a TUI suite includes it. Its captured interactive display overlay follows
 `thinking-binding-controls-2026-08-01`. First-turn
 billing indices are `(0, 1)` for print and `(1, 1)` for TUI on every capture
 since 2.1.284, and versions at or above that floor inherit them; preserve the
@@ -131,7 +139,7 @@ restricted-access id to the default capture plan; capture it with `--models`.
 ## Models and discovery
 
 Discovery is family-agnostic through `parseModelId`. Keep rolling generations,
-including Opus/Sonnet/Haiku 5.5, in low-precedence bundled snapshots rather than
+including Opus/Sonnet/Haiku 5.5 and Fable 5.2, in low-precedence bundled snapshots rather than
 `SEED_IDS` or `FAMILY_DEFAULTS`. Registration starts with seed, bundle and cache;
 authenticated `session_start` refreshes from cache, live discovery and Pi's
 catalog. Failure falls back to local data. `pi --list-models` does not trigger
@@ -152,6 +160,11 @@ Pi's catalog supplies pricing; preserve its full cost type, including
 request-wide tiers. Correct Sonnet 5.5 cache-read pricing to $0.10/MTok only
 for Pi 1.1.0's exact known untiered tuple. Changed tuples, tiered prices and user
 overrides win.
+
+Fable 5.2 can decline a request with `stop_reason: "refusal"` because of
+system-prompt content such as a security-heavy skill catalog; reproduce with
+`--no-skills` before suspecting the wire profile. Do not add `fallbacks` or a
+`server-side-fallback-*` beta: genuine captures send neither.
 
 Shared model ids can resolve to the built-in `anthropic` provider. Use
 provider-qualified selection and `/claude-native` diagnostics; keep wire ids

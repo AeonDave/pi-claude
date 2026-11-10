@@ -116,6 +116,7 @@ export const DEFAULT_CAPTURE_MODELS = [
 	"claude-sonnet-4-5",
 	"claude-haiku-4-5",
 	"claude-haiku-5-5",
+	"claude-fable-5-2",
 ] as const;
 
 /** Bundled exact clean ids; aliases are not enough for a TUI overlay. */

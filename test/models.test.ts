@@ -239,7 +239,7 @@ test("discovery: Fable 5 auto-appears with the current Pi catalog values", () =>
 	assert.ok(!models.some((m) => m.id === "claude-fable-5-1m"));
 });
 
-test("discovery: an upcoming Fable 5.2 id appears from catalog capabilities without a seed", () => {
+test("discovery: a Fable id appears from catalog capabilities without a seed", () => {
 	const id = "claude-fable-5-2";
 	const models = buildNativeModels({
 		extraIds: [id],

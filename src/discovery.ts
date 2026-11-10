@@ -54,8 +54,29 @@ export interface DiscoveredModel {
  * Public specs and Pi 1.1.0's catalog confirm the adaptive mode, effort ceiling,
  * 1M/128K limits, and request-wide price tier above 100K input tokens. Disabled
  * thinking is independent of manual budgets (see the public effort guide).
+ *
+ * Claude Fable 5.2: generally available successor to Fable 5.1. Capabilities
+ * were observed on `/v1/models` on 2026-11-10 (adaptive only, effort through
+ * `max`, no disabled thinking, no temperature, 1M/128K). Pricing matches Pi
+ * 1.5.1's catalog and the public model reference: $8 / $40 per MTok, cache read
+ * $0.20, 5-minute cache write $10. Claude Mythos 5.2 shares the profile but is
+ * limited to verified organizations, so it stays a discovered model.
  */
 export const BUNDLED_MODEL_SNAPSHOT: readonly DiscoveredModel[] = [
+	{
+		id: "claude-fable-5-2",
+		catalog: {
+			cost: { input: 8, output: 40, cacheRead: 0.2, cacheWrite: 10 },
+			contextWindow: 1_000_000,
+			maxTokens: 128_000,
+			reasoning: true,
+			input: ["text", "image"],
+			forceAdaptiveThinking: true,
+			supportsEffort: true,
+			supportsTemperature: false,
+			thinkingLevelMap: { xhigh: "xhigh", max: "max", off: null },
+		},
+	},
 	{
 		id: "claude-opus-5-5",
 		catalog: {

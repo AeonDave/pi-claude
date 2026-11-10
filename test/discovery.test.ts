@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
 import {
+	BUNDLED_MODEL_SNAPSHOT,
 	type DiscoveredModel,
 	normalizeModelsResponse,
 	readModelCache,
@@ -268,4 +269,38 @@ test("a >200K window is only trusted when the model is known to be adaptive", ()
 		data: [{ id: "claude-mythos-9", max_input_tokens: 1000000, capabilities: { thinking: { supported: true } } }],
 	});
 	assert.equal(unknown.catalog.contextWindow, 200000, "clamped until adaptive support is positively stated");
+});
+
+test("bundled snapshot covers only generally available rolling generations", () => {
+	assert.deepEqual(BUNDLED_MODEL_SNAPSHOT.map((model) => model.id), [
+		"claude-fable-5-2",
+		"claude-opus-5-5",
+		"claude-sonnet-5-5",
+		"claude-haiku-5-5",
+	]);
+	// Restricted-access ids stay discovered models; they never ship in the snapshot.
+	assert.equal(BUNDLED_MODEL_SNAPSHOT.some((model) => model.id.startsWith("claude-mythos-")), false);
+
+	// Fable 5.2: /v1/models capabilities observed on 2026-11-10, pricing from Pi 1.5.1's catalog.
+	const fable = BUNDLED_MODEL_SNAPSHOT.find((model) => model.id === "claude-fable-5-2");
+	assert.deepEqual(fable?.catalog, {
+		cost: { input: 8, output: 40, cacheRead: 0.2, cacheWrite: 10 },
+		contextWindow: 1_000_000,
+		maxTokens: 128_000,
+		reasoning: true,
+		input: ["text", "image"],
+		forceAdaptiveThinking: true,
+		supportsEffort: true,
+		supportsTemperature: false,
+		thinkingLevelMap: { xhigh: "xhigh", max: "max", off: null },
+	});
+
+	// The snapshot alone is enough for a cold list: adaptive only, never "off".
+	const native = buildNativeModels({ extraIds: ["claude-fable-5-2"], catalog: new Map([["claude-fable-5-2", fable!.catalog]]) })
+		.find((model) => model.id === "claude-fable-5-2");
+	assert.ok(native, "the snapshot entry is exposed as a native model");
+	assert.equal(native.contextWindow, 1_000_000);
+	assert.equal(native.maxTokens, 128_000);
+	assert.deepEqual(native.cost, { input: 8, output: 40, cacheRead: 0.2, cacheWrite: 10 });
+	assert.equal(native.thinkingLevelMap?.off, null);
 });

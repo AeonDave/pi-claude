@@ -64,13 +64,21 @@ take precedence over these fallbacks.
 
 | Model id | Context | Captured request cap | Thinking |
 |----------|---------|----------------------|----------|
+| `claude-fable-5-2` | 1M | 128K | adaptive; through `max` |
 | `claude-opus-5-5` | 1M | 128K | adaptive; through `max` |
 | `claude-sonnet-5-5` | 1M | 128K | adaptive; through `max` |
 | `claude-haiku-5-5` | 1M | 128K | adaptive; through `max`; off supported |
 
-Opus and Sonnet 5.5 require adaptive thinking. Haiku 5.5 supports Pi's off
+Fable 5.2, Opus 5.5 and Sonnet 5.5 require adaptive thinking. Haiku 5.5 supports Pi's off
 setting, which omits effort and uses the model's default. Its pricing tiers are
 preserved: above 100K input tokens, the higher rates apply to the whole request.
+
+Fable 5.2 can decline a request when Anthropic's safety classifiers flag its
+content, which includes Pi's skill catalog and context files. A declined request
+ends with Anthropic's usage-policy message instead of an answer. The provider
+sends no `fallbacks` parameter, because genuine Claude Code does not: trim the
+catalog, for example with `--no-skills` or `pi-skill-optimizer`, or select
+another model.
 
 Live discovery runs once per process at session start when this provider has an
 OAuth token. It refreshes the registry and saves a local cache. New families can
@@ -107,11 +115,11 @@ The extension also adds the billing header, available Claude account metadata,
 request ids, and captured per-model limits. System-prompt sanitization removes
 the Pi documentation paragraph that can trigger a request rejection.
 
-The print profile is captured from **Claude Code 2.1.317** across all 14
-bundled exact model ids plus Claude Mythos 5.1 (restricted access); the TUI
-display overlay comes from the **Claude Code 2.1.303** TUI suite. 2.1.317 kept
-every flag set, cap and budget and only reordered the shared flags, so the
-newer order applies to both modes. First-turn billing indices follow the
+The print profile is captured from **Claude Code 2.1.322** across all 15
+bundled exact model ids plus Claude Mythos 5.1 and 5.2 (restricted access); the
+TUI display overlay comes from the **Claude Code 2.1.303** TUI suite. The print
+flag order, unchanged since 2.1.317, applies to both modes. First-turn billing
+indices follow the
 captured mode on Claude Code 2.1.284 or newer, only when Pi can prove the
 matching first prompt. [VERIFY.md](VERIFY.md) describes the capture procedure
 and the scope of the comparison.
@@ -218,7 +226,7 @@ anchor when adding a new one. See [VERIFY.md](VERIFY.md) for the full procedure.
 
 ## Development
 
-Development types target Pi 1.5.0; local checks use Node.js 26.3.
+Development types target Pi 1.5.1; local checks use Node.js 26.3.
 
 ```bash
 npm run typecheck

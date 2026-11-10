@@ -78,13 +78,16 @@ test("default capture covers moving aliases before every bundled exact model id"
 		"claude-sonnet-4-5",
 		"claude-haiku-4-5",
 		"claude-haiku-5-5",
+		"claude-fable-5-2",
 	]);
-	assert.equal(DEFAULT_CAPTURE_MODELS.length, 18);
-	assert.equal(DEFAULT_TUI_CAPTURE_MODELS.length, 14);
-	assert.equal(DEFAULT_TUI_CAPTURE_MODELS.at(-1), "claude-haiku-5-5");
-	// Restricted-access ids such as claude-mythos-5-1 are captured with --models,
-	// never from the default plan that every maintainer runs.
-	assert.ok(!DEFAULT_CAPTURE_MODELS.includes("claude-mythos-5-1"));
+	assert.equal(DEFAULT_CAPTURE_MODELS.length, 19);
+	assert.equal(DEFAULT_TUI_CAPTURE_MODELS.length, 15);
+	assert.equal(DEFAULT_TUI_CAPTURE_MODELS.at(-1), "claude-fable-5-2");
+	// Restricted-access ids such as claude-mythos-5-1 and claude-mythos-5-2 are
+	// captured with --models, never from the default plan that every maintainer runs.
+	for (const restricted of ["claude-mythos-5-1", "claude-mythos-5-2"] as string[]) {
+		assert.ok(!(DEFAULT_CAPTURE_MODELS as readonly string[]).includes(restricted), restricted);
+	}
 });
 
 test("reuse rejects a manifest from an older capture plan", () => {
@@ -95,9 +98,9 @@ test("reuse rejects a manifest from an older capture plan", () => {
 		/manifest model list differs from --models/,
 	);
 	assert.throws(
-		() => assertCapturePlanMatches(current.filter((model) => model !== "claude-haiku-5-5"), DEFAULT_CAPTURE_MODELS),
+		() => assertCapturePlanMatches(current.filter((model) => model !== "claude-fable-5-2"), DEFAULT_CAPTURE_MODELS),
 		/manifest model list differs from --models/,
-		"a 17-run manifest from the previous default capture plan must not be reused",
+		"an 18-run manifest from the previous default capture plan must not be reused",
 	);
 	assert.throws(
 		() => assertCapturePlanMatches([...current, "claude-mythos-5-1"], DEFAULT_CAPTURE_MODELS),
@@ -323,7 +326,7 @@ test("TUI capture validation accepts and distills additional clean model ids", (
 		requestClass: "main",
 		turnOrigin: "human",
 	}));
-	const future = candidate("claude-fable-5-2", ["base", "future-exact-flag"], ["claude-fable-5-2"], {
+	const future = candidate("claude-fable-5-3", ["base", "future-exact-flag"], ["claude-fable-5-3"], {
 		version: FIXTURE_VERSION,
 		entrypoint: "cli",
 		userAgent: userAgentFor("cli"),
@@ -339,9 +342,9 @@ test("TUI capture validation accepts and distills additional clean model ids", (
 	const fingerprint = buildTuiFingerprint(selected, "2030-01-02T00:00:00.000Z");
 
 	assert.equal(selected.length, DEFAULT_TUI_CAPTURE_MODELS.length + 1);
-	assert.equal(selected.at(-1)?.wireModel, "claude-fable-5-2");
-	assert.equal(fingerprint.modelBeta["claude-fable-5-2"], "base,future-exact-flag");
-	assert.equal(fingerprint.modelMaxTokens["claude-fable-5-2"], 64_000);
+	assert.equal(selected.at(-1)?.wireModel, "claude-fable-5-3");
+	assert.equal(fingerprint.modelBeta["claude-fable-5-3"], "base,future-exact-flag");
+	assert.equal(fingerprint.modelMaxTokens["claude-fable-5-3"], 64_000);
 	assert.throws(
 		() => selectTuiCaptureCandidates([...base, { ...future, wireModel: "claude-fable-latest" }]),
 		/unexpected TUI capture model/i,

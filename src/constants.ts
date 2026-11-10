@@ -81,8 +81,8 @@ export const TOKEN_USER_AGENT = "axios/1.13.6";
 // so this constant must never lag the newest generation the provider exposes.
 // The one version literal that advances with a reviewed capture. Tests and
 // runtime freshness checks consume this export instead of copying the value.
-// Current evidence: `claude` 2.1.317, captured 2026-11-04.
-export const BUNDLED_CC_VERSION = "2.1.317";
+// Current evidence: `claude` 2.1.322, captured 2026-11-10.
+export const BUNDLED_CC_VERSION = "2.1.322";
 export const DEFAULT_CC_ENTRYPOINT = "sdk-cli";
 export const DEFAULT_PRINT_THINKING_DISPLAY = "omitted";
 
@@ -275,15 +275,15 @@ export function getBaseUrl(): string {
 /**
  * The `anthropic-beta` base shared verbatim by the bundled Opus 5.5 and
  * Sonnet 5.5 normal-turn captures (`claude -p`). The first-party capture proxy
- * preserves conditional beta flags. The 2.1.317 capture has a 16-flag ordered
- * intersection: the same set as 2.1.303–2.1.308 with `thinking-token-count`
- * moved after `advisor-tool`. Exact deviations for the other captured models live in
+ * preserves conditional beta flags. The 2.1.322 capture has a 16-flag ordered
+ * intersection, byte-identical since 2.1.317: the 2.1.303–2.1.308 set with
+ * `thinking-token-count` moved after `advisor-tool`. Exact deviations for the other captured models live in
  * `MODEL_BETA_DELTAS`.
  *
  * The set still varies by model:
- *   Opus 5.5 / Sonnet 5.5 / Fable 5.1 — this base, 16 flags;
+ *   Opus 5.5 / Sonnet 5.5 / Fable 5.1 / Fable 5.2 / Mythos 5.2 — this base, 16 flags;
  *   Haiku 5.5 — the same 16-flag set with its captured distinct order;
- *   Opus 5 / Opus 4.8 / Fable 5 — base minus `per-turn-control` = 15;
+ *   Opus 5 / Opus 4.8 / Fable 5 / Mythos 5.1 — base minus `per-turn-control` = 15;
  *   Sonnet 5 — base minus `per-turn-control`, tool changes and inline tools = 13;
  *   Haiku 4.5 — base minus five unsupported flags = 11;
  *   Opus 4.5 — base minus four unsupported flags = 12.
@@ -347,11 +347,11 @@ export const DEFAULT_NON_EFFORT_ANTHROPIC_BETA = DEFAULT_ANTHROPIC_BETA.split(",
 
 /**
  * How each model's `anthropic-beta` differs from the common base set — captured
- * across every clean id in the bundled capture (14 models) plus Claude Mythos
- * 5.1, a restricted-access id captured through an explicit `--models` run on
- * 2.1.317. The exact sets are:
+ * across every clean id in the bundled capture (15 models) plus Claude Mythos
+ * 5.1 and 5.2, restricted-access ids captured through explicit `--models`
+ * runs. The exact sets are:
  *
- *   opus 5.5 / sonnet 5.5 / fable 5.1     — the common base 16 (no delta)
+ *   opus 5.5 / sonnet 5.5 / fable 5.1 / fable 5.2 / mythos 5.2 — the common base 16 (no delta)
  *   haiku 5.5                             — the common set 16, distinct order
  *   opus 5 / opus 4.8 / fable 5 / mythos 5.1 — 15 (drops `per-turn-control`)
  *   sonnet 5                              — 13 (also drops tool changes and inline tools)
@@ -380,8 +380,10 @@ export const MODEL_BETA_DELTAS: Record<string, ModelBetaDelta> = {
 	"claude-haiku-5-5": {},
 	"claude-opus-5": { remove: [PER_TURN_CONTROL] },
 	"claude-sonnet-5": { remove: [PER_TURN_CONTROL, MID_CONVO_TOOL_CHANGES, INLINE_TOOLS] },
+	"claude-fable-5-2": {},
 	"claude-fable-5-1": {},
 	"claude-fable-5": { remove: [PER_TURN_CONTROL] },
+	"claude-mythos-5-2": {},
 	"claude-mythos-5-1": { remove: [PER_TURN_CONTROL] },
 	"claude-opus-4-8": { remove: [PER_TURN_CONTROL] },
 	"claude-opus-4-7": { remove: [PER_TURN_CONTROL, MID_CONVO_TOOL_CHANGES, INLINE_TOOLS] },
@@ -572,10 +574,11 @@ export function getAnthropicBetaForModel(
 }
 
 /**
- * Genuine request caps from the bundled capture across the fourteen bundled
- * clean ids plus Mythos 5.1. These are intentionally distinct from `/v1/models.max_tokens` and
- * Pi's catalog `maxTokens`: those advertise the API ceiling, while the CLI
- * puts 128K on Opus, Sonnet and Haiku 5.5 and 64K/32K on the other captured ids. Keep the catalog
+ * Genuine request caps from the bundled capture across the fifteen bundled
+ * clean ids plus Mythos 5.1 and 5.2. These are intentionally distinct from
+ * `/v1/models.max_tokens` and Pi's catalog `maxTokens`: those advertise the
+ * API ceiling, while the CLI puts 128K on Opus, Sonnet and Haiku 5.5, Fable 5.2
+ * and Mythos 5.2, and 64K/32K on the other captured ids. Keep the catalog
  * values for model metadata and clamp only the serialized request in
  * `before_provider_request`.
  * Unknown models are left untouched until a real capture records their value.
@@ -586,8 +589,10 @@ export const DEFAULT_MODEL_MAX_TOKENS: Readonly<Record<string, number>> = {
 	"claude-haiku-5-5": 128_000,
 	"claude-opus-5": 64_000,
 	"claude-sonnet-5": 64_000,
+	"claude-fable-5-2": 128_000,
 	"claude-fable-5-1": 64_000,
 	"claude-fable-5": 64_000,
+	"claude-mythos-5-2": 128_000,
 	"claude-mythos-5-1": 64_000,
 	"claude-opus-4-8": 64_000,
 	"claude-opus-4-7": 64_000,
