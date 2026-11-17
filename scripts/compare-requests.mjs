@@ -180,7 +180,7 @@ check(
 	!!claudeUa && !!piUa && claudeUa[1] === ccVer && piUa[1] === piVer && claudeUa[2] === ccEntry && piUa[2] === piEntry,
 	`claude ua=${claudeUa?.[1]}/${claudeUa?.[2]}, billing=${ccVer}/${ccEntry} | pi ua=${piUa?.[1]}/${piUa?.[2]}, billing=${piVer}/${piEntry}`,
 );
-for (const key of ["x-app", "x-claude-code-request-class", "anthropic-beta"]) {
+for (const key of ["x-app", "x-claude-code-request-class", "x-claude-1p-request-class", "anthropic-beta"]) {
 	check(`header "${key}" matches genuine`, header(pi, key) === header(claude, key), `claude=${header(claude, key)} | pi=${header(pi, key)}`);
 }
 for (const key of ["x-client-request-id", "x-claude-code-session-id"]) {
@@ -330,5 +330,14 @@ for (const c of checks) {
 	console.log(`      ${c.detail}`);
 	if (c.ok) passed++;
 }
+// Informational only: first-party header names the genuine request carries and
+// the Pi request does not. Unmirrored names are a known gap, not a failed check,
+// but a new name here is the earliest sign of header drift.
+const firstPartyHeader = (name) => name.startsWith("x-claude-") || name.startsWith("anthropic-");
+const unmirrored = Object.keys(claude.headers ?? {})
+	.filter((name) => firstPartyHeader(name) && !(name in (pi.headers ?? {})))
+	.sort();
+if (unmirrored.length > 0) console.log(`\nNOTE  genuine first-party headers not sent by pi: ${unmirrored.join(", ")}`);
+
 console.log(`\n${passed}/${checks.length} checks passed`);
 process.exit(passed === checks.length ? 0 : 1);

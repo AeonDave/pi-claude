@@ -81,8 +81,8 @@ export const TOKEN_USER_AGENT = "axios/1.13.6";
 // so this constant must never lag the newest generation the provider exposes.
 // The one version literal that advances with a reviewed capture. Tests and
 // runtime freshness checks consume this export instead of copying the value.
-// Current evidence: `claude` 2.1.322, captured 2026-11-10.
-export const BUNDLED_CC_VERSION = "2.1.322";
+// Current evidence: `claude` 2.1.326, captured 2026-11-17.
+export const BUNDLED_CC_VERSION = "2.1.326";
 export const DEFAULT_CC_ENTRYPOINT = "sdk-cli";
 export const DEFAULT_PRINT_THINKING_DISPLAY = "omitted";
 
@@ -275,7 +275,7 @@ export function getBaseUrl(): string {
 /**
  * The `anthropic-beta` base shared verbatim by the bundled Opus 5.5 and
  * Sonnet 5.5 normal-turn captures (`claude -p`). The first-party capture proxy
- * preserves conditional beta flags. The 2.1.322 capture has a 16-flag ordered
+ * preserves conditional beta flags. The 2.1.326 capture has a 16-flag ordered
  * intersection, byte-identical since 2.1.317: the 2.1.303–2.1.308 set with
  * `thinking-token-count` moved after `advisor-tool`. Exact deviations for the other captured models live in
  * `MODEL_BETA_DELTAS`.

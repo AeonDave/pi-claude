@@ -153,7 +153,10 @@ export default function claudeProMaxNative(pi: ExtensionAPI) {
 		"x-claude-code-session-id": getSessionId(),
 	};
 
-	const oauth = { name: PROVIDER_NAME, login, refreshToken, getApiKey };
+	// `isSubscription` is display metadata: Pi reads it only for the footer's
+	// `(sub)` cost marker and the `/login` and `/logout` selector labels. Its
+	// auth resolution uses `login`, `refreshToken` and `getApiKey` alone.
+	const oauth = { name: PROVIDER_NAME, isSubscription: true, login, refreshToken, getApiKey };
 
 	// Re-registering with the same model set is a no-op we can skip; track the last
 	// applied signature so session_start refreshes don't churn the registry.
@@ -338,9 +341,14 @@ export default function claudeProMaxNative(pi: ExtensionAPI) {
 
 	// Genuine Claude Code sends a fresh `x-client-request-id` UUID and labels the
 	// primary turn `x-claude-code-request-class: main` (re-verified across the
-	// bundled print and TUI captures). Pi
-	// sets this header on its OpenAI/Codex paths but not on the Anthropic one, so it
-	// is the last header gap for this provider.
+	// bundled print and TUI captures). Since 2.1.326 it repeats the label as
+	// `x-claude-1p-request-class: main` on every main request. Pi sets a request
+	// id on its OpenAI/Codex paths but not on the Anthropic one.
+	//
+	// Genuine main requests also carry `anthropic-dispatch-id`,
+	// `x-claude-code-prompt-id` and `x-claude-code-sandy-plover`. They are not
+	// sent here: their semantics are unverified, and the prompt id would have to
+	// equal the billing `cc_prompt_id`, which only the payload hook can derive.
 	//
 	// Pi IGNORES this handler's return value (`emitBeforeProviderHeaders` returns the
 	// object it was given), so the headers must be mutated in place. Requires Pi
@@ -352,6 +360,7 @@ export default function claudeProMaxNative(pi: ExtensionAPI) {
 		const forceAdaptiveThinking = (ctx.model?.compat as { forceAdaptiveThinking?: boolean } | undefined)?.forceAdaptiveThinking;
 		event.headers["anthropic-beta"] = getAnthropicBetaForModel(ctx.model?.id ?? "", ctx.mode, forceAdaptiveThinking);
 		event.headers["x-claude-code-request-class"] = "main";
+		event.headers["x-claude-1p-request-class"] = "main";
 		event.headers["x-client-request-id"] = randomUUID();
 	});
 

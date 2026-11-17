@@ -125,6 +125,8 @@ test("golden: reproduces the suffix genuine claude 2.1.261 put on the wire", () 
 	assert.equal(computeVersionSuffix("reply with the single word ok", "2.1.317"), "ef6");
 	// All 20 genuine 2.1.322 print requests carry `cc_version=2.1.322.211` for the same probe.
 	assert.equal(computeVersionSuffix("reply with the single word ok", "2.1.322"), "211");
+	// All 21 genuine 2.1.326 print requests carry `cc_version=2.1.326.632` for the same probe.
+	assert.equal(computeVersionSuffix("reply with the single word ok", "2.1.326"), "632");
 });
 
 test("cc_prompt_id and cc_turn_origin match the bundled capture shape and mode", () => {
@@ -197,7 +199,7 @@ test("first-prompt positions are inherited from the captured floor, never from o
 	}
 });
 
-test("2.1.295 through 2.1.322 indices follow both captured modes only on confirmed first prompts", () => {
+test("2.1.295 through 2.1.326 indices follow both captured modes only on confirmed first prompts", () => {
 	// The complete exact-id TUI captures stamp (1, 1); print stamps (0, 1).
 	// These are independent captured positions, not an inferred offset.
 	const prompt: BillingMessage = { role: "user", content: "read the hello file" };
@@ -206,7 +208,7 @@ test("2.1.295 through 2.1.322 indices follow both captured modes only on confirm
 		{ role: "assistant", content: [{ type: "tool_use", id: "t1" }] },
 		{ role: "user", content: [{ type: "tool_result", tool_use_id: "t1", content: "ok" }] },
 	];
-	for (const version of ["2.1.295", "2.1.303", "2.1.308", "2.1.317", "2.1.322"]) {
+	for (const version of ["2.1.295", "2.1.303", "2.1.308", "2.1.317", "2.1.322", "2.1.326"]) {
 		for (const messages of [[prompt], toolLoop]) {
 			assert.match(buildBillingHeaderValue(messages, version, "sdk-cli", "session-a", true),
 				/ cc_turn_origin=sdk; cc_prompt_index=0; cc_turn_index=1;$/);
@@ -220,7 +222,7 @@ test("2.1.295 through 2.1.322 indices follow both captured modes only on confirm
 		}
 	}
 	const later = [prompt, { role: "assistant", content: "done" }, { role: "user", content: "next" }];
-	for (const version of ["2.1.295", "2.1.303", "2.1.308", "2.1.317", "2.1.322", "2.1.400"]) {
+	for (const version of ["2.1.295", "2.1.303", "2.1.308", "2.1.317", "2.1.322", "2.1.326", "2.1.400"]) {
 		for (const entrypoint of ["sdk-cli", "cli"]) {
 			for (const messages of [later, [{ role: "assistant", content: "summary" }, prompt]]) {
 				const value = buildBillingHeaderValue(messages, version, entrypoint, "session-a", true);

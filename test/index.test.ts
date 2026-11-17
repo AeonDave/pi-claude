@@ -69,6 +69,40 @@ function context(getAll: () => unknown[]) {
 	};
 }
 
+test("every registration marks the OAuth login as a subscription without widening the provider config", () => {
+	const previous = process.env.PI_CLAUDE_NATIVE_MODELS_CACHE;
+	process.env.PI_CLAUDE_NATIVE_MODELS_CACHE = join(tmpdir(), `claude-native-missing-${randomUUID()}.json`);
+	try {
+		const registrations: Array<{ id: string; config: Record<string, unknown> }> = [];
+		const { pi, handlers } = harness((id, config) => registrations.push({ id, config: config as Record<string, unknown> }));
+		claudeProMaxNative(pi as never);
+		handlers.get("session_start")?.({}, context(() => [fableModel()]));
+		assert.equal(registrations.length, 2, "load-time seed, then the catalog-backed refresh");
+
+		for (const { id, config } of registrations) {
+			assert.equal(id, PROVIDER_ID);
+			// Pi's footer marks the cost `(sub)` and `/login` labels the sign-in from this flag.
+			const oauth = config.oauth as Record<string, unknown>;
+			assert.equal(oauth.isSubscription, true);
+			assert.deepEqual(Object.keys(oauth).sort(), ["getApiKey", "isSubscription", "login", "name", "refreshToken"]);
+			// The flag rides on the login descriptor; the fields Pi builds requests
+			// from stay exactly the registered set.
+			assert.deepEqual(Object.keys(config).sort(), ["api", "baseUrl", "headers", "models", "name", "oauth"]);
+			assert.equal(config.api, "anthropic-messages");
+			assert.deepEqual(Object.keys(config.headers as Record<string, string>).sort(), [
+				"anthropic-beta",
+				"user-agent",
+				"x-app",
+				"x-claude-code-request-class",
+				"x-claude-code-session-id",
+			]);
+		}
+	} finally {
+		if (previous === undefined) delete process.env.PI_CLAUDE_NATIVE_MODELS_CACHE;
+		else process.env.PI_CLAUDE_NATIVE_MODELS_CACHE = previous;
+	}
+});
+
 test("session refresh re-registers when catalog fields change without an id/window change", () => {
 	const previous = process.env.PI_CLAUDE_NATIVE_MODELS_CACHE;
 	process.env.PI_CLAUDE_NATIVE_MODELS_CACHE = join(tmpdir(), `claude-native-missing-${randomUUID()}.json`);
@@ -376,6 +410,7 @@ test("request and header hooks emit coherent TUI and print Claude profiles", () 
 		assert.equal(tui.headers["anthropic-beta"].includes("fallback-credit-2026-06-01"), false);
 		assert.match(tui.transformed.system[0]?.text ?? "", / cc_turn_origin=human; cc_prompt_index=1; cc_turn_index=1;$/);
 		assert.equal(tui.headers["x-claude-code-request-class"], "main");
+		assert.equal(tui.headers["x-claude-1p-request-class"], "main");
 
 		const print = applyProfile("print", CLAUDE_CODE_IDENTITY);
 		assert.match(print.transformed.system[0]?.text ?? "", /cc_entrypoint=sdk-cli;/);
@@ -387,6 +422,7 @@ test("request and header hooks emit coherent TUI and print Claude profiles", () 
 		assert.equal(print.headers["anthropic-beta"].includes("fallback-credit-2026-06-01"), false);
 		assert.match(print.transformed.system[0]?.text ?? "", / cc_turn_origin=sdk; cc_prompt_index=0; cc_turn_index=1;$/);
 		assert.equal(print.headers["x-claude-code-request-class"], "main");
+		assert.equal(print.headers["x-claude-1p-request-class"], "main");
 	} finally {
 		for (const [name, value] of saved) {
 			if (value === undefined) delete process.env[name];
@@ -464,6 +500,13 @@ test("x-client-request-id is set per request, in place, and only for this provid
 	const first = headers["x-client-request-id"];
 	assert.match(first, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i);
 	assert.equal(headers["x-claude-code-request-class"], "main");
+	// Claude Code 2.1.326 repeats the label under a second first-party name.
+	assert.equal(headers["x-claude-1p-request-class"], "main");
+	// Captured but deliberately not mirrored: unverified semantics, or a value
+	// that only the payload hook could derive consistently.
+	for (const name of ["anthropic-dispatch-id", "x-claude-code-prompt-id", "x-claude-code-sandy-plover"]) {
+		assert.equal(name in headers, false, name);
+	}
 
 	// Genuine Claude Code sends a FRESH id on every request.
 	const second: Record<string, string> = {};

@@ -5,7 +5,7 @@ The comparator checks selected request fields. It does not establish equality
 of the complete system prompt, tool schemas, dynamic metadata, or HTTP stack.
 
 Genuine print captures cover all 15 bundled exact model ids on **Claude Code
-2.1.322**, plus Claude Mythos 5.1 and 5.2 through explicit `--models` runs.
+2.1.326**, plus Claude Mythos 5.1 and 5.2 through explicit `--models` runs.
 The **2.1.303** TUI suite covers the 14 ids that existed then; Fable 5.2 has no
 TUI capture yet. Flag sets, caps and budgets are identical across the two
 generations; 2.1.317 moved `thinking-token-count-2026-05-13` after
@@ -191,7 +191,11 @@ are accepted; a partial model set does not satisfy the full suite.
 Pi's built-in `anthropic-messages` path handles OAuth transport, streaming,
 thinking, caching, and tool-name mapping. The extension aligns the selected
 profile and adds billing, metadata, and exact captured model rules. SDK/runtime
-telemetry headers can differ between clients.
+telemetry headers can differ between clients. After the checks, the comparator
+prints a `NOTE` with first-party header names that the genuine request carries
+and Pi does not: `anthropic-dispatch-id`, `x-claude-code-prompt-id` and
+`x-claude-code-sandy-plover` are known and unmirrored, so any other name there
+is new header drift to investigate.
 
 The billing version suffix is
 `sha256("59cf53e54c78" + chars[4,7,20] of firstUserMessageText + version)[:3]`,

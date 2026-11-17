@@ -70,7 +70,7 @@ function withEnvCleared(names: readonly string[], run: () => void): void {
 }
 
 test("default beta set matches the bundled Opus/Sonnet 5.5 common capture", () => {
-	assert.equal(BUNDLED_CC_VERSION, "2.1.322");
+	assert.equal(BUNDLED_CC_VERSION, "2.1.326");
 	assert.deepEqual(DEFAULT_ANTHROPIC_BETA.split(","), [
 		"claude-code-20250219",
 		"oauth-2025-04-20",
@@ -201,11 +201,11 @@ test("bundled per-model deviations match the captured clean models exactly", () 
 	assert.equal(
 		Object.values(MODEL_BETA_DELTAS).some((delta) => (delta.add?.length ?? 0) > 0),
 		false,
-		"the 2.1.322 common base includes all captured additions",
+		"the 2.1.326 common base includes all captured additions",
 	);
 });
 
-test("all captured print (2.1.322) beta headers match byte-exact captures and TUI adds the 2.1.303 display overlay", () => {
+test("all captured print (2.1.326) beta headers match byte-exact captures and TUI adds the 2.1.303 display overlay", () => {
 	withEnvCleared(["PI_CLAUDE_NATIVE_ANTHROPIC_BETA", "PI_CLAUDE_NATIVE_CC_ENTRYPOINT"], () => {
 		const cc = "claude-code-20250219";
 		const oauth = "oauth-2025-04-20";
@@ -303,8 +303,8 @@ test("all captured print (2.1.322) beta headers match byte-exact captures and TU
 
 		assert.equal(Object.keys(expected).length, 17);
 		for (const [id, flags] of Object.entries(expected)) {
-			assert.deepEqual(getAnthropicBetaForModel(id, "print").split(","), flags.filter((flag) => flag !== displayUpdates), id + ": 2.1.322 print capture");
-			assert.deepEqual(getAnthropicBetaForModel(id, "tui").split(","), flags, id + ": 2.1.322 print order with the 2.1.303 TUI display overlay");
+			assert.deepEqual(getAnthropicBetaForModel(id, "print").split(","), flags.filter((flag) => flag !== displayUpdates), id + ": 2.1.326 print capture");
+			assert.deepEqual(getAnthropicBetaForModel(id, "tui").split(","), flags, id + ": 2.1.326 print order with the 2.1.303 TUI display overlay");
 			assert.equal(flags.filter((flag) => flag === displayUpdates).length, 1, id + ": one mode-wide signal");
 			assert.equal(flags.includes("mid-conversation-system-2026-04-07"), false, id + ": removed from 2.1.303");
 			assert.equal(flags.includes("fallback-credit-2026-06-01"), false, id + ": stale flag absent");

@@ -3,7 +3,7 @@
 Pi extension providing **Claude Pro/Max Native** through Claude subscription
 OAuth. TypeScript is loaded directly by Pi through jiti; there is no build step
 or runtime dependency. Runtime floor: Pi 1.0.0. Development types target Pi
-1.5.1; local checks use Node.js 26.3.
+1.5.2; local checks use Node.js 26.3.
 
 Releases are distributed through GitHub. The unscoped `pi-claude` npm name
 belongs to another publisher: never publish this repository under that name.
@@ -58,9 +58,17 @@ Keep the entire wire profile coherent with `ctx.mode`:
 Provider/model headers supply the non-interactive fallback.
 `before_provider_headers` must mutate the final merged headers **in place**:
 Pi ignores its return value. Set the mode-specific `user-agent`, per-model
-`anthropic-beta` and fresh request id there; keep `x-app` on the provider and all
-header names lowercase. Billing and user-agent versions use the same
-`getClaudeCodeVersion()` result.
+`anthropic-beta`, both request-class labels and a fresh request id there; keep
+`x-app` on the provider and all header names lowercase. Billing and user-agent
+versions use the same `getClaudeCodeVersion()` result.
+
+Genuine main requests label themselves twice, `x-claude-code-request-class` and,
+since 2.1.326, `x-claude-1p-request-class`. They also carry
+`anthropic-dispatch-id`, `x-claude-code-prompt-id` and
+`x-claude-code-sandy-plover`, which this provider does not send. Add one only
+with capture evidence for its value and meaning; the prompt id must always equal
+the billing `cc_prompt_id`. The comparator lists unmirrored first-party header
+names as a note.
 
 Keep `sanitizeSystemPrompt`: the default anchor removes Pi's documentation
 paragraph that triggers Anthropic's system-prompt classifier. Diagnose new
@@ -77,7 +85,7 @@ header hook.
 
 ## Captured fingerprint
 
-The bundled print profile is Claude Code **2.1.322**: 15 exact model ids, plus
+The bundled print profile is Claude Code **2.1.326**: 15 exact model ids, plus
 Claude Mythos 5.1 and 5.2 as restricted-access ids captured through explicit
 `--models` runs, and a 16-flag common base derived from the ordered Opus/Sonnet
 intersection. Haiku 5.5 has the same flag set with its own captured order and a
@@ -86,9 +94,10 @@ Exact sets, order, caps and budget profiles are pinned in
 `test/constants.test.ts`; change them only with fresh genuine captures.
 
 The complete 2.1.303 TUI suite covers the 14 exact ids that existed then; its
-sets, caps and budgets match the 2.1.322 print capture, whose newer flag order
+sets, caps and budgets match the 2.1.326 print capture, whose newer flag order
 applies to both modes. Fable 5.2 has no TUI capture yet: its interactive header
-is the print capture plus the mode-wide overlay until a TUI suite includes it. Its captured interactive display overlay follows
+is the print capture plus the mode-wide overlay until a TUI suite includes it.
+The suite's captured interactive display overlay follows
 `thinking-binding-controls-2026-08-01`. First-turn
 billing indices are `(0, 1)` for print and `(1, 1)` for TUI on every capture
 since 2.1.284, and versions at or above that floor inherit them; preserve the
@@ -183,6 +192,11 @@ confirmed, uncompacted first prompt, a known entrypoint and a semver version at
 or above `FIRST_PROMPT_POSITION_SINCE`; omit later or ambiguous indices. Raise
 that floor only with capture evidence. Do not change the OAuth client id or
 weaken its scopes.
+
+The OAuth registration sets `isSubscription: true`. Pi reads it only for the
+footer's `(sub)` cost marker and the `/login` and `/logout` labels, never for
+auth resolution or request construction. Confirm that against the host bundle
+whenever the Pi development pin moves.
 
 All state lives under `<PI_CODING_AGENT_DIR ?? ~/.pi/agent>/claude-native/`.
 Expand a leading `~` consistently for fingerprint, cache and notices. Only the

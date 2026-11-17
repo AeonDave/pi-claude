@@ -80,6 +80,7 @@ function request(
 			"x-client-request-id": randomUUID(),
 			"x-claude-code-session-id": sessionId,
 			"x-claude-code-request-class": "main",
+			"x-claude-1p-request-class": "main",
 		},
 		body: {
 			model: "claude-opus-5",
@@ -539,6 +540,11 @@ test("compare rejects missing or drifted first-party headers and body controls",
 			"request class",
 			(value) => ((value.headers as Record<string, string>)["x-claude-code-request-class"] = "auxiliary"),
 			/x-claude-code-request-class.*matches genuine/,
+		],
+		[
+			"first-party request class",
+			(value) => delete (value.headers as Record<string, string>)["x-claude-1p-request-class"],
+			/x-claude-1p-request-class.*matches genuine/,
 		],
 		[
 			"turn origin",

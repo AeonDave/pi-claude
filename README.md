@@ -46,6 +46,11 @@ pi --model claude-pro-max-native/claude-haiku-5-5
 Claude CLI, Pi's built-in `anthropic` provider, and **Claude Pro/Max Native** keep
 separate OAuth credentials. Logging into one does not authorize the others.
 
+The login is registered as a subscription. While one of this provider's models
+is selected, Pi's footer appends `(sub)` to the session cost, and `/login` and
+`/logout` list the sign-in as a subscription. The figure remains the estimate
+from the model's catalog prices; the marker changes no request.
+
 ## Models
 
 The curated seed is available before discovery and while offline:
@@ -115,7 +120,7 @@ The extension also adds the billing header, available Claude account metadata,
 request ids, and captured per-model limits. System-prompt sanitization removes
 the Pi documentation paragraph that can trigger a request rejection.
 
-The print profile is captured from **Claude Code 2.1.322** across all 15
+The print profile is captured from **Claude Code 2.1.326** across all 15
 bundled exact model ids plus Claude Mythos 5.1 and 5.2 (restricted access); the
 TUI display overlay comes from the **Claude Code 2.1.303** TUI suite. The print
 flag order, unchanged since 2.1.317, applies to both modes. First-turn billing
@@ -226,7 +231,7 @@ anchor when adding a new one. See [VERIFY.md](VERIFY.md) for the full procedure.
 
 ## Development
 
-Development types target Pi 1.5.1; local checks use Node.js 26.3.
+Development types target Pi 1.5.2; local checks use Node.js 26.3.
 
 ```bash
 npm run typecheck
