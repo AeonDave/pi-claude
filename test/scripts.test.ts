@@ -607,29 +607,44 @@ test("compare rejects missing or drifted first-party headers and body controls",
 	}
 });
 
-test("capture proxy returns its configured nonce through the local health endpoint", { timeout: 5_000 }, async (t) => {
+test("capture proxy health and credential redaction/forwarding", { timeout: 5_000 }, async (t) => {
+	const originHeaders: Array<Record<string, string | string[] | undefined>> = [];
+	const origin = createServer((request, response) => {
+		originHeaders.push(request.headers);
+		request.resume();
+		request.on("end", () => {
+			response.writeHead(200);
+			response.end("ok");
+		});
+	});
+	await new Promise<void>((resolvePromise) => origin.listen(0, "127.0.0.1", resolvePromise));
+	const originAddress = origin.address();
+	assert.ok(originAddress && typeof originAddress === "object");
 	const port = await reservePort();
 	const nonce = randomUUID();
 	const dir = mkdtempSync(join(tmpdir(), "claude-native-proxy-"));
-	const proxy = spawn(process.execPath, [CAPTURE_PROXY], {
+	let proxy: ReturnType<typeof spawn> | undefined;
+	t.after(async () => {
+		if (proxy && proxy.exitCode === null && proxy.signalCode === null) {
+			proxy.kill();
+			await new Promise<void>((resolvePromise) => proxy?.once("exit", () => resolvePromise()));
+		}
+		await new Promise<void>((resolvePromise, rejectPromise) =>
+			origin.close((error) => (error ? rejectPromise(error) : resolvePromise())),
+		);
+		rmSync(dir, { recursive: true, force: true });
+	});
+	proxy = spawn(process.execPath, [CAPTURE_PROXY], {
 		env: {
 			...process.env,
 			PI_CAPTURE_PORT: String(port),
-			PI_CAPTURE_TARGET: "http://127.0.0.1:1",
+			PI_CAPTURE_TARGET: `http://127.0.0.1:${originAddress.port}`,
 			PI_CAPTURE_DIR: dir,
 			PI_CAPTURE_LABEL: "capture",
 			PI_CAPTURE_HEALTH_NONCE: nonce,
 		},
 		stdio: "ignore",
 	});
-	t.after(async () => {
-		if (proxy.exitCode === null && proxy.signalCode === null) {
-			proxy.kill();
-			await new Promise<void>((resolvePromise) => proxy.once("exit", () => resolvePromise()));
-		}
-		rmSync(dir, { recursive: true, force: true });
-	});
-
 	const response = await waitForHttp(port, "/__pi_claude_capture_health");
 	assert.equal(response.status, 200, response.body);
 	assert.deepEqual(JSON.parse(response.body), { service: "pi-claude-capture-proxy", nonce });
@@ -640,13 +655,22 @@ test("capture proxy returns its configured nonce through the local health endpoi
 		[`${sentinel} malformed`, "UNKNOWN (redacted)"],
 		[`Bearer ${sentinel} trailing`, "Bearer (invalid credentials)"],
 	].entries()) {
-		const result = await getText(port, "/v1/messages", { authorization, "x-api-key": sentinel });
-		assert.equal(result.status, 502);
+		const result = await getText(port, "/v1/messages", {
+			authorization,
+			"proxy-authorization": `Basic ${sentinel}`,
+			"x-api-key": sentinel,
+			cookie: `session=${sentinel}`,
+		});
+		assert.equal(result.status, 200, result.body);
 		const capture = readFileSync(join(dir, `req-capture-${index + 1}.json`), "utf8");
 		const record = JSON.parse(capture) as { headers: Record<string, string> };
 		assert.equal(record.headers.authorization, expected);
+		assert.equal(record.headers["proxy-authorization"], "Basic REDACTED");
 		assert.equal(record.headers["x-api-key"], "REDACTED");
+		assert.equal(record.headers.cookie, "REDACTED");
 		assert.ok(!capture.includes(sentinel), "capture file must not contain credential bytes");
+		assert.equal(originHeaders[index]?.authorization, authorization, "origin must still receive Authorization");
+		assert.equal(originHeaders[index]?.["proxy-authorization"], undefined, "origin must not receive Proxy-Authorization");
 	}
 });
 

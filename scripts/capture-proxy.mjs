@@ -53,7 +53,9 @@ function redactHeaders(headers) {
 	for (const [key, value] of Object.entries(headers)) {
 		const lower = key.toLowerCase();
 		const flat = Array.isArray(value) ? value.join(", ") : value;
-		out[lower] = lower === "authorization" ? redactAuthorization(flat) : lower === "x-api-key" || lower === "cookie" ? "REDACTED" : flat;
+		out[lower] = lower === "authorization" || lower === "proxy-authorization"
+			? redactAuthorization(flat)
+			: lower === "x-api-key" || lower === "cookie" ? "REDACTED" : flat;
 	}
 	return out;
 }
@@ -105,6 +107,7 @@ const server = http.createServer((req, res) => {
 		}
 
 		const forwardHeaders = { ...req.headers, host: target.host, "content-length": Buffer.byteLength(bodyBuf) };
+		delete forwardHeaders["proxy-authorization"];
 		const client = target.protocol === "http:" ? http : https;
 		const upstream = client.request(
 			{

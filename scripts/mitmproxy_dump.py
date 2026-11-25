@@ -35,7 +35,7 @@ def _redact(headers: dict) -> dict:
     out = {}
     for key, value in headers.items():
         lower = key.lower()
-        if lower == "authorization":
+        if lower in ("authorization", "proxy-authorization"):
             raw = value.strip() if isinstance(value, str) else ""
             if re.fullmatch(r"Bearer[ \t]+\S+", raw, re.IGNORECASE):
                 out[lower] = "Bearer REDACTED"
