@@ -115,6 +115,9 @@ The provider follows Pi's runtime mode:
 | TUI | interactive `claude` | `cli` | `updates` |
 | print, JSON, RPC | `claude -p` / Agent SDK | `sdk-cli` | `omitted` |
 
+By default, Pi sends the conversation history on each request and keeps
+server-side message threads disabled for this provider.
+
 Entrypoint, user-agent, identity, beta flags, and thinking display move together.
 The extension also adds the billing header, available Claude account metadata,
 request ids, and captured per-model limits. System-prompt sanitization removes
@@ -231,7 +234,7 @@ anchor when adding a new one. See [VERIFY.md](VERIFY.md) for the full procedure.
 
 ## Development
 
-Development types target Pi 1.5.2; local checks use Node.js 26.3.
+Development types target Pi 1.6.0. Local checks use Node.js 26.3.
 
 ```bash
 npm run typecheck

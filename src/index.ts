@@ -164,12 +164,18 @@ export default function claudeProMaxNative(pi: ExtensionAPI) {
 
 	function registerNative(models: NativeModel[]): void {
 		const registeredModels = models.map((model) => {
+			// Pi enables threads by default for api.anthropic.com; this provider does not.
 			const forceAdaptiveThinking = (model.compat as { forceAdaptiveThinking?: boolean } | undefined)?.forceAdaptiveThinking;
 			const modelBeta = getAnthropicBetaForModel(model.id, undefined, forceAdaptiveThinking);
-			if (modelBeta === headers["anthropic-beta"]) return model;
 			return {
 				...model,
-				headers: { "anthropic-beta": modelBeta, ...model.headers },
+				compat: {
+					...model.compat,
+					supportsMessageThreads: (model.compat as { supportsMessageThreads?: boolean } | undefined)?.supportsMessageThreads === true,
+				},
+				...(modelBeta !== headers["anthropic-beta"]
+					? { headers: { "anthropic-beta": modelBeta, ...model.headers } }
+					: {}),
 			};
 		});
 		// Every field is registry-visible. A catalog refresh may correct pricing,

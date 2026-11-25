@@ -131,6 +131,42 @@ test("session refresh re-registers when catalog fields change without an id/wind
 	}
 });
 
+test("registration disables server-side threads by default and preserves explicit model compat", () => {
+	const previous = process.env.PI_CLAUDE_NATIVE_MODELS;
+	const previousCache = process.env.PI_CLAUDE_NATIVE_MODELS_CACHE;
+	process.env.PI_CLAUDE_NATIVE_MODELS = JSON.stringify([
+		{ id: "claude-opus-4-8", compat: { supportsMessageThreads: true, supportsTemperature: false } },
+	]);
+	process.env.PI_CLAUDE_NATIVE_MODELS_CACHE = join(tmpdir(), `claude-native-missing-${randomUUID()}.json`);
+	try {
+		const registrations: Array<{ models: Array<Record<string, unknown>> }> = [];
+		const { pi, handlers } = harness((_id, config) => registrations.push(config as never));
+		claudeProMaxNative(pi as never);
+
+		const initial = registrations[0].models;
+		const seed = initial.find((model) => model.id === "claude-opus-4-8");
+		assert.equal((seed?.compat as Record<string, unknown>)?.supportsMessageThreads, true);
+		assert.equal((seed?.compat as Record<string, unknown>)?.supportsTemperature, false);
+		const bundled = initial.find((model) => model.id === "claude-opus-5-5");
+		assert.equal((bundled?.compat as Record<string, unknown>)?.supportsMessageThreads, false);
+		assert.equal((bundled?.compat as Record<string, unknown>)?.forceAdaptiveThinking, true);
+		const plainSeed = initial.find((model) => model.id === "claude-haiku-4-5");
+		assert.equal((plainSeed?.compat as Record<string, unknown>)?.supportsMessageThreads, false);
+
+		const catalogModel = { ...fableModel(), compat: { forceAdaptiveThinking: true, supportsMessageThreads: true } };
+		handlers.get("session_start")?.({}, context(() => [catalogModel]));
+		const refreshed = registrations.at(-1)?.models;
+		const discovered = refreshed?.find((model) => model.id === "claude-fable-5");
+		assert.equal((discovered?.compat as Record<string, unknown>)?.supportsMessageThreads, false);
+		assert.equal((discovered?.compat as Record<string, unknown>)?.forceAdaptiveThinking, true);
+	} finally {
+		if (previous === undefined) delete process.env.PI_CLAUDE_NATIVE_MODELS;
+		else process.env.PI_CLAUDE_NATIVE_MODELS = previous;
+		if (previousCache === undefined) delete process.env.PI_CLAUDE_NATIVE_MODELS_CACHE;
+		else process.env.PI_CLAUDE_NATIVE_MODELS_CACHE = previousCache;
+	}
+});
+
 test("Opus, Sonnet and Haiku 5.5 are visible at load with a stale cache, while older generations stay visible", () => {
 	const previous = process.env.PI_CLAUDE_NATIVE_MODELS_CACHE;
 	const dir = mkdtempSync(join(tmpdir(), "claude-native-cold-list-"));
@@ -151,7 +187,7 @@ test("Opus, Sonnet and Haiku 5.5 are visible at load with a stale cache, while o
 		assert.equal(opus55.contextWindow, 1_000_000);
 		assert.equal(opus55.maxTokens, 128_000);
 		assert.deepEqual(opus55.cost, { input: 4, output: 20, cacheRead: 0.2, cacheWrite: 5 });
-		assert.deepEqual(opus55.compat, { forceAdaptiveThinking: true, supportsTemperature: false });
+		assert.deepEqual(opus55.compat, { forceAdaptiveThinking: true, supportsTemperature: false, supportsMessageThreads: false });
 		assert.deepEqual(opus55.thinkingLevelMap, { xhigh: "xhigh", max: "max", off: null });
 		assert.equal(opus55.headers, undefined, "Opus 5.5 uses the captured 16-flag provider base");
 		const sonnet55 = models?.find((model) => model.id === "claude-sonnet-5-5");
@@ -159,7 +195,7 @@ test("Opus, Sonnet and Haiku 5.5 are visible at load with a stale cache, while o
 		assert.equal(sonnet55.contextWindow, 1_000_000);
 		assert.equal(sonnet55.maxTokens, 128_000);
 		assert.deepEqual(sonnet55.cost, { input: 2, output: 10, cacheRead: 0.1, cacheWrite: 2.5 });
-		assert.deepEqual(sonnet55.compat, { forceAdaptiveThinking: true, supportsTemperature: false });
+		assert.deepEqual(sonnet55.compat, { forceAdaptiveThinking: true, supportsTemperature: false, supportsMessageThreads: false });
 		assert.deepEqual(sonnet55.thinkingLevelMap, { xhigh: "xhigh", max: "max", off: null });
 		// Both flagship models use the captured 16-flag provider base verbatim.
 		assert.equal(sonnet55.headers, undefined);
@@ -218,7 +254,7 @@ test("a later catalog price and partial effort map retain Opus 5.5's adaptive-on
 		const opus55 = registrations.at(-1)?.models.find((model) => model.id === "claude-opus-5-5");
 		assert.deepEqual(opus55?.cost, catalogCost);
 		assert.deepEqual(opus55?.thinkingLevelMap, { xhigh: "xhigh", max: "max", off: null });
-		assert.deepEqual(opus55?.compat, { forceAdaptiveThinking: true, supportsTemperature: false });
+		assert.deepEqual(opus55?.compat, { forceAdaptiveThinking: true, supportsTemperature: false, supportsMessageThreads: false });
 	} finally {
 		if (previous === undefined) delete process.env.PI_CLAUDE_NATIVE_MODELS_CACHE;
 		else process.env.PI_CLAUDE_NATIVE_MODELS_CACHE = previous;
@@ -319,12 +355,12 @@ test("Pi catalog pricing preserves live capabilities and Sonnet 4.5's budget sig
 		const mythos = applied?.find((model) => model.id === "claude-mythos-5");
 		assert.deepEqual(mythos?.cost, catalogCost, "Pi remains authoritative for pricing");
 		assert.deepEqual(mythos?.thinkingLevelMap, { xhigh: "xhigh", max: "max", off: null });
-		assert.deepEqual(mythos?.compat, { forceAdaptiveThinking: true, supportsTemperature: false });
+		assert.deepEqual(mythos?.compat, { forceAdaptiveThinking: true, supportsTemperature: false, supportsMessageThreads: false });
 
 		const sonnet45 = applied?.find((model) => model.id === "claude-sonnet-4-5");
 		assert.deepEqual(
 			sonnet45?.compat,
-			{ forceAdaptiveThinking: false },
+			{ forceAdaptiveThinking: false, supportsMessageThreads: false },
 			"a live budget signal survives Pi's omitted adaptive marker",
 		);
 		assert.equal(sonnet45?.contextWindow, 200000, "budget Sonnet cannot inherit the beta-gated 1M window");

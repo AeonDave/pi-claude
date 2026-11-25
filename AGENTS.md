@@ -3,7 +3,7 @@
 Pi extension providing **Claude Pro/Max Native** through Claude subscription
 OAuth. TypeScript is loaded directly by Pi through jiti; there is no build step
 or runtime dependency. Runtime floor: Pi 1.0.0. Development types target Pi
-1.5.2; local checks use Node.js 26.3.
+1.6.0. Local checks use Node.js 26.3.
 
 Releases are distributed through GitHub. The unscoped `pi-claude` npm name
 belongs to another publisher: never publish this repository under that name.
@@ -76,6 +76,8 @@ triggers with the scripts in VERIFY.md or an explicit
 `PI_CLAUDE_NATIVE_SYSTEM_ANCHORS` override. General skill-catalog trimming
 belongs to `pi-skill-optimizer`.
 
+Default `compat.supportsMessageThreads` to `false` at model registration. Pi 1.6
+otherwise enables server-side threads for models at `api.anthropic.com`.
 Carry only the catalog fields listed in `buildMergedModels`; never copy Pi's
 model `compat` or `promptCache` wholesale. `supportsMessageThreads`,
 `allowedFallbackModels`, the mid-conversation flags and `promptCache` make
